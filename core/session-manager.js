@@ -17,18 +17,16 @@ class SessionManager {
       ? `Claude ${++this.claudeCounter}`
       : `PowerShell ${++this.psCounter}`;
 
-    const sessionEnv = {
-      ...process.env,
-      CLAUDE_HUB_SESSION_ID: id,
-    };
+    const sessionEnv = { ...process.env };
 
     if (kind === 'claude') {
       sessionEnv.ANTHROPIC_BASE_URL = '';
       sessionEnv.ANTHROPIC_AUTH_TOKEN = '';
       sessionEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL = '';
-      sessionEnv.HTTP_PROXY = 'http://127.0.0.1:7890';
-      sessionEnv.HTTPS_PROXY = 'http://127.0.0.1:7890';
-      sessionEnv.NO_PROXY = 'localhost,127.0.0.1';
+      // Inherit proxy from parent env; if set, also add NO_PROXY for localhost
+      if (sessionEnv.HTTP_PROXY || sessionEnv.HTTPS_PROXY) {
+        sessionEnv.NO_PROXY = 'localhost,127.0.0.1';
+      }
     }
 
     const shellArgs = kind === 'claude' ? ['-NoProfile', '-NoLogo'] : [];
