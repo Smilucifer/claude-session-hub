@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';">
+  <title>Claude Session Hub</title>
+  <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-container">
+    <div class="session-sidebar">
+      <div class="sidebar-header">
+        <span class="sidebar-title">Sessions</span>
+        <div style="display:flex;align-items:center">
+          <span class="session-count" id="session-count">0 open</span>
+          <div class="new-session-wrapper" id="new-session-wrapper">
+            <button class="btn-new-session" id="btn-new" title="New session">+</button>
+            <div class="new-session-menu" id="new-session-menu" style="display:none">
+              <button class="new-session-option" data-kind="claude">Claude Code</button>
+              <button class="new-session-option" data-kind="powershell">PowerShell</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="session-list" id="session-list"></div>
+    </div>
+    <div class="terminal-panel" id="terminal-panel">
+      <div class="empty-state" id="empty-state">
+        <div class="empty-state-icon">+</div>
+        <div class="empty-state-text">No session selected</div>
+        <div class="empty-state-hint">Click "+" to create a new session</div>
+      </div>
+    </div>
+  </div>
+  <script src="renderer.js"></script>
+</body>
+</html>

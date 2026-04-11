@@ -13,9 +13,8 @@ function createWindow() {
     title: 'Claude Session Hub',
     backgroundColor: '#0d1117',
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
+      nodeIntegration: true,
+      contextIsolation: false,
     },
   });
 
