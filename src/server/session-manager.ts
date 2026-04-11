@@ -1,6 +1,6 @@
 import * as pty from 'node-pty';
 import { v4 as uuid } from 'uuid';
-import { SessionInfo } from './types.js';
+import { SessionInfo, SessionKind } from './types.js';
 
 const OUTPUT_BUFFER_MAX = 8192; // ~8KB ring buffer per session
 
@@ -85,22 +85,50 @@ function extractPreview(buffer: string[], maxLen = 150): string {
 export class SessionManager {
   private sessions = new Map<string, ManagedSession>();
   private focusedSessionId: string | null = null;
-  private sessionCounter = 0;
+  private claudeCounter = 0;
+  private psCounter = 0;
 
   // Callbacks
   onData: (sessionId: string, data: string) => void = () => {};
   onSessionClosed: (sessionId: string) => void = () => {};
 
-  createSession(): SessionInfo {
+  createSession(kind: SessionKind = 'powershell'): SessionInfo {
     const id = uuid();
-    this.sessionCounter++;
+    const title = kind === 'claude'
+      ? `Claude ${++this.claudeCounter}`
+      : `PowerShell ${++this.psCounter}`;
 
-    const ptyProcess = pty.spawn('powershell.exe', [], {
+    const sessionEnv: Record<string, string> = {
+      ...(process.env as Record<string, string>),
+      CLAUDE_HUB_SESSION_ID: id,
+    };
+
+    if (kind === 'claude') {
+      // Set proxy and clear third-party API settings at process level
+      // (equivalent to claude-pro, but without depending on profile load timing)
+      sessionEnv.ANTHROPIC_BASE_URL = '';
+      sessionEnv.ANTHROPIC_AUTH_TOKEN = '';
+      sessionEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL = '';
+      sessionEnv.HTTP_PROXY = 'http://127.0.0.1:7890';
+      sessionEnv.HTTPS_PROXY = 'http://127.0.0.1:7890';
+      // Ensure hook scripts can reach localhost hub without going through Clash
+      sessionEnv.NO_PROXY = 'localhost,127.0.0.1';
+    }
+
+    // Claude sessions: -NoProfile -NoLogo for fast startup, interactive mode
+    // so readline absorbs ConPTY init sequences before we launch claude
+    // PowerShell sessions: full interactive shell with profile
+    const shell = 'powershell.exe';
+    const shellArgs = kind === 'claude'
+      ? ['-NoProfile', '-NoLogo']
+      : [];
+
+    const ptyProcess = pty.spawn(shell, shellArgs, {
       name: 'xterm-256color',
       cols: 120,
       rows: 30,
       cwd: process.env.USERPROFILE || process.env.HOME || '.',
-      env: { ...process.env, CLAUDE_HUB_SESSION_ID: id } as Record<string, string>,
+      env: sessionEnv,
       useConpty: true,
       conptyInheritCursor: true,
     });
@@ -108,7 +136,8 @@ export class SessionManager {
     const now = Date.now();
     const info: SessionInfo = {
       id,
-      title: `PowerShell ${this.sessionCounter}`,
+      kind,
+      title,
       status: 'idle',
       lastMessageTime: now,
       lastOutputPreview: '',
@@ -135,7 +164,28 @@ export class SessionManager {
 
     ptyProcess.onExit(() => { this.sessions.delete(id); this.onSessionClosed(id); });
 
-    ptyProcess.write('Set-PSReadLineOption -PredictionViewStyle InlineView 2>$null; clear\r\n');
+    if (kind === 'powershell') {
+      ptyProcess.write('Set-PSReadLineOption -PredictionViewStyle InlineView 2>$null; clear\r\n');
+    }
+
+    if (kind === 'claude') {
+      // Wait for interactive shell to absorb ConPTY init sequences, then launch claude
+      // 300ms debounce is safe with -NoProfile -NoLogo (very fast startup)
+      let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+      const watcher = ptyProcess.onData(() => {
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          watcher.dispose();
+          const s = this.sessions.get(id);
+          if (s) s.pty.write(' claude\r\n');
+        }, 300);
+      });
+      setTimeout(() => {
+        watcher.dispose();
+        if (debounceTimer) clearTimeout(debounceTimer);
+      }, 15000);
+    }
+
     return { ...info };
   }
 

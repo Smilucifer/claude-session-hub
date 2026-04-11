@@ -1,5 +1,8 @@
+export type SessionKind = 'claude' | 'powershell';
+
 export interface SessionInfo {
   id: string;
+  kind: SessionKind;
   title: string;
   status: 'running' | 'idle';
   lastMessageTime: number;    // updated by Claude Code Stop hook
@@ -19,7 +22,7 @@ export type ServerMessage =
 
 // WebSocket messages: client → server
 export type ClientMessage =
-  | { type: 'create-session' }
+  | { type: 'create-session'; kind?: SessionKind }
   | { type: 'close-session'; sessionId: string }
   | { type: 'terminal-input'; sessionId: string; data: string }
   | { type: 'terminal-resize'; sessionId: string; cols: number; rows: number }

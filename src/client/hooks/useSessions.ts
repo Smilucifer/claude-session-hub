@@ -2,6 +2,7 @@ import { useState, useCallback, useRef } from 'react';
 
 export interface SessionInfo {
   id: string;
+  kind: 'claude' | 'powershell';
   title: string;
   status: 'running' | 'idle';
   lastMessageTime: number;

@@ -31,7 +31,7 @@ export const App: React.FC = () => {
           setActiveSessionId(id);
           send({ type: 'focus-session', sessionId: id });
         }, [send, setActiveSessionId])}
-        onCreateSession={useCallback(() => send({ type: 'create-session' }), [send])}
+        onCreateSession={useCallback((kind: 'claude' | 'powershell') => send({ type: 'create-session', kind }), [send])}
       />
       <TerminalPanel
         session={sessions.find(s => s.id === activeSessionId) || null}

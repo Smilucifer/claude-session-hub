@@ -145,7 +145,7 @@ export const TerminalPanel: React.FC<Props> = ({ session, onInput, onResize, onC
         <div className="empty-state">
           <div className="empty-state-icon">+</div>
           <div className="empty-state-text">No session selected</div>
-          <div className="empty-state-hint">Click "+" to create a new PowerShell session</div>
+          <div className="empty-state-hint">Click "+" to create a new session</div>
         </div>
       </div>
     );

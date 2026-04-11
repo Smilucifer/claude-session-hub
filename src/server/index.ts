@@ -71,7 +71,7 @@ wss.on('connection', (ws) => {
 
       switch (msg.type) {
         case 'create-session': {
-          const session = sessionManager.createSession();
+          const session = sessionManager.createSession(msg.kind);
           broadcast({ type: 'session-created', session });
           break;
         }
