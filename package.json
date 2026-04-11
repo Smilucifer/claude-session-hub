@@ -5,43 +5,20 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dev": "electron .",
-    "dev:old": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
-    "dev:server": "tsx watch src/server/index.ts",
-    "dev:client": "vite src/client",
-    "build:client:old": "vite build src/client --outDir ../../dist/client",
-    "build:server:old": "tsup src/server/index.ts --out-dir dist/server --format esm --dts",
-    "build:old": "npm run build:client:old && npm run build:server:old",
-    "start:old": "node dist/server/index.js"
+    "test": "node test-e2e.js"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-unicode11": "^0.9.0",
-    "@xterm/addon-webgl": "^0.19.0",
-    "express": "^4.21.0",
+    "@xterm/xterm": "^5.5.0",
     "node-pty": "^1.0.0",
-    "open": "^10.1.0",
     "uuid": "^10.0.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "@types/express": "^4.17.21",
-    "@types/react": "^18.3.5",
-    "@types/react-dom": "^18.3.0",
-    "@types/uuid": "^10.0.0",
-    "@types/ws": "^8.5.12",
-    "@vitejs/plugin-react": "^4.3.1",
-    "@xterm/addon-fit": "^0.10.0",
-    "@xterm/xterm": "^5.5.0",
-    "concurrently": "^9.0.1",
-    "electron": "^41.2.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "tsup": "^8.2.4",
-    "tsx": "^4.19.0",
-    "typescript": "^5.5.4",
-    "vite": "^5.4.2"
+    "electron": "^41.2.0"
   }
 }

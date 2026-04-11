@@ -20,7 +20,6 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  mainWindow.webContents.openDevTools({ mode: 'bottom' });
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 
