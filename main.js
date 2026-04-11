@@ -15,10 +15,12 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
+      sandbox: false,
     },
   });
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  mainWindow.webContents.openDevTools({ mode: 'bottom' });
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 
