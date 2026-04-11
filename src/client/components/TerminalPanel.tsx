@@ -23,6 +23,7 @@ interface CachedTerminal {
 
 const terminalCache = new Map<string, CachedTerminal>();
 const pendingDataBuffer = new Map<string, string[]>();
+const PENDING_BUFFER_MAX = 100; // max chunks per session before opened
 
 // Handler refs to avoid stale closures
 const handlerRefs = {
@@ -97,7 +98,12 @@ export const TerminalPanel: React.FC<Props> = ({ session, onInput, onResize, onC
     if (!cached.opened) {
       cached.terminal.open(cached.container);
       cached.opened = true;
-      try { cached.terminal.loadAddon(new WebglAddon()); } catch {}
+      try {
+        const webgl = new WebglAddon();
+        // On WebGL context loss, dispose addon and let xterm fall back to canvas
+        webgl.onContextLoss(() => { webgl.dispose(); });
+        cached.terminal.loadAddon(webgl);
+      } catch {}
 
       // Flush buffered data
       const buffered = pendingDataBuffer.get(session.id);
@@ -107,7 +113,7 @@ export const TerminalPanel: React.FC<Props> = ({ session, onInput, onResize, onC
       }
     }
 
-    requestAnimationFrame(() => {
+    const rafId = requestAnimationFrame(() => {
       if (cached) {
         cached.fitAddon.fit();
         handlerRefs.onResize(session.id, cached.terminal.cols, cached.terminal.rows);
@@ -126,7 +132,11 @@ export const TerminalPanel: React.FC<Props> = ({ session, onInput, onResize, onC
     const ro = new ResizeObserver(handleResize);
     ro.observe(cached.container);
 
-    return () => { window.removeEventListener('resize', handleResize); ro.disconnect(); };
+    return () => {
+      cancelAnimationFrame(rafId);
+      window.removeEventListener('resize', handleResize);
+      ro.disconnect();
+    };
   }, [session?.id]);
 
   useEffect(() => {
@@ -175,6 +185,8 @@ export function writeToTerminal(sessionId: string, data: string): void {
     let buffer = pendingDataBuffer.get(sessionId);
     if (!buffer) { buffer = []; pendingDataBuffer.set(sessionId, buffer); }
     buffer.push(data);
+    // Prevent unbounded memory growth for unopened sessions
+    while (buffer.length > PENDING_BUFFER_MAX) buffer.shift();
   }
 }
 

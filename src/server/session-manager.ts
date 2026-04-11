@@ -10,6 +10,7 @@ interface ManagedSession {
   outputBuffer: string[];
   outputBufferSize: number;
   promptBufferMark: number; // buffer index when prompt hook fires
+  pendingTimers: ReturnType<typeof setTimeout>[]; // track timers for cleanup
 }
 
 function stripAnsi(raw: string): string {
@@ -196,7 +197,7 @@ export class SessionManager {
       createdAt: now,
     };
 
-    this.sessions.set(id, { info, pty: ptyProcess, outputBuffer: [], outputBufferSize: 0, promptBufferMark: 0 });
+    this.sessions.set(id, { info, pty: ptyProcess, outputBuffer: [], outputBufferSize: 0, promptBufferMark: 0, pendingTimers: [] });
 
     ptyProcess.onData((data: string) => {
       // Append to ring buffer
@@ -222,8 +223,8 @@ export class SessionManager {
     }
 
     if (kind === 'claude') {
+      const managed = this.sessions.get(id)!;
       // Wait for interactive shell to absorb ConPTY init sequences, then launch claude
-      // 300ms debounce is safe with -NoProfile -NoLogo (very fast startup)
       let debounceTimer: ReturnType<typeof setTimeout> | null = null;
       const watcher = ptyProcess.onData(() => {
         if (debounceTimer) clearTimeout(debounceTimer);
@@ -233,10 +234,12 @@ export class SessionManager {
           if (s) s.pty.write(' claude\r\n');
         }, 300);
       });
-      setTimeout(() => {
+      const safetyTimer = setTimeout(() => {
         watcher.dispose();
         if (debounceTimer) clearTimeout(debounceTimer);
       }, 15000);
+      // Track timers for cleanup on session close
+      managed.pendingTimers.push(safetyTimer);
     }
 
     return { ...info };
@@ -272,6 +275,7 @@ export class SessionManager {
   closeSession(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
+    for (const t of session.pendingTimers) clearTimeout(t);
     session.pty.kill();
     this.sessions.delete(sessionId);
   }
@@ -304,7 +308,10 @@ export class SessionManager {
   }
 
   dispose(): void {
-    for (const s of this.sessions.values()) s.pty.kill();
+    for (const s of this.sessions.values()) {
+      for (const t of s.pendingTimers) clearTimeout(t);
+      s.pty.kill();
+    }
     this.sessions.clear();
   }
 }
