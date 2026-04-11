@@ -1,98 +1,106 @@
 import * as pty from 'node-pty';
 import { v4 as uuid } from 'uuid';
 import { SessionInfo } from './types.js';
-import { SilenceDetector } from './silence-detector.js';
+
+const OUTPUT_BUFFER_MAX = 8192; // ~8KB ring buffer per session
 
 interface ManagedSession {
   info: SessionInfo;
   pty: pty.IPty;
-  updateTimer: ReturnType<typeof setTimeout> | null;
-  idleTimer: ReturnType<typeof setTimeout> | null;  // auto-idle after no output
-  dirty: boolean;
+  outputBuffer: string[];
+  outputBufferSize: number;
 }
 
-function stripAnsi(str: string): string {
-  return str
-    .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')
-    .replace(/\x1b\][^\x07]*\x07/g, '')
-    .replace(/\x1b\[[\?]?[0-9;]*[hlm]/g, '')
-    .replace(/\x1b[()][0-9A-Za-z]/g, '')
-    .replace(/\x1b[\x20-\x2f]*[\x30-\x7e]/g, '')
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '')
-    .replace(/\r/g, '');
+function stripAnsi(raw: string): string {
+  return raw
+    .replace(/\x1B\[[\?>=!]?[0-9;]*[a-zA-Z]/g, '') // CSI sequences (incl. ?25h etc.)
+    .replace(/\x1B\][^\x07]*\x07/g, '')            // OSC (BEL terminated)
+    .replace(/\x1B\][^\x1B]*\x1B\\/g, '')          // OSC (ST terminated)
+    .replace(/\x1B[()][0-9A-Za-z]/g, '')           // charset selection
+    .replace(/\x1B[=>MDHNO78]/g, '')               // single-char escapes
+    .replace(/\r/g, '');                            // carriage returns
 }
 
-const UPDATE_THROTTLE_MS = 300;
-const IDLE_TIMEOUT_MS = 10000;
+/** Check if a string contains CJK (Chinese) characters */
+function hasCJK(text: string): boolean {
+  return /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/.test(text);
+}
 
-// Backend noise patterns — output matching these is NOT meaningful activity
-const BACKEND_NOISE_PATTERNS = [
-  // Claude Code status bar & UI chrome
-  /\[(Opus|Sonnet|Haiku|Claude)/,
-  /Context\s/,
-  /Usage\s/,
-  /resets in \d/,
-  /bypass permissions|allowed tools/i,
-  /CLAUDE\.md|hooks/,
-  /\d+ MCPs?\b/,
-  /remote-control/,
-  /Code in CLI or at/,
-  /Accessing workspace/,
-  /Claude Code\s+v\d/,
-  /trust this folder|Security guide/i,
-  /settings issue/,
-  /doctor for details/,
-  // Shell prompts & decorations
-  /^\s*[>❯$]\s*$/,
-  /^\s*PS [A-Z]:\\/,
-  /\w+@[\w-]+.*[~$]/,
-  /^\s*[━─═╭╮╰╯│]{3,}/,
-  // Switched proxy/subscription lines
-  /Switched to .*(Subscription|Proxy|API)/i,
-];
+/** Filter out terminal noise: status bars, prompts, plugin info, progress, etc. */
+function isNoiseLine(line: string): boolean {
+  if (/^\s*[>$#%]\s*$/.test(line)) return true;                          // bare prompts
+  if (/(?:pwsh|PowerShell)\s+at\s+\d/i.test(line)) return true;          // prompt timestamp
+  if (/lintian/.test(line) && !/["\u201c\u201d]/.test(line)) return true;   // user prompt line (incl. Powerline)
+  if (/PS\s+[A-Z]:\\/i.test(line)) return true;                          // PS C:\...>
+  if (/(?:CLAUDE\.md|MCP|hooks\s*[▸►])/i.test(line)) return true;        // Claude Code status bar
+  if (/(?:Opus|Sonnet|Haiku)\s+\d/i.test(line)) return true;             // model info
+  if (/Claude\s+(?:Code|Max)/i.test(line)) return true;                   // product name
+  if (/(?:bypass\s+permissions|shift\+tab)/i.test(line)) return true;     // UI hints
+  if (/(?:InlineView|Set-PSReadLineOption|ViewStyle)/i.test(line)) return true; // PS config
+  if (/(?:Context|Usage)\s+\d+%/i.test(line)) return true;               // context/usage bar
+  if (/(?:\d+%\s*\||\|.*[█▓░]|[█▓░]{2,})/.test(line)) return true;      // progress bars
+  if (/resets?\s+in\s+\d/i.test(line)) return true;                       // rate limit info
+  if (/^\s*[│├└─┌┐┘┤┬┴┼╭╮╰╯]+\s*$/.test(line)) return true;            // box drawing only
+  if (/^[\s\-=_*#·•]{3,}$/.test(line)) return true;                      // decorative lines
+  if (/Switched\s+to\s+.*Subscription/i.test(line)) return true;          // subscription switch
+  if (/Clash\s+Proxy/i.test(line)) return true;                           // proxy info
+  if (/^\s*(?:thinking|Quantiz|Wander)/i.test(line)) return true;         // streaming indicators
+  if (/History/i.test(line) && !hasCJK(line)) return true;                 // PSReadLine history
+  if (/^\s*[●○▸►▹▷◆◇]\s*(?:running|idle|waiting)/i.test(line)) return true; // status indicators
+  if (/Microsoft\s+Corporation/i.test(line)) return true;                  // PS copyright
+  if (/版权所有|保留所有权利|aka\.ms/i.test(line)) return true;             // PS copyright (zh-CN)
+  if (/安装最新的?\s*PowerShell/i.test(line)) return true;                 // PS upgrade prompt
+  if (/了解新功能和改进/i.test(line)) return true;                          // PS upgrade prompt (zh)
+  if (/https?:\/\/\S+/i.test(line) && !hasCJK(line.replace(/https?:\/\/\S+/g, ''))) return true; // URL-only lines
+  if (/^\s*clear\s*$/.test(line)) return true;                             // clear command
+  if (/^Windows\s+PowerShell/i.test(line)) return true;                    // PS startup header
+  if (/Set-PSRe/i.test(line)) return true;                                 // PSReadLine partial render
+  return false;
+}
+
+function extractPreview(buffer: string[], maxLen = 150): string {
+  const raw = buffer.join('');
+  const clean = stripAnsi(raw);
+  const lines = clean.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+
+  // Strategy 1: prefer lines with CJK (Chinese) content, skip noise
+  const cjkLines = lines.filter(l => hasCJK(l) && !isNoiseLine(l));
+  if (cjkLines.length > 0) {
+    const tail = cjkLines.slice(-3).join('\n');
+    return tail.length > maxLen ? tail.slice(-maxLen) : tail;
+  }
+
+  // Strategy 2: fallback to non-noise lines (for occasional English responses)
+  const cleanLines = lines.filter(l => !isNoiseLine(l));
+  if (cleanLines.length > 0) {
+    const tail = cleanLines.slice(-3).join('\n');
+    return tail.length > maxLen ? tail.slice(-maxLen) : tail;
+  }
+
+  // Strategy 3: last resort, raw last lines
+  const tail = lines.slice(-3).join('\n');
+  return tail.length > maxLen ? tail.slice(-maxLen) : tail;
+}
 
 export class SessionManager {
   private sessions = new Map<string, ManagedSession>();
-  private silenceDetector: SilenceDetector;
   private focusedSessionId: string | null = null;
-  private sessionCounter = 0;  // monotonic counter for unique titles
-  // Brief grace period to skip resize noise on switch (1 second)
-  private recentlyUnfocused = new Set<string>();
-  private graceTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private static GRACE_MS = 1000;
+  private sessionCounter = 0;
 
   // Callbacks
   onData: (sessionId: string, data: string) => void = () => {};
-  onSessionUpdated: (session: SessionInfo) => void = () => {};
-  onSessionClosed: (sessionId: string) => void = () => {};  // notify frontend on pty exit
-
-  constructor() {
-    this.silenceDetector = new SilenceDetector((sessionId) => {
-      const session = this.sessions.get(sessionId);
-      if (!session) return;
-
-      session.info.status = 'idle';
-
-      if (sessionId !== this.focusedSessionId) {
-        session.info.unreadCount++;
-      }
-
-      // Broadcast idle status — frontend will extract preview and update time
-      this.onSessionUpdated({ ...session.info });
-    });
-  }
+  onSessionClosed: (sessionId: string) => void = () => {};
 
   createSession(): SessionInfo {
     const id = uuid();
     this.sessionCounter++;
-    const shell = 'powershell.exe';
 
-    const ptyProcess = pty.spawn(shell, [], {
+    const ptyProcess = pty.spawn('powershell.exe', [], {
       name: 'xterm-256color',
       cols: 120,
       rows: 30,
       cwd: process.env.USERPROFILE || process.env.HOME || '.',
-      env: process.env as Record<string, string>,
+      env: { ...process.env, CLAUDE_HUB_SESSION_ID: id } as Record<string, string>,
       useConpty: true,
       conptyInheritCursor: true,
     });
@@ -102,179 +110,85 @@ export class SessionManager {
       id,
       title: `PowerShell ${this.sessionCounter}`,
       status: 'idle',
-      lastActivityTime: now,
       lastMessageTime: now,
       lastOutputPreview: '',
       unreadCount: 0,
       createdAt: now,
     };
 
-    const managed: ManagedSession = {
-      info,
-      pty: ptyProcess,
-      updateTimer: null,
-      idleTimer: null,
-      dirty: false,
-    };
+    this.sessions.set(id, { info, pty: ptyProcess, outputBuffer: [], outputBufferSize: 0 });
 
-    this.sessions.set(id, managed);
-
-    // Brief grace for startup noise
-    this.recentlyUnfocused.add(id);
-    this.graceTimers.set(id, setTimeout(() => {
-      this.recentlyUnfocused.delete(id);
-      this.graceTimers.delete(id);
-    }, SessionManager.GRACE_MS));
-
-    // Listen for pty output — must be registered BEFORE any writes
     ptyProcess.onData((data: string) => {
-      this.handlePtyOutput(id, data);
+      // Append to ring buffer
+      const session = this.sessions.get(id);
+      if (session) {
+        session.outputBuffer.push(data);
+        session.outputBufferSize += data.length;
+        // Trim oldest chunks when over limit
+        while (session.outputBufferSize > OUTPUT_BUFFER_MAX && session.outputBuffer.length > 1) {
+          const removed = session.outputBuffer.shift()!;
+          session.outputBufferSize -= removed.length;
+        }
+      }
+      this.onData(id, data);
     });
 
-    ptyProcess.onExit(() => {
-      this.handlePtyExit(id);
-    });
+    ptyProcess.onExit(() => { this.sessions.delete(id); this.onSessionClosed(id); });
 
-    // Silent setup: disable PSReadLine ListView + add fast-claude alias, then clear
-    ptyProcess.write([
-      'Set-PSReadLineOption -PredictionViewStyle InlineView 2>$null',
-      'clear',
-    ].join('; ') + '\r\n');
-
+    ptyProcess.write('Set-PSReadLineOption -PredictionViewStyle InlineView 2>$null; clear\r\n');
     return { ...info };
   }
 
-  private handlePtyOutput(sessionId: string, data: string): void {
+  handleStopHook(sessionId: string): SessionInfo | undefined {
     const session = this.sessions.get(sessionId);
-    if (!session) return;
+    if (!session) return undefined;
 
-    // Always forward terminal data to client (rendering must see everything)
-    this.onData(sessionId, data);
+    session.info.lastMessageTime = Date.now();
+    session.info.status = 'idle';
+    session.info.lastOutputPreview = extractPreview(session.outputBuffer);
 
-    // Check if this output contains visible text (not just control sequences)
-    const cleanData = stripAnsi(data);
-    const visibleText = cleanData.replace(/[\s\r\n]/g, '');
-
-    // Ignore pure control sequence output (cursor blink, PSReadLine refresh, etc.)
-    if (visibleText.length === 0) return;
-
-    // Check if visible text is just noise (status bar, prompt, config info)
-    const trimmedLines = cleanData.split('\n').filter(l => l.trim().length > 0);
-    const isNoise = trimmedLines.length > 0 && trimmedLines.every(line =>
-      BACKEND_NOISE_PATTERNS.some(p => p.test(line.trim()))
-    );
-
-    // Noise output: don't count as activity, don't trigger idle timer reset
-    if (isNoise) return;
-
-    session.info.lastActivityTime = Date.now();
-    session.info.status = 'running';
-
-    // Reset idle timer — after IDLE_TIMEOUT_MS of no meaningful output, mark as idle
-    if (session.idleTimer) clearTimeout(session.idleTimer);
-    session.idleTimer = setTimeout(() => {
-      session.idleTimer = null;
-      session.info.status = 'idle';
-      // Don't update lastMessageTime here — it's updated via updatePreview
-      // only when the actual preview content changes
-      this.onSessionUpdated({ ...session.info });
-    }, IDLE_TIMEOUT_MS);
-
-    // Only track silence detection for background sessions (not focused, not in grace)
-    const isFocused = sessionId === this.focusedSessionId;
-    if (!isFocused && !this.recentlyUnfocused.has(sessionId)) {
-      this.silenceDetector.recordActivity(sessionId);
+    if (sessionId !== this.focusedSessionId) {
+      session.info.unreadCount++;
     }
 
-    // Throttle session-updated broadcasts
-    session.dirty = true;
-    if (!session.updateTimer) {
-      session.updateTimer = setTimeout(() => {
-        session.updateTimer = null;
-        if (session.dirty) {
-          session.dirty = false;
-          this.onSessionUpdated({ ...session.info });
-        }
-      }, UPDATE_THROTTLE_MS);
-    }
+    return { ...session.info };
   }
 
-  private handlePtyExit(sessionId: string): void {
+  handlePromptSubmitHook(sessionId: string): SessionInfo | undefined {
     const session = this.sessions.get(sessionId);
-    if (session?.updateTimer) clearTimeout(session.updateTimer);
-    if (session?.idleTimer) clearTimeout(session.idleTimer);
-    this.silenceDetector.remove(sessionId);
-    this.sessions.delete(sessionId);
-    // Notify frontend that this session is gone
-    this.onSessionClosed(sessionId);
+    if (!session) return undefined;
+
+    session.info.status = 'running';
+
+    return { ...session.info };
   }
 
   closeSession(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
-
-    if (session.updateTimer) clearTimeout(session.updateTimer);
-    if (session.idleTimer) clearTimeout(session.idleTimer);
-    this.silenceDetector.remove(sessionId);
     session.pty.kill();
     this.sessions.delete(sessionId);
   }
 
   writeToSession(sessionId: string, data: string): void {
-    const session = this.sessions.get(sessionId);
-    if (session) {
-      session.pty.write(data);
-    }
+    this.sessions.get(sessionId)?.pty.write(data);
   }
 
   resizeSession(sessionId: string, cols: number, rows: number): void {
-    const session = this.sessions.get(sessionId);
-    if (session) {
-      session.pty.resize(cols, rows);
-    }
+    this.sessions.get(sessionId)?.pty.resize(cols, rows);
   }
 
   setFocusedSession(sessionId: string): void {
-    const oldFocused = this.focusedSessionId;
-
-    // Cancel pending silence timers
-    if (oldFocused) this.silenceDetector.remove(oldFocused);
-    this.silenceDetector.remove(sessionId);
-
-    // Brief grace for old focused session (skip resize noise)
-    if (oldFocused && oldFocused !== sessionId) {
-      const old = this.graceTimers.get(oldFocused);
-      if (old) clearTimeout(old);
-      this.recentlyUnfocused.add(oldFocused);
-      this.graceTimers.set(oldFocused, setTimeout(() => {
-        this.recentlyUnfocused.delete(oldFocused);
-        this.graceTimers.delete(oldFocused);
-      }, SessionManager.GRACE_MS));
-    }
-
-    // New focused session exits grace immediately
-    if (this.recentlyUnfocused.has(sessionId)) {
-      this.recentlyUnfocused.delete(sessionId);
-      const t = this.graceTimers.get(sessionId);
-      if (t) { clearTimeout(t); this.graceTimers.delete(sessionId); }
-    }
-
     this.focusedSessionId = sessionId;
-  }
-
-  updatePreview(sessionId: string, preview: string): void {
-    const session = this.sessions.get(sessionId);
-    if (!session) return;
-    // Only store — NO broadcast. Frontend handles UI via updateLocalPreview.
-    // This prevents cascade: updatePreview → broadcast → re-render → extract → updatePreview
-    session.info.lastOutputPreview = preview;
   }
 
   markRead(sessionId: string): void {
     const session = this.sessions.get(sessionId);
-    if (!session) return;
-    // Only store — NO broadcast. Frontend already clears badge locally.
-    session.info.unreadCount = 0;
+    if (session) session.info.unreadCount = 0;
+  }
+
+  getSession(sessionId: string): SessionInfo | undefined {
+    return this.sessions.get(sessionId)?.info;
   }
 
   getAllSessions(): SessionInfo[] {
@@ -284,15 +198,7 @@ export class SessionManager {
   }
 
   dispose(): void {
-    this.silenceDetector.dispose();
-    for (const t of this.graceTimers.values()) clearTimeout(t);
-    this.graceTimers.clear();
-    this.recentlyUnfocused.clear();
-    for (const session of this.sessions.values()) {
-      if (session.updateTimer) clearTimeout(session.updateTimer);
-      if (session.idleTimer) clearTimeout(session.idleTimer);
-      session.pty.kill();
-    }
+    for (const s of this.sessions.values()) s.pty.kill();
     this.sessions.clear();
   }
 }

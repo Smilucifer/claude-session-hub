@@ -10,7 +10,9 @@ export function useWebSocket(onMessage: MessageHandler) {
   useEffect(() => {
     // In dev mode (Vite on 5173), connect directly to backend on 3456
     // In production, backend serves both static files and WebSocket on same port
-    const host = window.location.port === '5173' || window.location.port === '5174'
+    const port = parseInt(window.location.port || '0');
+    const isDev = port >= 5173 && port <= 5180;
+    const host = isDev
       ? `${window.location.hostname}:3456`
       : window.location.host;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';

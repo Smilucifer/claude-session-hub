@@ -19,33 +19,51 @@ const clients = new Set<WebSocket>();
 function broadcast(msg: ServerMessage): void {
   const data = JSON.stringify(msg);
   for (const client of clients) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(data);
-    }
+    if (client.readyState === WebSocket.OPEN) client.send(data);
   }
 }
 
-// Wire up session manager callbacks
 sessionManager.onData = (sessionId, data) => {
   broadcast({ type: 'terminal-data', sessionId, data });
 };
 
-sessionManager.onSessionUpdated = (session) => {
-  broadcast({ type: 'session-updated', session });
-};
-
-// Handle pty process exit — notify all clients
 sessionManager.onSessionClosed = (sessionId) => {
   broadcast({ type: 'session-closed', sessionId });
 };
 
-// WebSocket connection handling
+// --- Hook HTTP endpoints ---
+
+app.use(express.json());
+
+app.post('/api/hook/stop', (req, res) => {
+  const { sessionId } = req.body;
+  if (!sessionId) { res.status(400).json({ error: 'missing sessionId' }); return; }
+  const session = sessionManager.handleStopHook(sessionId);
+  if (!session) { res.status(404).json({ error: 'session not found' }); return; }
+  broadcast({ type: 'session-updated', session });
+  res.json({ ok: true });
+});
+
+app.post('/api/hook/prompt', (req, res) => {
+  const { sessionId } = req.body;
+  if (!sessionId) { res.status(400).json({ error: 'missing sessionId' }); return; }
+  const session = sessionManager.handlePromptSubmitHook(sessionId);
+  if (!session) { res.status(404).json({ error: 'session not found' }); return; }
+  broadcast({ type: 'session-updated', session });
+  res.json({ ok: true });
+});
+
+// Debug: list sessions via HTTP (useful for testing)
+app.get('/api/sessions', (_req, res) => {
+  res.json(sessionManager.getAllSessions());
+});
+
+
+// --- WebSocket ---
+
 wss.on('connection', (ws) => {
   clients.add(ws);
-
-  // Send current sessions list
-  const sessions = sessionManager.getAllSessions();
-  ws.send(JSON.stringify({ type: 'sessions', sessions } satisfies ServerMessage));
+  ws.send(JSON.stringify({ type: 'sessions', sessions: sessionManager.getAllSessions() } satisfies ServerMessage));
 
   ws.on('message', (raw) => {
     try {
@@ -62,70 +80,43 @@ wss.on('connection', (ws) => {
           broadcast({ type: 'session-closed', sessionId: msg.sessionId });
           break;
         }
-        case 'terminal-input': {
+        case 'terminal-input':
           sessionManager.writeToSession(msg.sessionId, msg.data);
           break;
-        }
-        case 'terminal-resize': {
+        case 'terminal-resize':
           sessionManager.resizeSession(msg.sessionId, msg.cols, msg.rows);
           break;
-        }
         case 'focus-session': {
           sessionManager.setFocusedSession(msg.sessionId);
           sessionManager.markRead(msg.sessionId);
+          const focused = sessionManager.getSession(msg.sessionId);
+          if (focused) broadcast({ type: 'session-updated', session: focused });
           break;
         }
         case 'mark-read': {
           sessionManager.markRead(msg.sessionId);
-          break;
-        }
-        case 'update-preview': {
-          sessionManager.updatePreview(msg.sessionId, msg.preview);
+          const marked = sessionManager.getSession(msg.sessionId);
+          if (marked) broadcast({ type: 'session-updated', session: marked });
           break;
         }
       }
-    } catch (e) {
+    } catch {
       ws.send(JSON.stringify({ type: 'error', message: 'Invalid message' } satisfies ServerMessage));
     }
   });
 
-  ws.on('close', () => {
-    clients.delete(ws);
-  });
+  ws.on('close', () => { clients.delete(ws); });
 });
 
-// Serve static files (built client) in production
+// --- Static files ---
+
 const clientDist = path.resolve(__dirname, '../client');
 app.use(express.static(clientDist));
-app.get('*', (_req, res) => {
-  res.sendFile(path.join(clientDist, 'index.html'));
+app.get('*', (_req, res) => { res.sendFile(path.join(clientDist, 'index.html')); });
+
+server.listen(PORT, () => {
+  console.log(`Claude Session Hub running at http://localhost:${PORT}`);
 });
 
-// Start server
-server.listen(PORT, async () => {
-  const url = `http://localhost:${PORT}`;
-  console.log(`Claude Session Hub running at ${url}`);
-
-  // Auto-open browser only in production (not during Vite dev)
-  if (!process.env.npm_lifecycle_event?.includes('dev') && process.argv[1]?.includes('dist')) {
-    try {
-      const open = (await import('open')).default;
-      await open(url);
-    } catch {
-      console.log(`Open ${url} in your browser.`);
-    }
-  }
-});
-
-// Graceful shutdown
-process.on('SIGINT', () => {
-  sessionManager.dispose();
-  server.close();
-  process.exit(0);
-});
-
-process.on('SIGTERM', () => {
-  sessionManager.dispose();
-  server.close();
-  process.exit(0);
-});
+process.on('SIGINT', () => { sessionManager.dispose(); server.close(); process.exit(0); });
+process.on('SIGTERM', () => { sessionManager.dispose(); server.close(); process.exit(0); });
