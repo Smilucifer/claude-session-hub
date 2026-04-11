@@ -9,6 +9,7 @@ interface ManagedSession {
   pty: pty.IPty;
   outputBuffer: string[];
   outputBufferSize: number;
+  promptBufferMark: number; // buffer index when prompt hook fires
 }
 
 function stripAnsi(raw: string): string {
@@ -18,21 +19,44 @@ function stripAnsi(raw: string): string {
     .replace(/\x1B\][^\x1B]*\x1B\\/g, '')          // OSC (ST terminated)
     .replace(/\x1B[()][0-9A-Za-z]/g, '')           // charset selection
     .replace(/\x1B[=>MDHNO78]/g, '')               // single-char escapes
-    .replace(/\r/g, '');                            // carriage returns
+    .replace(/\x9B[0-9;]*[A-Za-z]/g, '')           // 8-bit CSI (0x9B prefix)
+    .replace(/\[([0-9;]+)?[ABCDHJKfm]/g, '')       // orphaned CSI fragments (lost ESC prefix)
+    .replace(/\r/g, '')                             // carriage returns
+    .replace(/[\uE000-\uF8FF]/g, '')               // Private Use Area (Nerd Font/Powerline)
+    .replace(/[\u2500-\u257F]/g, '')                // Box drawing characters (─│┌┐└┘├┤┬┴┼)
+    .replace(/[\u2300-\u23FF]/g, '')                // Misc Technical (⎿⌘ etc.)
+    .replace(/[\u2700-\u27BF]/g, '')                // Dingbats (❯❮✶✢ etc.)
+    .replace(/[\u2800-\u28FF]/g, '')                // Braille patterns (spinners)
+    .replace(/[\u2190-\u21FF]/g, '')                // Arrows (←→↑↓)
+    .replace(/[●○◆◇▸►▹▷★☆✦✧·•※✱✲✳✴✵✶✷✸✹✺✻✼✽✾✿❀❁❂❃❄❅❆❇❈❉❊❋]/g, '') // decorative symbols
+    .replace(/\uFFFD/g, '')                         // Unicode replacement character
+    .replace(/[?]{3,}/g, '')                        // garbled question mark runs
+    .replace(/[ ]{3,}/g, ' ');                      // collapse excessive spaces
 }
 
-/** Check if a string contains CJK (Chinese) characters */
+/** Extract meaningful CJK text segments from a line (Chinese chars + punctuation) */
+function extractCJKSegments(text: string): string {
+  // Match runs of CJK characters, Chinese/fullwidth punctuation, and common marks
+  const cjkRuns = text.match(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u3000-\u303f\uff01-\uff5e！？。，、；：""''（）【】\u2026]+/g);
+  if (!cjkRuns) return '';
+  // Only keep runs that contain at least 2 actual CJK characters
+  const meaningful = cjkRuns.filter(r => (r.match(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/g) || []).length >= 2);
+  return meaningful.join(' ');
+}
+
+/** Check if a string contains meaningful CJK content (≥2 consecutive CJK chars) */
 function hasCJK(text: string): boolean {
-  return /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/.test(text);
+  return /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]{2,}/.test(text);
 }
 
 /** Filter out terminal noise: status bars, prompts, plugin info, progress, etc. */
 function isNoiseLine(line: string): boolean {
+  if (line.length > 300) return true;                                       // extremely long lines (streaming spam)
   if (/^\s*[>$#%]\s*$/.test(line)) return true;                          // bare prompts
   if (/(?:pwsh|PowerShell)\s+at\s+\d/i.test(line)) return true;          // prompt timestamp
   if (/lintian/.test(line) && !/["\u201c\u201d]/.test(line)) return true;   // user prompt line (incl. Powerline)
   if (/PS\s+[A-Z]:\\/i.test(line)) return true;                          // PS C:\...>
-  if (/(?:CLAUDE\.md|MCP|hooks\s*[▸►])/i.test(line)) return true;        // Claude Code status bar
+  if (/(?:CLAUDE\.md|MCP|hooks)/i.test(line)) return true;                // Claude Code status bar
   if (/(?:Opus|Sonnet|Haiku)\s+\d/i.test(line)) return true;             // model info
   if (/Claude\s+(?:Code|Max)/i.test(line)) return true;                   // product name
   if (/(?:bypass\s+permissions|shift\+tab)/i.test(line)) return true;     // UI hints
@@ -44,7 +68,10 @@ function isNoiseLine(line: string): boolean {
   if (/^[\s\-=_*#·•]{3,}$/.test(line)) return true;                      // decorative lines
   if (/Switched\s+to\s+.*Subscription/i.test(line)) return true;          // subscription switch
   if (/Clash\s+Proxy/i.test(line)) return true;                           // proxy info
-  if (/^\s*(?:thinking|Quantiz|Wander)/i.test(line)) return true;         // streaming indicators
+  if (/\w+ing\s*(?:\.{2,}|…)/i.test(line)) return true;                   // streaming indicators (Simmering..., Brewing…, etc.)
+  if (/\w+ing[^a-zA-Z].*\w+ing[^a-zA-Z]/i.test(line)) return true;      // repeated streaming patterns
+  if (/(?:running\s+stop\s+hook|stop\s+hook)/i.test(line)) return true;   // hook execution messages
+  if (/Tip:/i.test(line) && !hasCJK(line)) return true;                    // Claude Code tips (any format)
   if (/History/i.test(line) && !hasCJK(line)) return true;                 // PSReadLine history
   if (/^\s*[●○▸►▹▷◆◇]\s*(?:running|idle|waiting)/i.test(line)) return true; // status indicators
   if (/Microsoft\s+Corporation/i.test(line)) return true;                  // PS copyright
@@ -55,31 +82,55 @@ function isNoiseLine(line: string): boolean {
   if (/^\s*clear\s*$/.test(line)) return true;                             // clear command
   if (/^Windows\s+PowerShell/i.test(line)) return true;                    // PS startup header
   if (/Set-PSRe/i.test(line)) return true;                                 // PSReadLine partial render
+  if (/^[?\s*]+$/.test(line)) return true;                                 // garbled question marks only
   return false;
 }
 
-function extractPreview(buffer: string[], maxLen = 150): string {
-  const raw = buffer.join('');
-  const clean = stripAnsi(raw);
-  const lines = clean.split('\n').map(l => l.trim()).filter(l => l.length > 0);
 
-  // Strategy 1: prefer lines with CJK (Chinese) content, skip noise
-  const cjkLines = lines.filter(l => hasCJK(l) && !isNoiseLine(l));
-  if (cjkLines.length > 0) {
-    const tail = cjkLines.slice(-3).join('\n');
-    return tail.length > maxLen ? tail.slice(-maxLen) : tail;
-  }
+function extractCJKFromText(text: string, maxLen: number): string {
+  // Extract all CJK segments from the entire text (ignoring line boundaries)
+  const segments = extractCJKSegments(text);
+  if (!segments) return '';
+  // Split by whitespace (extractCJKSegments joins multiple runs with space)
+  const parts = segments.split(/\s+/).filter(s => s.length >= 2);
+  // Deduplicate consecutive identical segments
+  const deduped = parts.filter((s, i) => i === 0 || s !== parts[i - 1]);
+  const result = deduped.slice(-5).join(' ');
+  return result.length > maxLen ? result.slice(-maxLen) : result;
+}
 
-  // Strategy 2: fallback to non-noise lines (for occasional English responses)
-  const cleanLines = lines.filter(l => !isNoiseLine(l));
+function extractEnglishFromLines(lines: string[], maxLen: number): string {
+  const cleanLines = lines.filter(l => !isNoiseLine(l) && l.length >= 5);
   if (cleanLines.length > 0) {
-    const tail = cleanLines.slice(-3).join('\n');
+    const tail = cleanLines.slice(-3).map(l => l.slice(0, 80)).join('\n');
     return tail.length > maxLen ? tail.slice(-maxLen) : tail;
   }
+  return '';
+}
 
-  // Strategy 3: last resort, raw last lines
-  const tail = lines.slice(-3).join('\n');
-  return tail.length > maxLen ? tail.slice(-maxLen) : tail;
+function extractPreview(buffer: string[], startIndex: number, maxLen = 150): string {
+  // Try hook window first (prompt → stop), then fall back to full buffer
+  const ranges = [
+    startIndex > 0 && startIndex < buffer.length ? buffer.slice(startIndex) : null,
+    buffer,
+  ];
+
+  for (const range of ranges) {
+    if (!range) continue;
+    const raw = range.join('');
+    const clean = stripAnsi(raw);
+
+    // Strategy 1: extract CJK directly from full text (no line splitting needed)
+    const cjk = extractCJKFromText(clean, maxLen);
+    if (cjk) return cjk;
+
+    // Strategy 2: fallback to non-noise English lines
+    const lines = clean.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+    const eng = extractEnglishFromLines(lines, maxLen);
+    if (eng) return eng;
+  }
+
+  return '';
 }
 
 export class SessionManager {
@@ -145,7 +196,7 @@ export class SessionManager {
       createdAt: now,
     };
 
-    this.sessions.set(id, { info, pty: ptyProcess, outputBuffer: [], outputBufferSize: 0 });
+    this.sessions.set(id, { info, pty: ptyProcess, outputBuffer: [], outputBufferSize: 0, promptBufferMark: 0 });
 
     ptyProcess.onData((data: string) => {
       // Append to ring buffer
@@ -157,6 +208,8 @@ export class SessionManager {
         while (session.outputBufferSize > OUTPUT_BUFFER_MAX && session.outputBuffer.length > 1) {
           const removed = session.outputBuffer.shift()!;
           session.outputBufferSize -= removed.length;
+          // Adjust promptBufferMark when buffer entries are trimmed
+          if (session.promptBufferMark > 0) session.promptBufferMark--;
         }
       }
       this.onData(id, data);
@@ -195,7 +248,8 @@ export class SessionManager {
 
     session.info.lastMessageTime = Date.now();
     session.info.status = 'idle';
-    session.info.lastOutputPreview = extractPreview(session.outputBuffer);
+    // Extract preview only from the prompt→stop window
+    session.info.lastOutputPreview = extractPreview(session.outputBuffer, session.promptBufferMark);
 
     if (sessionId !== this.focusedSessionId) {
       session.info.unreadCount++;
@@ -209,6 +263,8 @@ export class SessionManager {
     if (!session) return undefined;
 
     session.info.status = 'running';
+    // Mark current buffer position as the start of this conversation turn
+    session.promptBufferMark = session.outputBuffer.length;
 
     return { ...session.info };
   }
