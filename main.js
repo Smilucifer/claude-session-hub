@@ -1,6 +1,5 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
-const http = require('http');
 const { SessionManager } = require('./core/session-manager.js');
 
 let mainWindow;
@@ -59,14 +58,10 @@ ipcMain.on('terminal-resize', (_e, { sessionId, cols, rows }) => {
 ipcMain.on('focus-session', (_e, { sessionId }) => {
   sessionManager.setFocusedSession(sessionId);
   sessionManager.markRead(sessionId);
-  const session = sessionManager.getSession(sessionId);
-  if (session) sendToRenderer('session-updated', { session });
 });
 
 ipcMain.on('mark-read', (_e, { sessionId }) => {
   sessionManager.markRead(sessionId);
-  const session = sessionManager.getSession(sessionId);
-  if (session) sendToRenderer('session-updated', { session });
 });
 
 ipcMain.handle('rename-session', (_e, { sessionId, title }) => {
@@ -79,42 +74,11 @@ ipcMain.handle('get-sessions', () => {
   return sessionManager.getAllSessions();
 });
 
-const hookServer = http.createServer((req, res) => {
-  if (req.method !== 'POST') { res.writeHead(404); res.end(); return; }
-
-  let body = '';
-  req.on('data', chunk => { body += chunk; });
-  req.on('end', () => {
-    try {
-      const { sessionId } = JSON.parse(body);
-      if (!sessionId) { res.writeHead(400); res.end('missing sessionId'); return; }
-
-      let session;
-      if (req.url === '/api/hook/stop') {
-        session = sessionManager.handleStopHook(sessionId);
-      } else if (req.url === '/api/hook/prompt') {
-        session = sessionManager.handlePromptSubmitHook(sessionId);
-      }
-
-      if (!session) { res.writeHead(404); res.end('session not found'); return; }
-      sendToRenderer('session-updated', { session });
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true }));
-    } catch {
-      res.writeHead(400); res.end('invalid json');
-    }
-  });
-});
-
 app.whenReady().then(() => {
-  hookServer.listen(3456, () => {
-    console.log('Hook server on :3456');
-  });
   createWindow();
 });
 
 app.on('window-all-closed', () => {
   sessionManager.dispose();
-  hookServer.close();
   app.quit();
 });

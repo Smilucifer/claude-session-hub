@@ -213,10 +213,82 @@ for (const btn of document.querySelectorAll('.new-session-option')) {
   });
 }
 
+// --- Terminal buffer reading (replaces hook-based extraction) ---
+
+const silenceTimers = new Map(); // sessionId -> timer
+const SILENCE_MS = 500; // consider output "done" after 500ms of silence
+
+function readTerminalPreview(sessionId) {
+  const cached = terminalCache.get(sessionId);
+  const session = sessions.get(sessionId);
+  if (!cached || !session || !cached.opened) return;
+
+  const buf = cached.terminal.buffer.active;
+  const lines = [];
+  for (let i = 0; i < buf.length; i++) {
+    const line = buf.getLine(i);
+    if (line) lines.push(line.translateToString(true).trim());
+  }
+
+  // Extract last meaningful line (skip empty, status bars, prompts, UI chrome)
+  let preview = '';
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i];
+    if (!l || l.length < 2) continue;
+    if (/^[>❯›$#%]/.test(l) && l.length < 5) continue;          // bare prompts
+    if (/\b(?:Context|Usage)\b.*\d+%/i.test(l)) continue;       // status bar
+    if (/CLAUDE\.md|MCPs|hooks|bypass/i.test(l)) continue;       // status bar
+    if (/\[(?:Opus|Sonnet|Haiku)/i.test(l)) continue;            // model info
+    if (/resets?\s+in\s+\d/i.test(l)) continue;                  // rate limit
+    if (/Claude\s+(?:Code|Max)/i.test(l)) continue;              // banner/product
+    if (/shift\+tab|permissions\s+on/i.test(l)) continue;        // UI hints
+    if (/\/effort|\/model|\/compact/i.test(l)) continue;         // slash commands in status
+    if (/^\s*PS\s+[A-Z]:\\/i.test(l)) continue;                  // PS prompt
+    if (/^C:\\Users\\/i.test(l)) continue;                        // path line in banner
+    if (/lintian/i.test(l) && l.length < 30) continue;           // username in status
+    if (/\w+ing\s*(?:\.{2,}|…)/i.test(l)) continue;              // streaming indicators
+    preview = l;
+    break;
+  }
+
+  if (preview && preview !== session.lastOutputPreview) {
+    session.lastOutputPreview = preview;
+    session.lastMessageTime = Date.now();
+    renderSessionList();
+  }
+}
+
+function onTerminalOutput(sessionId) {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+
+  // Mark as running while output is flowing
+  if (session.status !== 'running') {
+    session.status = 'running';
+    renderSessionList();
+  }
+
+  // Reset silence timer
+  if (silenceTimers.has(sessionId)) clearTimeout(silenceTimers.get(sessionId));
+  silenceTimers.set(sessionId, setTimeout(() => {
+    silenceTimers.delete(sessionId);
+
+    // Output stopped → idle + read preview
+    if (session.status !== 'idle') {
+      session.status = 'idle';
+      if (sessionId !== activeSessionId) {
+        session.unreadCount = (session.unreadCount || 0) + 1;
+      }
+    }
+    readTerminalPreview(sessionId);
+  }, SILENCE_MS));
+}
+
 // --- IPC event handlers ---
 ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
   const cached = terminalCache.get(sessionId);
   if (cached) cached.terminal.write(data);
+  onTerminalOutput(sessionId);
 });
 
 ipcRenderer.on('session-created', (_e, { session }) => {
@@ -248,7 +320,9 @@ ipcRenderer.on('session-closed', (_e, { sessionId }) => {
 
 ipcRenderer.on('session-updated', (_e, { session }) => {
   if (!sessions.has(session.id)) return;
-  sessions.set(session.id, session);
+  const local = sessions.get(session.id);
+  // Merge server updates but keep local preview/status (managed by renderer)
+  local.title = session.title;
   renderSessionList();
 });
 
