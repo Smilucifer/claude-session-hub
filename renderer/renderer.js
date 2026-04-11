@@ -192,6 +192,8 @@ function startRename(sessionId, titleSpan) {
 // --- Session selection ---
 function selectSession(id) {
   activeSessionId = id;
+  const session = sessions.get(id);
+  if (session) session.unreadCount = 0;
   ipcRenderer.send('focus-session', { sessionId: id });
   renderSessionList();
   showTerminal(id);
