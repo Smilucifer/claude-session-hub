@@ -14,6 +14,7 @@ const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 
 const sessionManager = new SessionManager();
+sessionManager.init(); // Pre-warm PowerShell pool for fast Claude session creation
 const clients = new Set<WebSocket>();
 
 function broadcast(msg: ServerMessage): void {
@@ -57,6 +58,7 @@ app.post('/api/hook/prompt', (req, res) => {
 app.get('/api/sessions', (_req, res) => {
   res.json(sessionManager.getAllSessions());
 });
+
 
 
 

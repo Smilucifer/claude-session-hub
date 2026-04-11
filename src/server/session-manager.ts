@@ -134,15 +134,76 @@ function extractPreview(buffer: string[], startIndex: number, maxLen = 150): str
   return '';
 }
 
+interface WarmShell {
+  pty: pty.IPty;
+  ready: boolean;      // true once debounce confirms shell is interactive
+  env: Record<string, string>;
+}
+
 export class SessionManager {
   private sessions = new Map<string, ManagedSession>();
   private focusedSessionId: string | null = null;
   private claudeCounter = 0;
   private psCounter = 0;
+  private warmPool: WarmShell[] = [];
+  private readonly WARM_POOL_SIZE = 1;
 
   // Callbacks
   onData: (sessionId: string, data: string) => void = () => {};
   onSessionClosed: (sessionId: string) => void = () => {};
+
+  /** Pre-warm a PowerShell process for fast Claude session creation */
+  private warmUp(): void {
+    if (this.warmPool.length >= this.WARM_POOL_SIZE) return;
+
+    const env: Record<string, string> = {
+      ...(process.env as Record<string, string>),
+      ANTHROPIC_BASE_URL: '',
+      ANTHROPIC_AUTH_TOKEN: '',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: '',
+      HTTP_PROXY: 'http://127.0.0.1:7890',
+      HTTPS_PROXY: 'http://127.0.0.1:7890',
+      NO_PROXY: 'localhost,127.0.0.1',
+    };
+
+    const p = pty.spawn('powershell.exe', ['-NoProfile', '-NoLogo'], {
+      name: 'xterm-256color',
+      cols: 120,
+      rows: 30,
+      cwd: process.env.USERPROFILE || process.env.HOME || '.',
+      env,
+      useConpty: true,
+      conptyInheritCursor: true,
+    });
+
+    const shell: WarmShell = { pty: p, ready: false, env };
+
+    // Detect when shell is ready via debounce
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const watcher = p.onData(() => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { watcher.dispose(); shell.ready = true; }, 100);
+    });
+    // Safety: mark ready after 5s regardless
+    setTimeout(() => { watcher.dispose(); shell.ready = true; }, 5000);
+
+    this.warmPool.push(shell);
+  }
+
+  /** Take a ready shell from the pool, or return null */
+  private takeWarm(): WarmShell | null {
+    const idx = this.warmPool.findIndex(s => s.ready);
+    if (idx === -1) return null;
+    const shell = this.warmPool.splice(idx, 1)[0];
+    // Replenish pool asynchronously
+    setTimeout(() => this.warmUp(), 100);
+    return shell;
+  }
+
+  /** Call after server starts to pre-warm the pool */
+  init(): void {
+    this.warmUp();
+  }
 
   createSession(kind: SessionKind = 'powershell'): SessionInfo {
     const id = uuid();
@@ -150,40 +211,53 @@ export class SessionManager {
       ? `Claude ${++this.claudeCounter}`
       : `PowerShell ${++this.psCounter}`;
 
-    const sessionEnv: Record<string, string> = {
-      ...(process.env as Record<string, string>),
-      CLAUDE_HUB_SESSION_ID: id,
-    };
+    let ptyProcess: pty.IPty;
+    let usedWarm = false;
 
     if (kind === 'claude') {
-      // Set proxy and clear third-party API settings at process level
-      // (equivalent to claude-pro, but without depending on profile load timing)
-      sessionEnv.ANTHROPIC_BASE_URL = '';
-      sessionEnv.ANTHROPIC_AUTH_TOKEN = '';
-      sessionEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL = '';
-      sessionEnv.HTTP_PROXY = 'http://127.0.0.1:7890';
-      sessionEnv.HTTPS_PROXY = 'http://127.0.0.1:7890';
-      // Ensure hook scripts can reach localhost hub without going through Clash
-      sessionEnv.NO_PROXY = 'localhost,127.0.0.1';
+      // Try to use a pre-warmed shell (instant — no spawn, no debounce)
+      const warm = this.takeWarm();
+      if (warm) {
+        ptyProcess = warm.pty;
+        usedWarm = true;
+      } else {
+        // Cold path: spawn fresh
+        const sessionEnv: Record<string, string> = {
+          ...(process.env as Record<string, string>),
+          CLAUDE_HUB_SESSION_ID: id,
+          ANTHROPIC_BASE_URL: '',
+          ANTHROPIC_AUTH_TOKEN: '',
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: '',
+          HTTP_PROXY: 'http://127.0.0.1:7890',
+          HTTPS_PROXY: 'http://127.0.0.1:7890',
+          NO_PROXY: 'localhost,127.0.0.1',
+        };
+        ptyProcess = pty.spawn('powershell.exe', ['-NoProfile', '-NoLogo'], {
+          name: 'xterm-256color',
+          cols: 120,
+          rows: 30,
+          cwd: process.env.USERPROFILE || process.env.HOME || '.',
+          env: sessionEnv,
+          useConpty: true,
+          conptyInheritCursor: true,
+        });
+      }
+    } else {
+      // PowerShell session: full interactive shell with profile
+      const sessionEnv: Record<string, string> = {
+        ...(process.env as Record<string, string>),
+        CLAUDE_HUB_SESSION_ID: id,
+      };
+      ptyProcess = pty.spawn('powershell.exe', [], {
+        name: 'xterm-256color',
+        cols: 120,
+        rows: 30,
+        cwd: process.env.USERPROFILE || process.env.HOME || '.',
+        env: sessionEnv,
+        useConpty: true,
+        conptyInheritCursor: true,
+      });
     }
-
-    // Claude sessions: -NoProfile -NoLogo for fast startup, interactive mode
-    // so readline absorbs ConPTY init sequences before we launch claude
-    // PowerShell sessions: full interactive shell with profile
-    const shell = 'powershell.exe';
-    const shellArgs = kind === 'claude'
-      ? ['-NoProfile', '-NoLogo']
-      : [];
-
-    const ptyProcess = pty.spawn(shell, shellArgs, {
-      name: 'xterm-256color',
-      cols: 120,
-      rows: 30,
-      cwd: process.env.USERPROFILE || process.env.HOME || '.',
-      env: sessionEnv,
-      useConpty: true,
-      conptyInheritCursor: true,
-    });
 
     const now = Date.now();
     const info: SessionInfo = {
@@ -200,16 +274,13 @@ export class SessionManager {
     this.sessions.set(id, { info, pty: ptyProcess, outputBuffer: [], outputBufferSize: 0, promptBufferMark: 0, pendingTimers: [] });
 
     ptyProcess.onData((data: string) => {
-      // Append to ring buffer
       const session = this.sessions.get(id);
       if (session) {
         session.outputBuffer.push(data);
         session.outputBufferSize += data.length;
-        // Trim oldest chunks when over limit
         while (session.outputBufferSize > OUTPUT_BUFFER_MAX && session.outputBuffer.length > 1) {
           const removed = session.outputBuffer.shift()!;
           session.outputBufferSize -= removed.length;
-          // Adjust promptBufferMark when buffer entries are trimmed
           if (session.promptBufferMark > 0) session.promptBufferMark--;
         }
       }
@@ -223,23 +294,27 @@ export class SessionManager {
     }
 
     if (kind === 'claude') {
-      const managed = this.sessions.get(id)!;
-      // Wait for interactive shell to absorb ConPTY init sequences, then launch claude
-      let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-      const watcher = ptyProcess.onData(() => {
-        if (debounceTimer) clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(() => {
+      if (usedWarm) {
+        // Warm path: shell already ready, send claude immediately
+        ptyProcess.write(' claude\r\n');
+      } else {
+        // Cold path: wait for shell to absorb ConPTY init sequences
+        const managed = this.sessions.get(id)!;
+        let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+        const watcher = ptyProcess.onData(() => {
+          if (debounceTimer) clearTimeout(debounceTimer);
+          debounceTimer = setTimeout(() => {
+            watcher.dispose();
+            const s = this.sessions.get(id);
+            if (s) s.pty.write(' claude\r\n');
+          }, 100);
+        });
+        const safetyTimer = setTimeout(() => {
           watcher.dispose();
-          const s = this.sessions.get(id);
-          if (s) s.pty.write(' claude\r\n');
-        }, 300);
-      });
-      const safetyTimer = setTimeout(() => {
-        watcher.dispose();
-        if (debounceTimer) clearTimeout(debounceTimer);
-      }, 15000);
-      // Track timers for cleanup on session close
-      managed.pendingTimers.push(safetyTimer);
+          if (debounceTimer) clearTimeout(debounceTimer);
+        }, 15000);
+        managed.pendingTimers.push(safetyTimer);
+      }
     }
 
     return { ...info };
@@ -320,5 +395,7 @@ export class SessionManager {
       s.pty.kill();
     }
     this.sessions.clear();
+    for (const w of this.warmPool) w.pty.kill();
+    this.warmPool.length = 0;
   }
 }

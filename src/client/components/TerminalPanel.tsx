@@ -103,13 +103,17 @@ export const TerminalPanel: React.FC<Props> = ({ session, onInput, onResize, onC
       cached.opened = true;
       try {
         const webgl = new WebglAddon();
-        // On WebGL context loss, dispose addon and let xterm fall back to canvas
         webgl.onContextLoss(() => { webgl.dispose(); });
         cached.terminal.loadAddon(webgl);
       } catch {}
 
-      // Flush buffered data
+      // Show immediate feedback while Claude Code loads
       const buffered = pendingDataBuffer.get(session.id);
+      if (!buffered || buffered.length === 0) {
+        cached.terminal.write('\x1b[2m  Starting...\x1b[0m');
+      }
+
+      // Flush buffered data
       if (buffered) {
         for (const chunk of buffered) cached.terminal.write(chunk);
         pendingDataBuffer.delete(session.id);
