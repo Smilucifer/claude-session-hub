@@ -14,7 +14,6 @@ const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 
 const sessionManager = new SessionManager();
-sessionManager.init(); // Pre-warm PowerShell pool for fast Claude session creation
 const clients = new Set<WebSocket>();
 
 function broadcast(msg: ServerMessage): void {

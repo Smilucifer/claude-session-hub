@@ -124,9 +124,9 @@ export const TerminalPanel: React.FC<Props> = ({ session, onInput, onResize, onC
       if (cached) {
         cached.fitAddon.fit();
         handlerRefs.onResize(session.id, cached.terminal.cols, cached.terminal.rows);
+        cached.terminal.focus();
       }
     });
-    cached.terminal.focus();
 
     // Resize handling
     const handleResize = () => {
@@ -203,7 +203,9 @@ export const TerminalPanel: React.FC<Props> = ({ session, onInput, onResize, onC
         </div>
         <button className="btn-close-session" onClick={() => onClose(session.id)}>Close</button>
       </div>
-      <div className="terminal-container" ref={wrapperRef} />
+      <div className="terminal-container" ref={wrapperRef} onClick={() => {
+        if (session) terminalCache.get(session.id)?.terminal.focus();
+      }} />
     </div>
   );
 };
