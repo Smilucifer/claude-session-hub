@@ -213,10 +213,16 @@ for (const btn of document.querySelectorAll('.new-session-option')) {
   });
 }
 
-// --- Terminal buffer reading (replaces hook-based extraction) ---
+// --- Terminal buffer reading (xterm.js buffer API) ---
 
-const silenceTimers = new Map(); // sessionId -> timer
-const SILENCE_MS = 500; // consider output "done" after 500ms of silence
+const silenceTimers = new Map();
+const dataCounters = new Map();  // sessionId -> bytes received in current burst
+const SILENCE_MS = 2000; // 2s silence = idle (Claude Code status bar refreshes ~every 30-60s)
+
+/** Check if line contains meaningful CJK content (>=2 consecutive chars) */
+function hasCJK(text) {
+  return /[\u4e00-\u9fff\u3400-\u4dbf]{2,}/.test(text);
+}
 
 function readTerminalPreview(sessionId) {
   const cached = terminalCache.get(sessionId);
@@ -227,43 +233,51 @@ function readTerminalPreview(sessionId) {
   const lines = [];
   for (let i = 0; i < buf.length; i++) {
     const line = buf.getLine(i);
-    if (line) lines.push(line.translateToString(true).trim());
+    if (line) {
+      const text = line.translateToString(true).trim();
+      if (text) lines.push(text);
+    }
   }
 
-  // Extract last meaningful line (skip empty, status bars, prompts, UI chrome)
-  let preview = '';
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const l = lines[i];
-    if (!l || l.length < 2) continue;
-    if (/^[>❯›$#%]/.test(l) && l.length < 5) continue;          // bare prompts
-    if (/\b(?:Context|Usage)\b.*\d+%/i.test(l)) continue;       // status bar
-    if (/CLAUDE\.md|MCPs|hooks|bypass/i.test(l)) continue;       // status bar
-    if (/\[(?:Opus|Sonnet|Haiku)/i.test(l)) continue;            // model info
-    if (/resets?\s+in\s+\d/i.test(l)) continue;                  // rate limit
-    if (/Claude\s+(?:Code|Max)/i.test(l)) continue;              // banner/product
-    if (/shift\+tab|permissions\s+on/i.test(l)) continue;        // UI hints
-    if (/\/effort|\/model|\/compact/i.test(l)) continue;         // slash commands in status
-    if (/^\s*PS\s+[A-Z]:\\/i.test(l)) continue;                  // PS prompt
-    if (/^C:\\Users\\/i.test(l)) continue;                        // path line in banner
-    if (/lintian/i.test(l) && l.length < 30) continue;           // username in status
-    if (/\w+ing\s*(?:\.{2,}|…)/i.test(l)) continue;              // streaming indicators
-    preview = l;
-    break;
+  // Strategy: find last line with CJK content OR Claude response marker (●)
+  // Scan top-to-bottom, collect all "content" lines, take the last one
+  let lastContent = '';
+  for (const l of lines) {
+    // Match Claude response lines (● prefix)
+    if (/^●/.test(l) && l.length > 3) {
+      lastContent = l.replace(/^●\s*/, '');
+      continue;
+    }
+    // Match lines with meaningful CJK content
+    if (hasCJK(l)) {
+      lastContent = l;
+      continue;
+    }
   }
 
-  if (preview && preview !== session.lastOutputPreview) {
-    session.lastOutputPreview = preview;
+  const newPreview = lastContent.length > 120 ? lastContent.substring(0, 120) + '...' : lastContent;
+
+  if (newPreview && newPreview !== session.lastOutputPreview) {
+    const oldPreview = session.lastOutputPreview;
+    session.lastOutputPreview = newPreview;
     session.lastMessageTime = Date.now();
+    // Only count as unread if preview actually changed to new content
+    if (oldPreview !== newPreview && sessionId !== activeSessionId) {
+      session.unreadCount = (session.unreadCount || 0) + 1;
+    }
     renderSessionList();
   }
 }
 
-function onTerminalOutput(sessionId) {
+function onTerminalOutput(sessionId, dataLen) {
   const session = sessions.get(sessionId);
   if (!session) return;
 
-  // Mark as running while output is flowing
-  if (session.status !== 'running') {
+  // Track data volume in current burst
+  dataCounters.set(sessionId, (dataCounters.get(sessionId) || 0) + dataLen);
+
+  // Only mark running if significant data (>200 bytes), not status bar refreshes
+  if (dataCounters.get(sessionId) > 200 && session.status !== 'running') {
     session.status = 'running';
     renderSessionList();
   }
@@ -272,13 +286,12 @@ function onTerminalOutput(sessionId) {
   if (silenceTimers.has(sessionId)) clearTimeout(silenceTimers.get(sessionId));
   silenceTimers.set(sessionId, setTimeout(() => {
     silenceTimers.delete(sessionId);
+    dataCounters.delete(sessionId);
 
     // Output stopped → idle + read preview
     if (session.status !== 'idle') {
       session.status = 'idle';
-      if (sessionId !== activeSessionId) {
-        session.unreadCount = (session.unreadCount || 0) + 1;
-      }
+      renderSessionList();
     }
     readTerminalPreview(sessionId);
   }, SILENCE_MS));
@@ -288,7 +301,7 @@ function onTerminalOutput(sessionId) {
 ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
   const cached = terminalCache.get(sessionId);
   if (cached) cached.terminal.write(data);
-  onTerminalOutput(sessionId);
+  onTerminalOutput(sessionId, data.length);
 });
 
 ipcRenderer.on('session-created', (_e, { session }) => {
