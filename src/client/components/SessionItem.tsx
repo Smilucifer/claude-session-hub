@@ -26,16 +26,15 @@ export const SessionItem: React.FC<Props> = ({ session, isActive, onClick }) => 
           <span className={`session-status ${session.status}`} />
           {session.title}
         </span>
-        {session.unreadCount > 0 && !isActive && (
-          <span className="unread-badge">{session.unreadCount}</span>
-        )}
+        <span className="session-header-right">
+          {session.unreadCount > 0 && !isActive && (
+            <span className="unread-badge">{session.unreadCount}</span>
+          )}
+          <span className="session-time">{formatTime(session.lastMessageTime)}</span>
+        </span>
       </div>
       <div className="session-preview">
         {session.lastOutputPreview || 'No output yet'}
-      </div>
-      <div className="session-time">
-        {formatTime(session.lastActivityTime)}
-        {session.status === 'running' && ' · running'}
       </div>
     </div>
   );

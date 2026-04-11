@@ -70,7 +70,7 @@ export const TerminalPanel: React.FC<Props> = ({ session, onInput, onResize, onC
         brightCyan: '#56d364',
         brightWhite: '#ffffff',
       },
-      fontSize: 14,
+      fontSize: 16,
       fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
       cursorBlink: true,
       scrollback: 10000,
@@ -233,4 +233,63 @@ export function disposeTerminal(sessionId: string): void {
     terminalCache.delete(sessionId);
   }
   pendingDataBuffer.delete(sessionId);
+}
+
+// Noise patterns for preview extraction — lines matching these are skipped
+const NOISE_PATTERNS = [
+  /^\s*[>❯$]\s*$/,                     // empty prompt
+  /^\s*PS [A-Z]:\\/,                    // PS C:\> prompt
+  /\w+@[\w-]+.*[~\/\\]/,               // user@host prompt
+  /\[(Opus|Sonnet|Haiku|Claude)/,       // Claude Code status bar
+  /Context\s+/,                         // Context usage line
+  /Usage\s+/,                           // Usage line
+  /bypass permissions|allowed tools/i,  // permissions line
+  /CLAUDE\.md|hooks/,                   // config info line
+  /resets in \d+[dhm]/,                 // rate limit info
+  /^\s*[━─═╭╮╰╯│]{3,}/,                // box drawing / separators
+  /^\s*$/,                              // empty line
+  /^\s*\d+ MCPs?\s/,                    // MCP count line
+  /remote-control is active/,           // remote control notice
+  /Code in CLI or at https/,            // session URL line
+  /Switched to .*(Subscription|Proxy|API)/i,  // proxy/subscription switch
+  /Claude Code\s+v\d/,                  // version line
+  /Accessing workspace/,               // workspace access
+  /trust this folder|Security guide/i,  // trust prompt
+  /^\s*\d+\.\s+(Yes|No)/,              // numbered choices
+];
+
+// Check if a string contains Chinese characters
+function hasChinese(text: string): boolean {
+  return /[\u4e00-\u9fff\u3400-\u4dbf]/.test(text);
+}
+
+// Extract meaningful preview text from xterm.js buffer
+// Strategy: two-pass scan — first look for Chinese lines, then fallback to any meaningful line
+export function extractPreviewFromBuffer(sessionId: string): string {
+  const cached = terminalCache.get(sessionId);
+  if (!cached) return '';
+
+  const buf = cached.terminal.buffer.active;
+  const cursorRow = buf.baseY + buf.cursorY;
+  const scanStart = Math.max(0, cursorRow - 40);
+
+  // Collect all meaningful (non-noise) lines
+  const meaningfulLines: string[] = [];
+  for (let i = cursorRow; i >= scanStart; i--) {
+    const line = buf.getLine(i);
+    if (!line) continue;
+    const text = line.translateToString(true).trim();
+    if (text.length < 4) continue;
+    if (NOISE_PATTERNS.some(p => p.test(text))) continue;
+    meaningfulLines.push(text);
+  }
+
+  // Pass 1: prefer the most recent Chinese line
+  const chineseLine = meaningfulLines.find(t => hasChinese(t));
+  if (chineseLine) return chineseLine.substring(0, 80);
+
+  // Pass 2: fallback to most recent meaningful line
+  if (meaningfulLines.length > 0) return meaningfulLines[0].substring(0, 80);
+
+  return '';
 }

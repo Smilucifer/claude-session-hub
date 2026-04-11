@@ -2,7 +2,8 @@ export interface SessionInfo {
   id: string;
   title: string;
   status: 'running' | 'idle';
-  lastActivityTime: number;
+  lastActivityTime: number;   // updated on every pty output (for display)
+  lastMessageTime: number;    // updated only on silence detection (for sorting)
   lastOutputPreview: string;
   unreadCount: number;
   createdAt: number;
@@ -24,4 +25,5 @@ export type ClientMessage =
   | { type: 'terminal-input'; sessionId: string; data: string }
   | { type: 'terminal-resize'; sessionId: string; cols: number; rows: number }
   | { type: 'focus-session'; sessionId: string }
-  | { type: 'mark-read'; sessionId: string };
+  | { type: 'mark-read'; sessionId: string }
+  | { type: 'update-preview'; sessionId: string; preview: string };

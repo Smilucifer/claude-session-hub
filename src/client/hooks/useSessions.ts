@@ -5,6 +5,7 @@ export interface SessionInfo {
   title: string;
   status: 'running' | 'idle';
   lastActivityTime: number;
+  lastMessageTime: number;
   lastOutputPreview: string;
   unreadCount: number;
   createdAt: number;
@@ -12,7 +13,13 @@ export interface SessionInfo {
 
 function sortByActivity(sessions: Map<string, SessionInfo>): SessionInfo[] {
   return Array.from(sessions.values())
-    .sort((a, b) => b.lastActivityTime - a.lastActivityTime);
+    .sort((a, b) => {
+      // Primary: last message completion time (most recent first)
+      const timeDiff = b.lastMessageTime - a.lastMessageTime;
+      if (timeDiff !== 0) return timeDiff;
+      // Secondary: creation time (stable tiebreaker)
+      return b.createdAt - a.createdAt;
+    });
 }
 
 export function useSessions() {
@@ -56,20 +63,43 @@ export function useSessions() {
       }
 
       case 'session-updated': {
-        // Only update if session exists (ignore stale updates)
-        if (map.has(msg.session.id)) {
-          map.set(msg.session.id, msg.session);
+        if (!map.has(msg.session.id)) break;
+        const prev = map.get(msg.session.id)!;
+        map.set(msg.session.id, msg.session);
+        // Only re-sort if message time changed (silence detected = message complete)
+        if (prev.lastMessageTime !== msg.session.lastMessageTime) {
           syncToState();
+        } else {
+          // Update data in place, preserve current sort order
+          setSessions(prev2 => prev2.map(s =>
+            s.id === msg.session.id ? msg.session : s
+          ));
         }
         break;
       }
     }
   }, [syncToState]);
 
+  // Update preview locally — also updates time and triggers re-sort if content changed
+  const updateLocalPreview = useCallback((sessionId: string, preview: string) => {
+    const map = sessionMapRef.current;
+    const s = map.get(sessionId);
+    if (!s) return;
+
+    // Only act if preview content actually changed
+    if (preview === s.lastOutputPreview) return;
+
+    s.lastOutputPreview = preview;
+    s.lastMessageTime = Date.now();
+    // Re-sort since lastMessageTime changed
+    setSessions(sortByActivity(map));
+  }, []);
+
   return {
     sessions,
     activeSessionId,
     setActiveSessionId,
     handleServerMessage,
+    updateLocalPreview,
   };
 }

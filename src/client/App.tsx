@@ -1,11 +1,14 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useRef } from 'react';
 import { SessionList } from './components/SessionList';
-import { TerminalPanel, writeToTerminal, disposeTerminal } from './components/TerminalPanel';
+import { TerminalPanel, writeToTerminal, disposeTerminal, extractPreviewFromBuffer } from './components/TerminalPanel';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useSessions } from './hooks/useSessions';
 
 export const App: React.FC = () => {
-  const { sessions, activeSessionId, setActiveSessionId, handleServerMessage } = useSessions();
+  const { sessions, activeSessionId, setActiveSessionId, handleServerMessage, updateLocalPreview } = useSessions();
+  const sendRef = useRef<(msg: object) => void>(() => {});
+  const activeSessionIdRef = useRef<string | null>(null);
+  activeSessionIdRef.current = activeSessionId;
 
   const onMessage = useCallback((msg: any) => {
     handleServerMessage(msg);
@@ -19,9 +22,23 @@ export const App: React.FC = () => {
     if (msg.type === 'session-closed') {
       disposeTerminal(msg.sessionId);
     }
-  }, [handleServerMessage]);
+
+    // When a BACKGROUND session becomes idle, extract preview from xterm.js buffer
+    // Skip focused session — its terminal is visible, no need for preview update,
+    // and resize reflow would cause preview to change incorrectly
+    if (msg.type === 'session-updated' && msg.session.status === 'idle') {
+      if (msg.session.id !== activeSessionIdRef.current) {
+        const preview = extractPreviewFromBuffer(msg.session.id);
+        if (preview) {
+          updateLocalPreview(msg.session.id, preview);
+          sendRef.current({ type: 'update-preview', sessionId: msg.session.id, preview });
+        }
+      }
+    }
+  }, [handleServerMessage, updateLocalPreview]);
 
   const { send } = useWebSocket(onMessage);
+  sendRef.current = send;
 
   const handleCreateSession = useCallback(() => {
     send({ type: 'create-session' });

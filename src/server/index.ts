@@ -79,6 +79,10 @@ wss.on('connection', (ws) => {
           sessionManager.markRead(msg.sessionId);
           break;
         }
+        case 'update-preview': {
+          sessionManager.updatePreview(msg.sessionId, msg.preview);
+          break;
+        }
       }
     } catch (e) {
       ws.send(JSON.stringify({ type: 'error', message: 'Invalid message' } satisfies ServerMessage));
@@ -102,12 +106,14 @@ server.listen(PORT, async () => {
   const url = `http://localhost:${PORT}`;
   console.log(`Claude Session Hub running at ${url}`);
 
-  // Auto-open browser
-  try {
-    const open = (await import('open')).default;
-    await open(url);
-  } catch {
-    console.log(`Open ${url} in your browser.`);
+  // Auto-open browser only in production (not during Vite dev)
+  if (!process.env.npm_lifecycle_event?.includes('dev') && process.argv[1]?.includes('dist')) {
+    try {
+      const open = (await import('open')).default;
+      await open(url);
+    } catch {
+      console.log(`Open ${url} in your browser.`);
+    }
   }
 });
 
