@@ -241,23 +241,19 @@ function readTerminalPreview(sessionId) {
     }
   }
 
-  // Strategy: find last line with CJK content OR Claude response marker (●)
-  // Scan top-to-bottom, collect all "content" lines, take the last one
-  let lastContent = '';
+  // Collect user questions (lines starting with ❯ or > prompt)
+  const questions = [];
   for (const l of lines) {
-    // Match Claude response lines (● prefix)
-    if (/^●/.test(l) && l.length > 3) {
-      lastContent = l.replace(/^●\s*/, '');
-      continue;
-    }
-    // Match lines with meaningful CJK content
-    if (hasCJK(l)) {
-      lastContent = l;
-      continue;
+    const m = l.match(/^[❯›>]\s*(.+)/);
+    if (m && m[1].length > 1) {
+      questions.push(m[1].trim());
     }
   }
 
-  const newPreview = lastContent.length > 120 ? lastContent.substring(0, 120) + '...' : lastContent;
+  // Take last 3 questions, newest first, each truncated to ~40 chars
+  const recent = questions.slice(-3).reverse();
+  const previewLines = recent.map(q => 'Q: ' + (q.length > 40 ? q.substring(0, 38) + '...' : q));
+  const newPreview = previewLines.join('\n');
 
   if (newPreview && newPreview !== session.lastOutputPreview) {
     const oldPreview = session.lastOutputPreview;

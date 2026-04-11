@@ -178,10 +178,8 @@ html, body {
   font-size: 13px;
   color: var(--text-secondary);
   margin-top: 5px;
-  /* Show up to 3 lines */
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
+  white-space: pre-line;
+  max-height: 4.2em;
   overflow: hidden;
   line-height: 1.4;
 }
