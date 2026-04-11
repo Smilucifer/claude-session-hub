@@ -38,6 +38,7 @@ export const App: React.FC = () => {
         onInput={useCallback((id: string, data: string) => send({ type: 'terminal-input', sessionId: id, data }), [send])}
         onResize={useCallback((id: string, cols: number, rows: number) => send({ type: 'terminal-resize', sessionId: id, cols, rows }), [send])}
         onClose={useCallback((id: string) => send({ type: 'close-session', sessionId: id }), [send])}
+        onRename={useCallback((id: string, title: string) => send({ type: 'rename-session', sessionId: id, title }), [send])}
       />
     </div>
   );

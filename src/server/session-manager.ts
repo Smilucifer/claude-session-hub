@@ -280,6 +280,13 @@ export class SessionManager {
     this.sessions.delete(sessionId);
   }
 
+  renameSession(sessionId: string, title: string): SessionInfo | undefined {
+    const session = this.sessions.get(sessionId);
+    if (!session) return undefined;
+    session.info.title = title;
+    return { ...session.info };
+  }
+
   writeToSession(sessionId: string, data: string): void {
     this.sessions.get(sessionId)?.pty.write(data);
   }

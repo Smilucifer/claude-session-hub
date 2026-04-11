@@ -100,6 +100,11 @@ wss.on('connection', (ws) => {
           if (marked) broadcast({ type: 'session-updated', session: marked });
           break;
         }
+        case 'rename-session': {
+          const renamed = sessionManager.renameSession(msg.sessionId, msg.title);
+          if (renamed) broadcast({ type: 'session-updated', session: renamed });
+          break;
+        }
       }
     } catch {
       ws.send(JSON.stringify({ type: 'error', message: 'Invalid message' } satisfies ServerMessage));

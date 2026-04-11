@@ -27,4 +27,5 @@ export type ClientMessage =
   | { type: 'terminal-input'; sessionId: string; data: string }
   | { type: 'terminal-resize'; sessionId: string; cols: number; rows: number }
   | { type: 'focus-session'; sessionId: string }
-  | { type: 'mark-read'; sessionId: string };
+  | { type: 'mark-read'; sessionId: string }
+  | { type: 'rename-session'; sessionId: string; title: string };

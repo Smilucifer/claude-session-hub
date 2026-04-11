@@ -239,6 +239,28 @@ html, body, #root {
   color: var(--text-primary);
 }
 
+.terminal-title {
+  cursor: pointer;
+}
+
+.terminal-title:hover {
+  text-decoration: underline;
+  text-decoration-style: dashed;
+  text-underline-offset: 3px;
+}
+
+.terminal-title-input {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--accent-blue);
+  border-radius: 4px;
+  padding: 2px 6px;
+  outline: none;
+  width: 160px;
+}
+
 .terminal-status {
   font-size: 11px;
 }

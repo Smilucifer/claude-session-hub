@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
@@ -11,6 +11,7 @@ interface Props {
   onInput: (sessionId: string, data: string) => void;
   onResize: (sessionId: string, cols: number, rows: number) => void;
   onClose: (sessionId: string) => void;
+  onRename: (sessionId: string, title: string) => void;
 }
 
 interface CachedTerminal {
@@ -31,8 +32,10 @@ const handlerRefs = {
   onResize: (_sid: string, _cols: number, _rows: number) => {},
 };
 
-export const TerminalPanel: React.FC<Props> = ({ session, onInput, onResize, onClose }) => {
+export const TerminalPanel: React.FC<Props> = ({ session, onInput, onResize, onClose, onRename }) => {
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState('');
 
   useEffect(() => {
     handlerRefs.onInput = onInput;
@@ -165,7 +168,31 @@ export const TerminalPanel: React.FC<Props> = ({ session, onInput, onResize, onC
     <div className="terminal-panel">
       <div className="terminal-header">
         <div className="terminal-title-section">
-          <span className="terminal-title">{session.title}</span>
+          {editingTitle ? (
+            <input
+              className="terminal-title-input"
+              value={titleDraft}
+              onChange={e => setTitleDraft(e.target.value)}
+              onBlur={() => {
+                const trimmed = titleDraft.trim();
+                if (trimmed && trimmed !== session.title) onRename(session.id, trimmed);
+                setEditingTitle(false);
+              }}
+              onKeyDown={e => {
+                if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                if (e.key === 'Escape') setEditingTitle(false);
+              }}
+              autoFocus
+            />
+          ) : (
+            <span
+              className="terminal-title"
+              onClick={() => { setTitleDraft(session.title); setEditingTitle(true); }}
+              title="Click to rename"
+            >
+              {session.title}
+            </span>
+          )}
           <span className={`terminal-status ${session.status}`}>
             {session.status === 'running' ? '● running' : '○ idle'}
           </span>
