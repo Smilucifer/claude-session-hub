@@ -1,3 +1,12 @@
 node_modules/
 dist/
 .superpowers/
+
+# Ad-hoc diagnostic probes + experiment files (not part of the product)
+_probe-*.js
+_probe*.log
+*.log
+scroll-diag.json
+test-scroll-jump.js
+logo-preview.html
+PROJECT.html

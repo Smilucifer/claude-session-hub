@@ -8,13 +8,12 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <div class="app-container">
-    <div class="session-sidebar">
+  <div class="app-container" id="app-container">
+    <div class="session-sidebar" id="session-sidebar">
       <div class="sidebar-header">
         <span class="sidebar-title">Sessions</span>
         <div style="display:flex;align-items:center;gap:6px">
           <span class="session-count" id="session-count">0 open</span>
-          <button class="btn-theme" id="btn-theme" title="Toggle light/dark theme">◐</button>
           <div class="new-session-wrapper" id="new-session-wrapper">
             <button class="btn-new-session" id="btn-new" title="New session (Ctrl+N)">+</button>
             <div class="new-session-menu" id="new-session-menu" style="display:none">
@@ -23,6 +22,8 @@
               <button class="new-session-option" data-kind="powershell">PowerShell</button>
             </div>
           </div>
+          <button class="btn-resume-picker" id="btn-resume-picker" title="Resume a past session">↻</button>
+          <button class="btn-collapse-sidebar" id="btn-collapse-sidebar" title="Collapse sidebar (Ctrl+B)">◀</button>
         </div>
       </div>
       <div class="sidebar-search">
@@ -36,11 +37,36 @@
         <button class="context-menu-item danger" data-action="close">Close</button>
       </div>
     </div>
+    <button class="btn-expand-sidebar" id="btn-expand-sidebar" title="Show sidebar (Ctrl+B)">▶</button>
     <div class="terminal-panel" id="terminal-panel">
       <div class="empty-state" id="empty-state">
         <div class="empty-state-icon">+</div>
         <div class="empty-state-text">No session selected</div>
         <div class="empty-state-hint">Click "+" to create a new session</div>
+      </div>
+    </div>
+    <div class="modal-overlay" id="resume-modal" style="display:none">
+      <div class="modal">
+        <div class="modal-header">
+          <span class="modal-title">Resume past Claude session</span>
+          <input type="text" id="resume-filter" class="modal-filter" placeholder="Filter by cwd / preview…">
+          <button class="modal-close" id="resume-modal-close" title="Close (Esc)">✕</button>
+        </div>
+        <div class="modal-body" id="resume-list">
+          <div class="modal-empty">Scanning…</div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-overlay" id="search-modal" style="display:none">
+      <div class="modal">
+        <div class="modal-header">
+          <span class="modal-title">昨日之我 · search past sessions</span>
+          <input type="text" id="search-query" class="modal-filter" placeholder="Type to search all past Claude transcripts…">
+          <button class="modal-close" id="search-modal-close" title="Close (Esc)">✕</button>
+        </div>
+        <div class="modal-body" id="search-results">
+          <div class="modal-empty">Type ≥ 2 chars to search.</div>
+        </div>
       </div>
     </div>
     <div class="terminal-search" id="terminal-search" style="display:none">

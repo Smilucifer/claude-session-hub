@@ -16,11 +16,18 @@ class SessionManager {
   onData = (sessionId, data) => {};
   onSessionClosed = (sessionId) => {};
 
-  createSession(kind = 'powershell') {
-    const id = uuid();
+  // opts: { id?, title?, cwd?, resumeCCSessionId?, useContinue? }
+  //   id:                 reuse a previous hub session id (dormant wake)
+  //   title:              override default title (dormant wake preserves name)
+  //   cwd:                launch cwd; defaults to user home
+  //   resumeCCSessionId:  when set, runs `claude --resume <id>`
+  //   useContinue:        when set and no resumeCCSessionId, runs `claude --continue`
+  createSession(kind = 'powershell', opts = {}) {
+    const id = opts.id || uuid();
     const isClaude = kind === 'claude' || kind === 'claude-resume';
     let title;
-    if (kind === 'claude') title = `Claude ${++this.claudeCounter}`;
+    if (opts.title) title = opts.title;
+    else if (kind === 'claude') title = `Claude ${++this.claudeCounter}`;
     else if (kind === 'claude-resume') title = `Claude Resume ${++this.resumeCounter}`;
     else title = `PowerShell ${++this.psCounter}`;
 
@@ -46,11 +53,19 @@ class SessionManager {
     }
 
     const shellArgs = isClaude ? ['-NoProfile', '-NoLogo'] : [];
+    // cwd fallback order: opts.cwd (if exists) -> user home. We stat-check to
+    // avoid node-pty failing if the stored cwd was later deleted/moved.
+    let spawnCwd = opts.cwd;
+    if (spawnCwd) {
+      try { require('fs').accessSync(spawnCwd); } catch { spawnCwd = null; }
+    }
+    if (!spawnCwd) spawnCwd = process.env.USERPROFILE || process.env.HOME || '.';
+
     const ptyProcess = pty.spawn('powershell.exe', shellArgs, {
       name: 'xterm-256color',
       cols: 120,
       rows: 30,
-      cwd: process.env.USERPROFILE || process.env.HOME || '.',
+      cwd: spawnCwd,
       env: sessionEnv,
       useConpty: true,
       conptyInheritCursor: true,
@@ -62,10 +77,11 @@ class SessionManager {
       kind,
       title,
       status: 'idle',
-      lastMessageTime: now,
-      lastOutputPreview: '',
+      lastMessageTime: opts.lastMessageTime || now,
+      lastOutputPreview: opts.lastOutputPreview || '',
       unreadCount: 0,
       createdAt: now,
+      cwd: spawnCwd,
     };
 
     const pendingTimers = [];
@@ -78,11 +94,20 @@ class SessionManager {
     ptyProcess.onExit(() => { this.sessions.delete(id); this.onSessionClosed(id); });
 
     if (kind === 'powershell') {
-      ptyProcess.write('Set-PSReadLineOption -PredictionViewStyle InlineView 2>$null; clear\r\n');
+      ptyProcess.write('Set-PSReadLineOption -PredictionViewStyle ListView 2>$null; clear\r\n');
     }
 
     if (isClaude) {
-      const cmd = kind === 'claude-resume' ? ' claude --resume\r\n' : ' claude\r\n';
+      let cmd;
+      if (opts.resumeCCSessionId) {
+        cmd = ` claude --resume ${opts.resumeCCSessionId}\r\n`;
+      } else if (opts.useContinue) {
+        cmd = ' claude --continue\r\n';
+      } else if (kind === 'claude-resume') {
+        cmd = ' claude --resume\r\n';
+      } else {
+        cmd = ' claude\r\n';
+      }
       let sent = false;
       let debounceTimer = null;
       const watcher = ptyProcess.onData(() => {
