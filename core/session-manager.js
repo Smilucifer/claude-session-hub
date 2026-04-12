@@ -28,18 +28,17 @@ class SessionManager {
 
     if (isClaude) {
       // Force subscription OAuth (Claude Max): strip custom-endpoint env vars
-      // that would otherwise route Claude Code to cc-switch / CCR. Without
-      // these deletions the user's system-wide ANTHROPIC_AUTH_TOKEN (set by
-      // cc-switch) would hijack auth and bypass the subscription.
+      // that would otherwise route Claude Code to cc-switch / CCR.
       delete sessionEnv.ANTHROPIC_BASE_URL;
       delete sessionEnv.ANTHROPIC_API_BASE_URL;
       delete sessionEnv.ANTHROPIC_AUTH_TOKEN;
       delete sessionEnv.ANTHROPIC_API_KEY;
       delete sessionEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL;
-      // Inherit proxy from parent env; if set, also add NO_PROXY for localhost
-      if (sessionEnv.HTTP_PROXY || sessionEnv.HTTPS_PROXY) {
-        sessionEnv.NO_PROXY = 'localhost,127.0.0.1';
-      }
+      // Force Clash proxy — don't rely on how Electron was launched.
+      // User's hard rule: all CLI calls must go through 127.0.0.1:7890.
+      sessionEnv.HTTP_PROXY = 'http://127.0.0.1:7890';
+      sessionEnv.HTTPS_PROXY = 'http://127.0.0.1:7890';
+      sessionEnv.NO_PROXY = 'localhost,127.0.0.1';
       // Attribution + auth for the Stop/UserPromptSubmit hook script
       sessionEnv.CLAUDE_HUB_SESSION_ID = id;
       if (this.hookPort) sessionEnv.CLAUDE_HUB_PORT = String(this.hookPort);
