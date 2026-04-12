@@ -3,21 +3,25 @@ const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
 const { Unicode11Addon } = require('@xterm/addon-unicode11');
 
-// --- Image paste support ---
+// --- Paste support (text + image) ---
 // Attached per-terminal via attachCustomKeyEventHandler in getOrCreateTerminal.
-// This fires only when the xterm has focus — NOT on other inputs like the
-// rename box, which would otherwise hijack Ctrl+V when the clipboard has
-// an image.
-async function handleImagePasteForSession(sessionId) {
-  const img = clipboard.readImage();
-  if (img.isEmpty()) return false;  // no image — let xterm do default text paste
-
-  const filePath = await ipcRenderer.invoke('save-clipboard-image');
-  if (!filePath) return false;
-
+// Fires only when the xterm has focus. We intercept ALL Ctrl+V, not just image
+// pastes, because Chromium's native Ctrl+V on xterm's hidden helper textarea
+// does NOT fire a paste event in Electron — if we let xterm handle the default,
+// nothing happens. So we read the clipboard ourselves and call terminal.paste().
+async function handlePasteForSession(sessionId) {
   const cached = terminalCache.get(sessionId);
-  if (cached) cached.terminal.paste(filePath);
-  return true;
+  if (!cached) return;
+
+  const img = clipboard.readImage();
+  if (!img.isEmpty()) {
+    const filePath = await ipcRenderer.invoke('save-clipboard-image');
+    if (filePath) cached.terminal.paste(filePath);
+    return;
+  }
+
+  const text = clipboard.readText();
+  if (text) cached.terminal.paste(text);
 }
 
 // --- Image hover preview tooltip ---
@@ -232,15 +236,14 @@ function getOrCreateTerminal(sessionId) {
   terminal.onData((data) => { ipcRenderer.send('terminal-input', { sessionId, data }); });
   terminal.onBinary((data) => { ipcRenderer.send('terminal-input', { sessionId, data }); });
 
-  // Image paste: only intercept when this terminal has focus.
-  // Returning false tells xterm to skip default handling for this key event.
+  // Intercept Ctrl/Cmd+V ourselves (both text and image) — Electron's Chromium
+  // doesn't fire paste events on xterm's helper textarea for real keystrokes.
   terminal.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
     const isPaste = (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V');
     if (!isPaste) return true;
-    if (clipboard.readImage().isEmpty()) return true;  // plain text paste — let xterm handle
     e.preventDefault();
-    handleImagePasteForSession(sessionId);
+    handlePasteForSession(sessionId);
     return false;
   });
 
