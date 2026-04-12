@@ -231,6 +231,7 @@ html, body {
   flex-direction: column;
   background: var(--bg-primary);
   min-width: 0;
+  position: relative;  /* anchor for .terminal-search overlay */
 }
 
 .terminal-header {
@@ -441,6 +442,49 @@ html, body {
   margin-right: 4px;
   display: inline-block;
 }
+
+/* Terminal in-buffer search overlay */
+.terminal-search {
+  position: absolute;
+  top: 52px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  z-index: 50;
+}
+.terminal-search input {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  outline: none;
+  width: 180px;
+}
+.terminal-search input:focus { border-color: var(--accent-blue); }
+.terminal-search-count {
+  font-size: 11px;
+  color: var(--text-muted);
+  min-width: 40px;
+  text-align: center;
+}
+.terminal-search-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+}
+.terminal-search-btn:hover { background: var(--bg-secondary); color: var(--text-primary); }
 
 /* Hook server offline banner */
 .hook-status-banner {

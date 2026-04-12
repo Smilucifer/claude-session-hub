@@ -1,7 +1,9 @@
-const { ipcRenderer, clipboard, nativeImage } = require('electron');
+const { ipcRenderer, clipboard, nativeImage, shell } = require('electron');
 const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
 const { Unicode11Addon } = require('@xterm/addon-unicode11');
+const { SearchAddon } = require('@xterm/addon-search');
+const { WebLinksAddon } = require('@xterm/addon-web-links');
 
 // --- Paste support (text + image) ---
 // Attached per-terminal via attachCustomKeyEventHandler in getOrCreateTerminal.
@@ -153,6 +155,26 @@ const btnThemeEl = document.getElementById('btn-theme');
 let searchQuery = '';
 let contextMenuSessionId = null;
 
+// Font size — shared across all terminals, persisted
+const FONT_SIZE_KEY = 'claude-hub-font-size';
+const FONT_SIZE_MIN = 10;
+const FONT_SIZE_MAX = 28;
+let currentFontSize = parseInt(localStorage.getItem(FONT_SIZE_KEY), 10);
+if (!currentFontSize || isNaN(currentFontSize)) currentFontSize = 16;
+
+function setFontSize(size) {
+  size = Math.max(FONT_SIZE_MIN, Math.min(FONT_SIZE_MAX, size));
+  if (size === currentFontSize) return;
+  currentFontSize = size;
+  localStorage.setItem(FONT_SIZE_KEY, String(size));
+  for (const [, c] of terminalCache) {
+    c.terminal.options.fontSize = size;
+    if (c.opened) {
+      try { c.fitAddon.fit(); } catch {}
+    }
+  }
+}
+
 // --- Helpers ---
 function formatTime(ts) {
   return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -221,7 +243,7 @@ function getOrCreateTerminal(sessionId) {
       brightYellow: '#e3b341', brightBlue: '#79c0ff', brightMagenta: '#d2a8ff',
       brightCyan: '#56d364', brightWhite: '#ffffff',
     },
-    fontSize: 16,
+    fontSize: currentFontSize,
     fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
     cursorBlink: true,
     scrollback: 10000,
@@ -229,8 +251,11 @@ function getOrCreateTerminal(sessionId) {
   });
 
   const fitAddon = new FitAddon();
+  const searchAddon = new SearchAddon();
   terminal.loadAddon(fitAddon);
   terminal.loadAddon(new Unicode11Addon());
+  terminal.loadAddon(searchAddon);
+  terminal.loadAddon(new WebLinksAddon((e, uri) => { shell.openExternal(uri); }));
   terminal.unicode.activeVersion = '11';
 
   terminal.onData((data) => { ipcRenderer.send('terminal-input', { sessionId, data }); });
@@ -250,7 +275,28 @@ function getOrCreateTerminal(sessionId) {
   const container = document.createElement('div');
   container.style.cssText = 'width:100%;height:100%;display:none';
 
-  const cached = { terminal, fitAddon, container, opened: false };
+  // Drag-and-drop: dropping a file/folder into the terminal inserts its path(s).
+  container.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+  container.addEventListener('drop', (e) => {
+    e.preventDefault();
+    const files = Array.from(e.dataTransfer.files || []);
+    if (files.length === 0) return;
+    const quoted = files.map(f => {
+      const p = f.path;
+      return /\s/.test(p) ? `"${p}"` : p;
+    }).join(' ');
+    terminal.paste(quoted);
+  });
+
+  // Ctrl+wheel zoom
+  container.addEventListener('wheel', (e) => {
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    const delta = e.deltaY < 0 ? 1 : -1;
+    setFontSize(currentFontSize + delta);
+  }, { passive: false });
+
+  const cached = { terminal, fitAddon, searchAddon, container, opened: false };
   terminalCache.set(sessionId, cached);
   return cached;
 }
@@ -610,6 +656,13 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
+  // Ctrl+W: close active session
+  if (!e.shiftKey && !e.altKey && (e.key === 'w' || e.key === 'W')) {
+    e.preventDefault();
+    if (activeSessionId) ipcRenderer.invoke('close-session', activeSessionId);
+    return;
+  }
+
   // Ctrl+Tab / Ctrl+Shift+Tab: cycle sessions
   if (e.key === 'Tab') {
     e.preventDefault();
@@ -624,12 +677,41 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
-  // Ctrl+F: focus search
+  // Ctrl+F: terminal in-buffer search (when a terminal is active)
+  // Ctrl+K: sidebar session search
   if (!e.shiftKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
+    e.preventDefault();
+    if (activeSessionId) openTerminalSearch();
+    else { searchInputEl.focus(); searchInputEl.select(); }
+    return;
+  }
+  if (!e.shiftKey && !e.altKey && (e.key === 'k' || e.key === 'K')) {
     e.preventDefault();
     searchInputEl.focus();
     searchInputEl.select();
     return;
+  }
+
+  // Ctrl+Shift+C: copy selected terminal text
+  if (e.shiftKey && !e.altKey && (e.key === 'c' || e.key === 'C' || e.code === 'KeyC')) {
+    const cached = terminalCache.get(activeSessionId);
+    const sel = cached && cached.terminal.getSelection();
+    if (sel) {
+      e.preventDefault();
+      clipboard.writeText(sel);
+    }
+    return;
+  }
+
+  // Ctrl+Plus / Ctrl+Minus / Ctrl+0: font size
+  if (!e.shiftKey && !e.altKey && (e.key === '=' || e.key === '+')) {
+    e.preventDefault(); setFontSize(currentFontSize + 1); return;
+  }
+  if (!e.shiftKey && !e.altKey && e.key === '-') {
+    e.preventDefault(); setFontSize(currentFontSize - 1); return;
+  }
+  if (!e.shiftKey && !e.altKey && e.key === '0') {
+    e.preventDefault(); setFontSize(16); return;
   }
 }, true);
 
@@ -726,6 +808,57 @@ for (const btn of contextMenuEl.querySelectorAll('.context-menu-item')) {
     }
   });
 }
+
+// --- Terminal in-buffer search (Ctrl+F) ---
+const termSearchEl = document.getElementById('terminal-search');
+const termSearchInput = document.getElementById('terminal-search-input');
+const termSearchCount = document.getElementById('terminal-search-count');
+const termSearchPrev = document.getElementById('terminal-search-prev');
+const termSearchNext = document.getElementById('terminal-search-next');
+const termSearchClose = document.getElementById('terminal-search-close');
+
+function openTerminalSearch() {
+  termSearchEl.style.display = 'flex';
+  termSearchInput.focus();
+  termSearchInput.select();
+}
+function closeTerminalSearch() {
+  termSearchEl.style.display = 'none';
+  const cached = terminalCache.get(activeSessionId);
+  if (cached && cached.searchAddon) cached.searchAddon.clearDecorations();
+  if (cached) cached.terminal.focus();
+}
+
+const SEARCH_OPTS = {
+  decorations: {
+    matchBackground: '#58a6ff66',
+    matchBorder: '#58a6ff',
+    matchOverviewRuler: '#58a6ff',
+    activeMatchBackground: '#f0883e88',
+    activeMatchBorder: '#f0883e',
+    activeMatchColorOverviewRuler: '#f0883e',
+  },
+};
+
+function runSearch(direction) {
+  const cached = terminalCache.get(activeSessionId);
+  if (!cached || !cached.searchAddon) return;
+  const q = termSearchInput.value;
+  if (!q) { cached.searchAddon.clearDecorations(); termSearchCount.textContent = ''; return; }
+  const found = direction >= 0
+    ? cached.searchAddon.findNext(q, SEARCH_OPTS)
+    : cached.searchAddon.findPrevious(q, SEARCH_OPTS);
+  termSearchCount.textContent = found ? '' : 'no match';
+}
+
+termSearchInput.addEventListener('input', () => runSearch(1));
+termSearchInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); runSearch(e.shiftKey ? -1 : 1); }
+  else if (e.key === 'Escape') { e.preventDefault(); closeTerminalSearch(); }
+});
+termSearchPrev.addEventListener('click', () => runSearch(-1));
+termSearchNext.addEventListener('click', () => runSearch(1));
+termSearchClose.addEventListener('click', closeTerminalSearch);
 
 // --- Theme toggle ---
 const THEME_KEY = 'claude-hub-theme';

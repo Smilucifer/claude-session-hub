@@ -42,6 +42,13 @@
         <div class="empty-state-hint">Click "+" to create a new session</div>
       </div>
     </div>
+    <div class="terminal-search" id="terminal-search" style="display:none">
+      <input type="text" id="terminal-search-input" placeholder="Find in terminal…">
+      <span class="terminal-search-count" id="terminal-search-count"></span>
+      <button class="terminal-search-btn" id="terminal-search-prev" title="Previous (Shift+Enter)">↑</button>
+      <button class="terminal-search-btn" id="terminal-search-next" title="Next (Enter)">↓</button>
+      <button class="terminal-search-btn" id="terminal-search-close" title="Close (Esc)">✕</button>
+    </div>
   </div>
   <script src="renderer.js"></script>
 </body>
