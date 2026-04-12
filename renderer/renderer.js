@@ -262,8 +262,52 @@ function getOrCreateTerminal(sessionId) {
   terminal.loadAddon(new WebLinksAddon((e, uri) => { shell.openExternal(uri); }));
   terminal.unicode.activeVersion = '11';
 
-  terminal.onData((data) => { ipcRenderer.send('terminal-input', { sessionId, data }); });
+  terminal.onData((data) => {
+    // User typed — unlock scroll so they can see what they're interacting with
+    const c = terminalCache.get(sessionId);
+    if (c && c.scrollLock !== null) setScrollLock(sessionId, null);
+    ipcRenderer.send('terminal-input', { sessionId, data });
+  });
   terminal.onBinary((data) => { ipcRenderer.send('terminal-input', { sessionId, data }); });
+
+  // --- Scroll lock: pin viewport when user scrolls up, release when back at bottom ---
+  // State lives on cached (per-session). scrollLock = null means follow-bottom (default).
+  // scrollLock = N means pin the viewport at N lines above baseY.
+  const SCROLL_LOCK_ENGAGE_THRESHOLD = 3;  // lines above bottom to engage lock
+  const SCROLL_LOCK_RELEASE_THRESHOLD = 2; // lines to bottom to release
+
+  terminal.onScroll(() => {
+    const c = terminalCache.get(sessionId);
+    if (!c || c._isRestoringScroll) return;
+    const buf = terminal.buffer.active;
+    const offset = buf.baseY - buf.viewportY;
+    if (c.scrollLock === null) {
+      // Currently following. Did user scroll up past the engage threshold?
+      if (offset >= SCROLL_LOCK_ENGAGE_THRESHOLD) setScrollLock(sessionId, offset);
+    } else {
+      // Currently locked. Did user scroll (nearly) back to bottom?
+      if (offset <= SCROLL_LOCK_RELEASE_THRESHOLD) setScrollLock(sessionId, null);
+      else c.scrollLock = offset; // update anchor as user fine-tunes scroll
+    }
+  });
+
+  // Wrap write so that any viewport shift caused by CC's cursor positioning
+  // is re-pinned to the user's locked offset before the frame paints.
+  const origWrite = terminal.write.bind(terminal);
+  terminal.write = function (data, cb) {
+    origWrite(data, () => {
+      const c = terminalCache.get(sessionId);
+      if (c && c.scrollLock !== null) {
+        const buf = terminal.buffer.active;
+        const desired = Math.max(0, buf.baseY - c.scrollLock);
+        if (buf.viewportY !== desired) {
+          c._isRestoringScroll = true;
+          try { terminal.scrollToLine(desired); } finally { c._isRestoringScroll = false; }
+        }
+      }
+      if (cb) cb();
+    });
+  };
 
   // Intercept Ctrl/Cmd+V ourselves (both text and image) — Electron's Chromium
   // doesn't fire paste events on xterm's helper textarea for real keystrokes.
@@ -300,9 +344,40 @@ function getOrCreateTerminal(sessionId) {
     setFontSize(currentFontSize + delta);
   }, { passive: false });
 
-  const cached = { terminal, fitAddon, searchAddon, container, opened: false };
+  const cached = {
+    terminal, fitAddon, searchAddon, container, opened: false,
+    scrollLock: null,          // null = follow bottom; N = pin N lines above baseY
+    _isRestoringScroll: false, // guard against self-triggered onScroll loops
+  };
   terminalCache.set(sessionId, cached);
   return cached;
+}
+
+function setScrollLock(sessionId, offsetOrNull) {
+  const c = terminalCache.get(sessionId);
+  if (!c) return;
+  c.scrollLock = offsetOrNull;
+  if (sessionId === activeSessionId) renderScrollLockIndicator();
+}
+
+function renderScrollLockIndicator() {
+  let el = document.getElementById('scroll-lock-indicator');
+  const cached = terminalCache.get(activeSessionId);
+  const locked = cached && cached.scrollLock !== null;
+  if (!locked) { if (el) el.remove(); return; }
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'scroll-lock-indicator';
+    el.className = 'scroll-lock-indicator';
+    el.textContent = '🔒 Scroll locked — click or Ctrl+End to resume';
+    el.addEventListener('click', () => {
+      const c = terminalCache.get(activeSessionId);
+      if (!c) return;
+      setScrollLock(activeSessionId, null);
+      c.terminal.scrollToBottom();
+    });
+    terminalPanelEl.appendChild(el);
+  }
 }
 
 function showTerminal(sessionId) {
@@ -417,6 +492,7 @@ function selectSession(id) {
   ipcRenderer.send('focus-session', { sessionId: id });
   renderSessionList();
   showTerminal(id);
+  renderScrollLockIndicator();
 }
 
 // --- Dropdown menu ---
@@ -760,6 +836,21 @@ document.addEventListener('keydown', (e) => {
       e.preventDefault();
       clipboard.writeText(sel);
     }
+    return;
+  }
+
+  // Ctrl+End: jump to bottom and release scroll lock
+  if (!e.shiftKey && !e.altKey && e.key === 'End') {
+    e.preventDefault();
+    const c = terminalCache.get(activeSessionId);
+    if (c) { setScrollLock(activeSessionId, null); c.terminal.scrollToBottom(); }
+    return;
+  }
+  // Ctrl+Home: jump to top (engages lock at max offset)
+  if (!e.shiftKey && !e.altKey && e.key === 'Home') {
+    e.preventDefault();
+    const c = terminalCache.get(activeSessionId);
+    if (c) c.terminal.scrollToTop();
     return;
   }
 

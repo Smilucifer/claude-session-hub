@@ -499,6 +499,24 @@ html, body {
   display: inline-block;
 }
 
+/* Scroll lock indicator (floats in terminal when viewport is pinned) */
+.scroll-lock-indicator {
+  position: absolute;
+  top: 58px;
+  right: 16px;
+  background: rgba(240, 136, 62, 0.95);
+  color: #0d1117;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 12px;
+  cursor: pointer;
+  z-index: 40;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+  user-select: none;
+}
+.scroll-lock-indicator:hover { background: rgba(240, 136, 62, 1); }
+
 /* Terminal in-buffer search overlay */
 .terminal-search {
   position: absolute;
