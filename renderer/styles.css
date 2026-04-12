@@ -187,8 +187,14 @@ html, body {
 
 .session-time {
   font-size: 11px;
-  color: var(--text-muted);
+  font-weight: 500;
+  color: #ffffff;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+body.theme-light .session-time {
+  color: #1f2328;
 }
 
 .session-preview {

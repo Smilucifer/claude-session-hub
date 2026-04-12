@@ -240,21 +240,26 @@ function renderSessionList() {
 }
 
 // --- Terminal management ---
-// Load GPU renderer (WebGL, falling back to Canvas, falling back to default DOM).
-// Must be called after terminal.open(). Handles context loss by swapping in
-// Canvas so scrolling stays smooth even when the GPU context is reclaimed.
+// Load GPU renderer. Default is Canvas (stable + GPU-accelerated 2D). WebGL
+// is faster but on some GPU/driver combos it leaves cursor ghosting artifacts
+// in Claude Code's TUI redraw, so it's opt-in only.
+// Override via localStorage: setItem('hub.renderer', 'canvas' | 'webgl' | 'dom')
 function loadGpuRenderer(cached) {
   if (cached._gpuLoaded) return;
   cached._gpuLoaded = true;
-  try {
-    const webgl = new WebglAddon();
-    webgl.onContextLoss(() => {
-      webgl.dispose();
-      try { cached.terminal.loadAddon(new CanvasAddon()); } catch (_) {}
-    });
-    cached.terminal.loadAddon(webgl);
-    return;
-  } catch (_) { /* fall through to canvas */ }
+  const pref = localStorage.getItem('hub.renderer') || 'canvas';
+  if (pref === 'dom') return;
+  if (pref === 'webgl') {
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => {
+        webgl.dispose();
+        try { cached.terminal.loadAddon(new CanvasAddon()); } catch (_) {}
+      });
+      cached.terminal.loadAddon(webgl);
+      return;
+    } catch (_) { /* fall through to canvas */ }
+  }
   try { cached.terminal.loadAddon(new CanvasAddon()); } catch (_) {}
 }
 
@@ -408,7 +413,7 @@ function renderScrollLockIndicator() {
   }
 }
 
-function showTerminal(sessionId) {
+function showTerminal(sessionId, opts = { focus: true }) {
   for (const [, c] of terminalCache) c.container.style.display = 'none';
 
   const session = sessions.get(sessionId);
@@ -473,13 +478,11 @@ function showTerminal(sessionId) {
   requestAnimationFrame(() => {
     cached.fitAddon.fit();
     ipcRenderer.send('terminal-resize', { sessionId, cols: cached.terminal.cols, rows: cached.terminal.rows });
-    if (cached.scrollLock !== null) setScrollLock(sessionId, null);
-    cached.terminal.scrollToBottom();
-    cached.terminal.focus();
-    // Second rAF: after any re-render/layout settles, re-assert focus so the
-    // hidden xterm textarea keeps it (guards against the session-list click
-    // default behavior reclaiming focus on body).
-    requestAnimationFrame(() => cached.terminal.focus());
+    if (opts.focus) {
+      if (cached.scrollLock !== null) setScrollLock(sessionId, null);
+      cached.terminal.scrollToBottom();
+      cached.terminal.focus();
+    }
   });
 
   if (cached._ro) cached._ro.disconnect();
@@ -524,6 +527,7 @@ function startRename(sessionId, titleSpan) {
 
 // --- Session selection ---
 function selectSession(id) {
+  const switching = activeSessionId !== id;
   activeSessionId = id;
   const session = sessions.get(id);
   if (session) {
@@ -534,7 +538,7 @@ function selectSession(id) {
   }
   ipcRenderer.send('focus-session', { sessionId: id });
   renderSessionList();
-  showTerminal(id);
+  showTerminal(id, { focus: switching });
   renderScrollLockIndicator();
 }
 

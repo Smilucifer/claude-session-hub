@@ -27,9 +27,8 @@ class SessionManager {
     const sessionEnv = { ...process.env };
 
     if (isClaude) {
-      delete sessionEnv.ANTHROPIC_BASE_URL;
-      delete sessionEnv.ANTHROPIC_AUTH_TOKEN;
-      delete sessionEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL;
+      // Inherit ANTHROPIC_* from parent env so cc-switch / custom endpoint
+      // users keep the same auth behavior they get in a normal PowerShell.
       // Inherit proxy from parent env; if set, also add NO_PROXY for localhost
       if (sessionEnv.HTTP_PROXY || sessionEnv.HTTPS_PROXY) {
         sessionEnv.NO_PROXY = 'localhost,127.0.0.1';
