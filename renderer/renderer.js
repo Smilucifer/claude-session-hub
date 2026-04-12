@@ -327,7 +327,13 @@ function startRename(sessionId, titleSpan) {
 function selectSession(id) {
   activeSessionId = id;
   const session = sessions.get(id);
-  if (session) session.unreadCount = 0;
+  if (session) {
+    session.unreadCount = 0;
+    // Any running burst in progress is considered "read" by this click.
+    // Prevents the pending silence timer from re-incrementing unread
+    // after the user switches to another session.
+    session.currentBurstConsumed = true;
+  }
   ipcRenderer.send('focus-session', { sessionId: id });
   renderSessionList();
   showTerminal(id);
@@ -406,6 +412,8 @@ function onTerminalOutput(sessionId, dataLen) {
   // Only mark running if significant data (>200 bytes), not status bar refreshes
   if (dataCounters.get(sessionId) > 200 && session.status !== 'running') {
     session.status = 'running';
+    // A fresh burst starts — forget any earlier "read" claim for this session
+    session.currentBurstConsumed = false;
     renderSessionList();
   }
 
@@ -424,7 +432,7 @@ function onTerminalOutput(sessionId, dataLen) {
     // where the user has not yet asked anything (preview still empty).
     if (wasRunning && session.lastOutputPreview) {
       session.lastMessageTime = Date.now();
-      if (sessionId !== activeSessionId) {
+      if (sessionId !== activeSessionId && !session.currentBurstConsumed) {
         session.unreadCount = (session.unreadCount || 0) + 1;
       }
     }
