@@ -467,22 +467,22 @@ function onReplyCompleteFromHook(sessionId) {
   const session = sessions.get(sessionId);
   if (!session) return;
 
-  // Give xterm a moment to flush any in-flight data before reading preview
-  setTimeout(() => {
-    readTerminalPreview(sessionId);
-    if (!session.lastOutputPreview) return;
+  // No setTimeout wait: sig is derived from the user's question line (❯ ...)
+  // which is already in the buffer since the moment the user pressed Enter,
+  // long before Claude's Stop hook fires.
+  readTerminalPreview(sessionId);
+  if (!session.lastOutputPreview) return;
 
-    const sig = getQuestionsSignature(sessionId);
-    const prev = session.readSignature || '';
-    if (sig !== prev) {
-      session.lastMessageTime = Date.now();
-      session.readSignature = sig;
-      if (sessionId !== activeSessionId) {
-        session.unreadCount = (session.unreadCount || 0) + 1;
-      }
-      renderSessionList();
+  const sig = getQuestionsSignature(sessionId);
+  const prev = session.readSignature || '';
+  if (sig !== prev) {
+    session.lastMessageTime = Date.now();
+    session.readSignature = sig;
+    if (sessionId !== activeSessionId) {
+      session.unreadCount = (session.unreadCount || 0) + 1;
     }
-  }, 80);
+    renderSessionList();
+  }
 }
 
 ipcRenderer.on('session-created', (_e, { session }) => {
