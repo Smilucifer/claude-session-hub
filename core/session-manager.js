@@ -29,6 +29,9 @@ class SessionManager {
       if (sessionEnv.HTTP_PROXY || sessionEnv.HTTPS_PROXY) {
         sessionEnv.NO_PROXY = 'localhost,127.0.0.1';
       }
+      // Let the Stop/UserPromptSubmit hook script attribute events to this session
+      sessionEnv.CLAUDE_HUB_SESSION_ID = id;
+      sessionEnv.CLAUDE_HUB_PORT = '3456';
     }
 
     const shellArgs = isClaude ? ['-NoProfile', '-NoLogo'] : [];

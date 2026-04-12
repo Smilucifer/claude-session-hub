@@ -455,6 +455,36 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
   onTerminalOutput(sessionId, data.length);
 });
 
+// Primary signal for Claude sessions: the session-hub-hook.py Stop hook
+// POSTs here the moment Claude Code finishes a reply (<50ms latency).
+// The silence+signature path in onTerminalOutput stays as a fallback.
+ipcRenderer.on('hook-event', (_e, { event, sessionId }) => {
+  if (event !== 'stop') return;
+  onReplyCompleteFromHook(sessionId);
+});
+
+function onReplyCompleteFromHook(sessionId) {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+
+  // Give xterm a moment to flush any in-flight data before reading preview
+  setTimeout(() => {
+    readTerminalPreview(sessionId);
+    if (!session.lastOutputPreview) return;
+
+    const sig = getQuestionsSignature(sessionId);
+    const prev = session.readSignature || '';
+    if (sig !== prev) {
+      session.lastMessageTime = Date.now();
+      session.readSignature = sig;
+      if (sessionId !== activeSessionId) {
+        session.unreadCount = (session.unreadCount || 0) + 1;
+      }
+      renderSessionList();
+    }
+  }, 80);
+}
+
 ipcRenderer.on('session-created', (_e, { session }) => {
   sessions.set(session.id, session);
   activeSessionId = session.id;

@@ -2,7 +2,10 @@ const { app, BrowserWindow, ipcMain, clipboard, nativeImage } = require('electro
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const http = require('http');
 const { SessionManager } = require('./core/session-manager.js');
+
+const HOOK_PORT = 3456;
 
 let mainWindow;
 const sessionManager = new SessionManager();
@@ -79,10 +82,6 @@ ipcMain.handle('get-sessions', () => {
 // --- Clipboard image paste support ---
 const imageDir = path.join(process.env.USERPROFILE || process.env.HOME, '.claude-session-hub', 'images');
 
-ipcMain.handle('debug-trigger-paste', () => {
-  if (mainWindow) mainWindow.webContents.paste();
-});
-
 ipcMain.handle('save-clipboard-image', () => {
   const img = clipboard.readImage();
   if (img.isEmpty()) return null;
@@ -99,11 +98,39 @@ ipcMain.handle('save-clipboard-image', () => {
   return filePath;
 });
 
+// --- Hook HTTP server ---
+// Receives POSTs from ~/.claude/scripts/session-hub-hook.py when Claude Code
+// fires Stop / UserPromptSubmit hooks. Forwards to renderer as an IPC event.
+const hookServer = http.createServer((req, res) => {
+  res.setHeader('Content-Type', 'application/json');
+  if (req.method !== 'POST' || !req.url.startsWith('/api/hook/')) {
+    res.writeHead(404); res.end('{}'); return;
+  }
+  const event = req.url.slice('/api/hook/'.length); // 'stop' or 'prompt'
+  let body = '';
+  req.on('data', c => body += c);
+  req.on('end', () => {
+    try {
+      const { sessionId } = JSON.parse(body || '{}');
+      if (sessionId) sendToRenderer('hook-event', { event, sessionId });
+    } catch {}
+    res.writeHead(200); res.end('{}');
+  });
+});
+
+hookServer.on('error', (e) => {
+  console.warn(`[hub] hook server error on :${HOOK_PORT}:`, e.message);
+});
+
 app.whenReady().then(() => {
+  hookServer.listen(HOOK_PORT, '127.0.0.1', () => {
+    console.log(`[hub] hook server listening on 127.0.0.1:${HOOK_PORT}`);
+  });
   createWindow();
 });
 
 app.on('window-all-closed', () => {
+  hookServer.close();
   sessionManager.dispose();
   app.quit();
 });
