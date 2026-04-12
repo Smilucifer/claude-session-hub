@@ -389,14 +389,9 @@ function readTerminalPreview(sessionId) {
   const previewLines = recent.map(q => 'Q: ' + (q.length > 40 ? q.substring(0, 38) + '...' : q));
   const newPreview = previewLines.join('\n');
 
+  // Preview text only; sort time + unread are bumped on AI reply completion
   if (newPreview && newPreview !== session.lastOutputPreview) {
-    const oldPreview = session.lastOutputPreview;
     session.lastOutputPreview = newPreview;
-    session.lastMessageTime = Date.now();
-    // Only count as unread if preview actually changed to new content
-    if (oldPreview !== newPreview && sessionId !== activeSessionId) {
-      session.unreadCount = (session.unreadCount || 0) + 1;
-    }
     renderSessionList();
   }
 }
@@ -420,12 +415,21 @@ function onTerminalOutput(sessionId, dataLen) {
     silenceTimers.delete(sessionId);
     dataCounters.delete(sessionId);
 
-    // Output stopped → idle + read preview
-    if (session.status !== 'idle') {
-      session.status = 'idle';
-      renderSessionList();
-    }
+    const wasRunning = session.status === 'running';
+    if (wasRunning) session.status = 'idle';
+
     readTerminalPreview(sessionId);
+
+    // running → idle = AI reply just completed. Skip the initial banner case
+    // where the user has not yet asked anything (preview still empty).
+    if (wasRunning && session.lastOutputPreview) {
+      session.lastMessageTime = Date.now();
+      if (sessionId !== activeSessionId) {
+        session.unreadCount = (session.unreadCount || 0) + 1;
+      }
+    }
+
+    renderSessionList();
   }, SILENCE_MS));
 }
 
