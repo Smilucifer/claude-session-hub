@@ -359,6 +359,18 @@ html, body {
   background: var(--bg-secondary);
 }
 
+/* Hook server offline banner */
+.hook-status-banner {
+  background: rgba(231, 76, 60, 0.15);
+  color: var(--accent-red);
+  border: 1px solid rgba(231, 76, 60, 0.3);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin: 8px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 /* Image preview tooltip */
 .image-preview-tooltip {
   position: fixed;

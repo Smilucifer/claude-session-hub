@@ -5,10 +5,17 @@ const crypto = require('crypto');
 const http = require('http');
 const { SessionManager } = require('./core/session-manager.js');
 
-const HOOK_PORT = 3456;
+// Hook server picks the first free port in this range.
+const HOOK_PORT_CANDIDATES = [3456, 3457, 3458, 3459, 3460];
+// Random per-launch token; hook POSTs must carry it. Stops any other local
+// process from forging unread bumps.
+const HOOK_TOKEN = crypto.randomBytes(16).toString('hex');
+
+let hookPort = null;  // set after listen() succeeds
 
 let mainWindow;
 const sessionManager = new SessionManager();
+sessionManager.hookToken = HOOK_TOKEN;  // port set after listen
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -83,24 +90,35 @@ ipcMain.handle('get-sessions', () => {
 const imageDir = path.join(process.env.USERPROFILE || process.env.HOME, '.claude-session-hub', 'images');
 
 ipcMain.handle('save-clipboard-image', () => {
-  const img = clipboard.readImage();
-  if (img.isEmpty()) return null;
+  try {
+    const img = clipboard.readImage();
+    if (img.isEmpty()) return null;
 
-  fs.mkdirSync(imageDir, { recursive: true });
+    fs.mkdirSync(imageDir, { recursive: true });
 
-  const now = new Date();
-  const ts = now.toISOString().replace(/[-:T]/g, '').slice(0, 14); // 20260412143052
-  const id = crypto.randomBytes(3).toString('hex'); // a1b2c3
-  const filename = `${ts}-${id}.png`;
-  const filePath = path.join(imageDir, filename);
+    const now = new Date();
+    const ts = now.toISOString().replace(/[-:T]/g, '').slice(0, 14); // 20260412143052
+    const id = crypto.randomBytes(3).toString('hex'); // a1b2c3
+    const filename = `${ts}-${id}.png`;
+    const filePath = path.join(imageDir, filename);
 
-  fs.writeFileSync(filePath, img.toPNG());
-  return filePath;
+    fs.writeFileSync(filePath, img.toPNG());
+    return filePath;
+  } catch (e) {
+    console.warn('[hub] save-clipboard-image failed:', e.message);
+    return null;
+  }
 });
+
+// Let renderer inspect current hook server health for UI indicator.
+ipcMain.handle('get-hook-status', () => ({
+  up: hookPort !== null,
+  port: hookPort,
+}));
 
 // --- Hook HTTP server ---
 // Receives POSTs from ~/.claude/scripts/session-hub-hook.py when Claude Code
-// fires Stop / UserPromptSubmit hooks. Forwards to renderer as an IPC event.
+// fires Stop / UserPromptSubmit hooks. Forwards to renderer as IPC events.
 const hookServer = http.createServer((req, res) => {
   res.setHeader('Content-Type', 'application/json');
   if (req.method !== 'POST' || !req.url.startsWith('/api/hook/')) {
@@ -110,23 +128,57 @@ const hookServer = http.createServer((req, res) => {
   let body = '';
   req.on('data', c => body += c);
   req.on('end', () => {
-    try {
-      const { sessionId } = JSON.parse(body || '{}');
-      if (sessionId) sendToRenderer('hook-event', { event, sessionId });
-    } catch {}
+    let parsed;
+    try { parsed = JSON.parse(body || '{}'); } catch { parsed = {}; }
+    // Auth: reject POSTs without the correct per-launch token
+    if (parsed.token !== HOOK_TOKEN) {
+      res.writeHead(403); res.end('{}'); return;
+    }
+    // Attribution: must be a live session we know about
+    if (parsed.sessionId && sessionManager.getSession(parsed.sessionId)) {
+      sendToRenderer('hook-event', { event, sessionId: parsed.sessionId });
+    }
     res.writeHead(200); res.end('{}');
   });
 });
 
-hookServer.on('error', (e) => {
-  console.warn(`[hub] hook server error on :${HOOK_PORT}:`, e.message);
-});
-
-app.whenReady().then(() => {
-  hookServer.listen(HOOK_PORT, '127.0.0.1', () => {
-    console.log(`[hub] hook server listening on 127.0.0.1:${HOOK_PORT}`);
+// Try candidate ports in order; return the first that listens successfully.
+// Any bind error on a candidate (EADDRINUSE, EACCES, EPERM, …) falls through
+// to the next; only when all candidates fail do we give up.
+function listenWithFallback() {
+  return new Promise((resolve) => {
+    let idx = 0;
+    const tryNext = () => {
+      if (idx >= HOOK_PORT_CANDIDATES.length) return resolve(null);
+      const port = HOOK_PORT_CANDIDATES[idx++];
+      hookServer.removeAllListeners('error');
+      hookServer.removeAllListeners('listening');
+      hookServer.once('error', (e) => {
+        console.warn(`[hub] hook server bind failed on :${port} (${e.code}): ${e.message}`);
+        tryNext();
+      });
+      hookServer.once('listening', () => resolve(port));
+      hookServer.listen(port, '127.0.0.1');
+    };
+    tryNext();
   });
+}
+
+app.whenReady().then(async () => {
+  hookPort = await listenWithFallback();
+  if (hookPort) {
+    console.log(`[hub] hook server listening on 127.0.0.1:${hookPort}`);
+    sessionManager.hookPort = hookPort;
+  } else {
+    console.warn('[hub] hook server failed to bind — falling back to silence detection');
+  }
   createWindow();
+  // Push status to renderer after window is ready
+  if (mainWindow) {
+    mainWindow.webContents.on('did-finish-load', () => {
+      sendToRenderer('hook-status', { up: hookPort !== null, port: hookPort });
+    });
+  }
 });
 
 app.on('window-all-closed', () => {

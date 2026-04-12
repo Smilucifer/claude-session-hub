@@ -5,7 +5,12 @@ class SessionManager {
   sessions = new Map();
   focusedSessionId = null;
   claudeCounter = 0;
+  resumeCounter = 0;
   psCounter = 0;
+
+  // Injected by main: the chosen hook HTTP port + per-launch auth token.
+  hookPort = null;
+  hookToken = null;
 
   // Callbacks
   onData = (sessionId, data) => {};
@@ -16,22 +21,23 @@ class SessionManager {
     const isClaude = kind === 'claude' || kind === 'claude-resume';
     let title;
     if (kind === 'claude') title = `Claude ${++this.claudeCounter}`;
-    else if (kind === 'claude-resume') title = `Claude ${++this.claudeCounter} (resume)`;
+    else if (kind === 'claude-resume') title = `Claude Resume ${++this.resumeCounter}`;
     else title = `PowerShell ${++this.psCounter}`;
 
     const sessionEnv = { ...process.env };
 
     if (isClaude) {
-      sessionEnv.ANTHROPIC_BASE_URL = '';
-      sessionEnv.ANTHROPIC_AUTH_TOKEN = '';
-      sessionEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL = '';
+      delete sessionEnv.ANTHROPIC_BASE_URL;
+      delete sessionEnv.ANTHROPIC_AUTH_TOKEN;
+      delete sessionEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL;
       // Inherit proxy from parent env; if set, also add NO_PROXY for localhost
       if (sessionEnv.HTTP_PROXY || sessionEnv.HTTPS_PROXY) {
         sessionEnv.NO_PROXY = 'localhost,127.0.0.1';
       }
-      // Let the Stop/UserPromptSubmit hook script attribute events to this session
+      // Attribution + auth for the Stop/UserPromptSubmit hook script
       sessionEnv.CLAUDE_HUB_SESSION_ID = id;
-      sessionEnv.CLAUDE_HUB_PORT = '3456';
+      if (this.hookPort) sessionEnv.CLAUDE_HUB_PORT = String(this.hookPort);
+      if (this.hookToken) sessionEnv.CLAUDE_HUB_TOKEN = this.hookToken;
     }
 
     const shellArgs = isClaude ? ['-NoProfile', '-NoLogo'] : [];

@@ -4,28 +4,21 @@ const { FitAddon } = require('@xterm/addon-fit');
 const { Unicode11Addon } = require('@xterm/addon-unicode11');
 
 // --- Image paste support ---
-// Intercept Ctrl/Cmd+V at keydown: in Electron the browser's native paste
-// action often doesn't fire a paste event for us when focus is on xterm's
-// helper textarea, so the only reliable hook is keydown.
-document.addEventListener('keydown', async (e) => {
-  if (!((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V'))) return;
-
+// Attached per-terminal via attachCustomKeyEventHandler in getOrCreateTerminal.
+// This fires only when the xterm has focus — NOT on other inputs like the
+// rename box, which would otherwise hijack Ctrl+V when the clipboard has
+// an image.
+async function handleImagePasteForSession(sessionId) {
   const img = clipboard.readImage();
-  if (img.isEmpty()) return; // No image: let xterm handle normal text paste
-
-  e.preventDefault();
-  e.stopPropagation();
-  e.stopImmediatePropagation();
-
-  if (!activeSessionId) return;
+  if (img.isEmpty()) return false;  // no image — let xterm do default text paste
 
   const filePath = await ipcRenderer.invoke('save-clipboard-image');
-  if (!filePath) return;
+  if (!filePath) return false;
 
-  // xterm.paste() applies bracketed-paste-mode framing which Claude Code CLI requires
-  const cached = terminalCache.get(activeSessionId);
+  const cached = terminalCache.get(sessionId);
   if (cached) cached.terminal.paste(filePath);
-}, true);
+  return true;
+}
 
 // --- Image hover preview tooltip ---
 const previewTooltip = document.createElement('div');
@@ -217,6 +210,18 @@ function getOrCreateTerminal(sessionId) {
   terminal.onData((data) => { ipcRenderer.send('terminal-input', { sessionId, data }); });
   terminal.onBinary((data) => { ipcRenderer.send('terminal-input', { sessionId, data }); });
 
+  // Image paste: only intercept when this terminal has focus.
+  // Returning false tells xterm to skip default handling for this key event.
+  terminal.attachCustomKeyEventHandler((e) => {
+    if (e.type !== 'keydown') return true;
+    const isPaste = (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V');
+    if (!isPaste) return true;
+    if (clipboard.readImage().isEmpty()) return true;  // plain text paste — let xterm handle
+    e.preventDefault();
+    handleImagePasteForSession(sessionId);
+    return false;
+  });
+
   const container = document.createElement('div');
   container.style.cssText = 'width:100%;height:100%;display:none';
 
@@ -285,6 +290,7 @@ function showTerminal(sessionId) {
   });
 
   if (cached._ro) cached._ro.disconnect();
+  if (cached._resizeHandler) window.removeEventListener('resize', cached._resizeHandler);
   const handleResize = () => {
     cached.fitAddon.fit();
     ipcRenderer.send('terminal-resize', { sessionId, cols: cached.terminal.cols, rows: cached.terminal.rows });
@@ -359,11 +365,6 @@ for (const btn of document.querySelectorAll('.new-session-option')) {
 const silenceTimers = new Map();
 const dataCounters = new Map();  // sessionId -> bytes received in current burst
 const SILENCE_MS = 2000; // 2s silence = idle (Claude Code status bar refreshes ~every 30-60s)
-
-/** Check if line contains meaningful CJK content (>=2 consecutive chars) */
-function hasCJK(text) {
-  return /[\u4e00-\u9fff\u3400-\u4dbf]{2,}/.test(text);
-}
 
 /** Extract user questions (lines starting with ❯/›/>) from xterm buffer. */
 function extractUserQuestions(sessionId) {
@@ -455,13 +456,46 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
   onTerminalOutput(sessionId, data.length);
 });
 
-// Primary signal for Claude sessions: the session-hub-hook.py Stop hook
-// POSTs here the moment Claude Code finishes a reply (<50ms latency).
-// The silence+signature path in onTerminalOutput stays as a fallback.
+// Claude Code hooks drive the session state.
+// - 'prompt' (UserPromptSubmit): fires the moment user presses Enter.
+//   Immediately flag the session as running — faster & more precise than
+//   the 200-byte PTY heuristic.
+// - 'stop' (Stop): fires when the agent loop finishes. Triggers unread/time bump.
 ipcRenderer.on('hook-event', (_e, { event, sessionId }) => {
-  if (event !== 'stop') return;
-  onReplyCompleteFromHook(sessionId);
+  if (event === 'stop') onReplyCompleteFromHook(sessionId);
+  else if (event === 'prompt') onPromptSubmittedFromHook(sessionId);
 });
+
+function onPromptSubmittedFromHook(sessionId) {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+  if (session.status !== 'running') {
+    session.status = 'running';
+    renderSessionList();
+  }
+}
+
+// Hook-server health indicator (banner in sidebar when down)
+let hookUp = true;
+ipcRenderer.on('hook-status', (_e, { up }) => {
+  hookUp = up;
+  renderHookStatus();
+});
+
+function renderHookStatus() {
+  let banner = document.getElementById('hook-status-banner');
+  if (hookUp) {
+    if (banner) banner.remove();
+    return;
+  }
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'hook-status-banner';
+    banner.className = 'hook-status-banner';
+    banner.textContent = 'Hook server offline — unread notifications may be delayed (silence fallback active)';
+    document.querySelector('.session-sidebar').prepend(banner);
+  }
+}
 
 function onReplyCompleteFromHook(sessionId) {
   const session = sessions.get(sessionId);
@@ -495,6 +529,11 @@ ipcRenderer.on('session-created', (_e, { session }) => {
 
 ipcRenderer.on('session-closed', (_e, { sessionId }) => {
   sessions.delete(sessionId);
+  if (silenceTimers.has(sessionId)) {
+    clearTimeout(silenceTimers.get(sessionId));
+    silenceTimers.delete(sessionId);
+  }
+  dataCounters.delete(sessionId);
   const cached = terminalCache.get(sessionId);
   if (cached) {
     if (cached._ro) cached._ro.disconnect();
