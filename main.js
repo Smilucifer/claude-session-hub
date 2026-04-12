@@ -181,6 +181,7 @@ const hookServer = http.createServer((req, res) => {
           contextMax: parsed.contextMax,
           usage5h: parsed.usage5h,
           usage7d: parsed.usage7d,
+          model: parsed.model,
         });
       }
     }

@@ -491,6 +491,31 @@ html, body {
 .ctx-badge.warn { background: rgba(240, 136, 62, 0.3); color: var(--accent-orange); }
 .ctx-badge.danger { background: rgba(231, 76, 60, 0.3); color: var(--accent-red); }
 
+/* Model badges — sidebar pill and terminal-header chip share color families */
+.model-badge {
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.model-badge.opus    { background: rgba(188, 140, 255, 0.22); color: #d2a8ff; }
+.model-badge.sonnet  { background: rgba(88, 166, 255, 0.22);  color: #79c0ff; }
+.model-badge.haiku   { background: rgba(63, 185, 80, 0.22);   color: #56d364; }
+.model-badge:not(.opus):not(.sonnet):not(.haiku) { background: rgba(139, 148, 158, 0.22); color: #b1bac4; }
+
+.terminal-model-badge {
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+.terminal-model-badge.opus    { background: rgba(188, 140, 255, 0.22); color: #d2a8ff; }
+.terminal-model-badge.sonnet  { background: rgba(88, 166, 255, 0.22);  color: #79c0ff; }
+.terminal-model-badge.haiku   { background: rgba(63, 185, 80, 0.22);   color: #56d364; }
+.terminal-model-badge:not(.opus):not(.sonnet):not(.haiku) { background: rgba(139, 148, 158, 0.22); color: #b1bac4; }
+
 /* Pinned session indicator */
 .session-item .pin-icon {
   color: var(--accent-orange);

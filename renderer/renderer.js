@@ -4,6 +4,8 @@ const { FitAddon } = require('@xterm/addon-fit');
 const { Unicode11Addon } = require('@xterm/addon-unicode11');
 const { SearchAddon } = require('@xterm/addon-search');
 const { WebLinksAddon } = require('@xterm/addon-web-links');
+const { WebglAddon } = require('@xterm/addon-webgl');
+const { CanvasAddon } = require('@xterm/addon-canvas');
 
 // --- Paste support (text + image) ---
 // Attached per-terminal via attachCustomKeyEventHandler in getOrCreateTerminal.
@@ -216,6 +218,10 @@ function renderSessionList() {
     const ctxBadge = typeof s.contextPct === 'number'
       ? `<span class="ctx-badge ${pctClass(s.contextPct)}" title="Context ${s.contextPct}%">Ctx ${s.contextPct}%</span>`
       : '';
+    const modelBadge = s.currentModel
+      ? `<span class="model-badge ${modelClass(s.currentModel.id)}" title="${escapeHtml(s.currentModel.displayName || s.currentModel.id)}">${escapeHtml(modelShort(s.currentModel))}</span>`
+      : '';
+    const footerInner = [modelBadge, ctxBadge].filter(Boolean).join('');
     div.innerHTML = `
       <div class="session-item-header">
         <span class="session-title">${s.pinned ? '<span class="pin-icon" title="Pinned">📌</span>' : ''}<span class="session-status ${s.status}"></span>${escapeHtml(s.title)}</span>
@@ -225,7 +231,7 @@ function renderSessionList() {
         </span>
       </div>
       <div class="session-preview">${escapeHtml(s.lastOutputPreview || 'No output yet')}</div>
-      ${ctxBadge ? `<div class="session-footer">${ctxBadge}</div>` : ''}
+      ${footerInner ? `<div class="session-footer">${footerInner}</div>` : ''}
     `;
     div.addEventListener('click', () => selectSession(s.id));
     div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY); });
@@ -234,6 +240,24 @@ function renderSessionList() {
 }
 
 // --- Terminal management ---
+// Load GPU renderer (WebGL, falling back to Canvas, falling back to default DOM).
+// Must be called after terminal.open(). Handles context loss by swapping in
+// Canvas so scrolling stays smooth even when the GPU context is reclaimed.
+function loadGpuRenderer(cached) {
+  if (cached._gpuLoaded) return;
+  cached._gpuLoaded = true;
+  try {
+    const webgl = new WebglAddon();
+    webgl.onContextLoss(() => {
+      webgl.dispose();
+      try { cached.terminal.loadAddon(new CanvasAddon()); } catch (_) {}
+    });
+    cached.terminal.loadAddon(webgl);
+    return;
+  } catch (_) { /* fall through to canvas */ }
+  try { cached.terminal.loadAddon(new CanvasAddon()); } catch (_) {}
+}
+
 function getOrCreateTerminal(sessionId) {
   if (terminalCache.has(sessionId)) return terminalCache.get(sessionId);
 
@@ -293,11 +317,13 @@ function getOrCreateTerminal(sessionId) {
 
   // Wrap write so that any viewport shift caused by CC's cursor positioning
   // is re-pinned to the user's locked offset before the frame paints.
+  // Fast-path: when no lock is active (the common case), delegate directly.
   const origWrite = terminal.write.bind(terminal);
   terminal.write = function (data, cb) {
+    const c = terminalCache.get(sessionId);
+    if (!c || c.scrollLock === null) return origWrite(data, cb);
     origWrite(data, () => {
-      const c = terminalCache.get(sessionId);
-      if (c && c.scrollLock !== null) {
+      if (c.scrollLock !== null) {
         const buf = terminal.buffer.active;
         const desired = Math.max(0, buf.baseY - c.scrollLock);
         if (buf.viewportY !== desired) {
@@ -336,13 +362,15 @@ function getOrCreateTerminal(sessionId) {
     terminal.paste(quoted);
   });
 
-  // Ctrl+wheel zoom
+  // Ctrl+wheel zoom — passive so xterm's own wheel-scroll stays on the
+  // compositor thread. Chromium still lets us observe the event; we just
+  // can't preventDefault. The browser's page-zoom on Ctrl+wheel is already
+  // disabled globally in Electron for non-text areas.
   container.addEventListener('wheel', (e) => {
     if (!e.ctrlKey && !e.metaKey) return;
-    e.preventDefault();
     const delta = e.deltaY < 0 ? 1 : -1;
     setFontSize(currentFontSize + delta);
-  }, { passive: false });
+  }, { passive: true });
 
   const cached = {
     terminal, fitAddon, searchAddon, container, opened: false,
@@ -408,6 +436,14 @@ function showTerminal(sessionId) {
 
   titleSection.append(titleSpan, statusSpan);
 
+  if (session.currentModel) {
+    const modelSpan = document.createElement('span');
+    modelSpan.className = 'terminal-model-badge ' + modelClass(session.currentModel.id);
+    modelSpan.textContent = session.currentModel.displayName || modelShort(session.currentModel);
+    modelSpan.title = session.currentModel.id;
+    titleSection.appendChild(modelSpan);
+  }
+
   const closeBtn = document.createElement('button');
   closeBtn.className = 'btn-close-session';
   closeBtn.textContent = 'Close';
@@ -430,13 +466,20 @@ function showTerminal(sessionId) {
   if (!cached.opened) {
     cached.terminal.open(cached.container);
     cached.opened = true;
+    loadGpuRenderer(cached);
     setupImageHover(cached.terminal, cached.container);
   }
 
   requestAnimationFrame(() => {
     cached.fitAddon.fit();
     ipcRenderer.send('terminal-resize', { sessionId, cols: cached.terminal.cols, rows: cached.terminal.rows });
+    if (cached.scrollLock !== null) setScrollLock(sessionId, null);
+    cached.terminal.scrollToBottom();
     cached.terminal.focus();
+    // Second rAF: after any re-render/layout settles, re-assert focus so the
+    // hidden xterm textarea keeps it (guards against the session-list click
+    // default behavior reclaiming focus on body).
+    requestAnimationFrame(() => cached.terminal.focus());
   });
 
   if (cached._ro) cached._ro.disconnect();
@@ -517,64 +560,51 @@ const silenceTimers = new Map();
 const dataCounters = new Map();  // sessionId -> bytes received in current burst
 const SILENCE_MS = 2000; // 2s silence = idle (Claude Code status bar refreshes ~every 30-60s)
 
-/** Extract user questions (lines starting with ❯/›/>) from xterm buffer. */
+/** Pure parser: extract user prompts from raw buffer line strings.
+ *  Claude Code's user-input prompt is "❯ <text>", often wrapped in a
+ *  box like "│ ❯ <text> │". This strictly matches ❯ (not > or ›,
+ *  which would catch AI output) and skips any line containing an
+ *  AI-reply marker (⏺●◐ etc.) as a safety net.
+ */
+function parseQuestionsFromLines(lines) {
+  const questions = [];
+  const seen = new Set();
+  const AI_MARKERS = /[⏺●◉◐◑◒◓◔◕]/;
+  const RE = /❯\s+(.+?)(?:\s*[│╯╰╭╮]+\s*)?$/;
+  for (const raw of lines) {
+    if (!raw) continue;
+    if (AI_MARKERS.test(raw)) continue;
+    const m = raw.match(RE);
+    if (!m) continue;
+    const q = m[1].replace(/\s+$/, '').trim();
+    if (q.length < 2) continue;
+    if (seen.has(q)) continue;
+    seen.add(q);
+    questions.push(q);
+  }
+  return questions;
+}
+
+/** Extract user questions from an xterm buffer. */
 function extractUserQuestions(sessionId) {
   const cached = terminalCache.get(sessionId);
   if (!cached || !cached.opened) return [];
   const buf = cached.terminal.buffer.active;
-  const questions = [];
+  const lines = [];
   for (let i = 0; i < buf.length; i++) {
     const line = buf.getLine(i);
     if (!line) continue;
-    const text = line.translateToString(true).trim();
-    if (!text) continue;
-    const m = text.match(/^[❯›>]\s*(.+)/);
-    if (m && m[1].length > 1) questions.push(m[1].trim());
+    const text = line.translateToString(true);
+    if (text.trim()) lines.push(text);
   }
-  return questions;
+  return parseQuestionsFromLines(lines);
 }
+
 
 /** Signature: last question text. Used to distinguish real Q&A turns from TUI noise. */
 function getQuestionsSignature(sessionId) {
   const qs = extractUserQuestions(sessionId);
   return qs.length === 0 ? '' : qs[qs.length - 1].slice(0, 200);
-}
-
-/** Extract a short AI-answer snippet that follows the most recent question. */
-function extractLatestAnswer(sessionId) {
-  const cached = terminalCache.get(sessionId);
-  if (!cached || !cached.opened) return '';
-  const buf = cached.terminal.buffer.active;
-
-  // Find the most recent non-empty ❯ question line (not the current empty prompt).
-  let qIdx = -1;
-  for (let i = buf.length - 1; i >= 0; i--) {
-    const line = buf.getLine(i);
-    if (!line) continue;
-    const t = line.translateToString(true).trim();
-    const m = t.match(/^[❯›>]\s*(.+)/);
-    if (m && m[1].length > 1) { qIdx = i; break; }
-  }
-  if (qIdx === -1) return '';
-
-  // Walk forward and take the first substantive line that isn't status bar / UI chrome.
-  for (let i = qIdx + 1; i < buf.length; i++) {
-    const line = buf.getLine(i);
-    if (!line) continue;
-    const t = line.translateToString(true).trim();
-    if (!t) continue;
-    // Skip decorative lines
-    if (/^[─━┌┐└┘│├┤┬┴┼╭╮╰╯╱╲═║╔╗╚╝]+$/.test(t)) continue;
-    if (/^[❯›>]/.test(t)) continue;
-    // Skip the Claude Code status bar strings
-    if (/^(Context|Usage|⏵⏵|CLAUDE\.md|MCPs|hooks|medium|high|low|bypass permissions|\d+\s*CLAUDE)/.test(t)) continue;
-    if (/\[(Opus|Sonnet|Haiku)/i.test(t)) continue;
-    // Strip common AI-reply prefixes (⏺ filled circle, ● bullet, > quote)
-    const cleaned = t.replace(/^[⏺●◉○•·⊙]\s*/, '').trim();
-    if (cleaned.length < 2) continue;
-    return cleaned;
-  }
-  return '';
 }
 
 function readTerminalPreview(sessionId) {
@@ -585,12 +615,7 @@ function readTerminalPreview(sessionId) {
   if (questions.length === 0) return;
 
   const lastQ = questions[questions.length - 1];
-  const qLine = 'Q: ' + (lastQ.length > 50 ? lastQ.substring(0, 48) + '…' : lastQ);
-
-  const ans = extractLatestAnswer(sessionId);
-  const aLine = ans ? 'A: ' + (ans.length > 50 ? ans.substring(0, 48) + '…' : ans) : '';
-
-  const newPreview = aLine ? `${qLine}\n${aLine}` : qLine;
+  const newPreview = 'Q: ' + (lastQ.length > 60 ? lastQ.substring(0, 58) + '…' : lastQ);
 
   // Preview text only; sort time + unread are bumped on AI reply completion
   if (newPreview && newPreview !== session.lastOutputPreview) {
@@ -658,6 +683,10 @@ ipcRenderer.on('status-event', (_e, payload) => {
     session.contextPct = payload.contextPct;
     session.contextUsed = payload.contextUsed;
     session.contextMax = payload.contextMax;
+    if (payload.model && payload.model.id) {
+      session.currentModel = payload.model;
+      if (payload.sessionId === activeSessionId) updateActiveModelBadge();
+    }
   }
   // Usage is account-wide — keep the latest reported values
   if (payload.usage5h) accountUsage.usage5h = payload.usage5h;
@@ -665,6 +694,50 @@ ipcRenderer.on('status-event', (_e, payload) => {
   renderAccountUsage();
   renderSessionList();
 });
+
+// Map a Claude Code model id to a CSS family class for badge coloring.
+function modelClass(id) {
+  if (!id) return '';
+  const s = id.toLowerCase();
+  if (s.includes('opus')) return 'opus';
+  if (s.includes('sonnet')) return 'sonnet';
+  if (s.includes('haiku')) return 'haiku';
+  return '';
+}
+
+// Short label for the sidebar badge. display_name is already compact
+// ("Opus 4.6 (1M context)"); we strip the parenthetical to keep the pill slim.
+function modelShort(m) {
+  if (!m) return '';
+  const dn = m.displayName || '';
+  if (dn) return dn.replace(/\s*\(.*?\)\s*$/, '').trim();
+  const id = (m.id || '').toLowerCase();
+  if (id.includes('opus')) return 'Opus';
+  if (id.includes('sonnet')) return 'Sonnet';
+  if (id.includes('haiku')) return 'Haiku';
+  return m.id || '';
+}
+
+// Refresh just the terminal-header badge for the active session without a full re-render.
+function updateActiveModelBadge() {
+  const session = activeSessionId ? sessions.get(activeSessionId) : null;
+  if (!session) return;
+  const titleSection = terminalPanelEl.querySelector('.terminal-title-section');
+  if (!titleSection) return; // header not mounted yet (empty state)
+  let badge = titleSection.querySelector('.terminal-model-badge');
+  if (!session.currentModel) {
+    if (badge) badge.remove();
+    return;
+  }
+  if (!badge) {
+    badge = document.createElement('span');
+    badge.className = 'terminal-model-badge';
+    titleSection.appendChild(badge);
+  }
+  badge.className = 'terminal-model-badge ' + modelClass(session.currentModel.id);
+  badge.textContent = session.currentModel.displayName || modelShort(session.currentModel);
+  badge.title = session.currentModel.id;
+}
 
 function formatResetIn(resetsAt) {
   if (!resetsAt) return '';
