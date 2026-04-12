@@ -1,9 +1,38 @@
-const { app, BrowserWindow, ipcMain, clipboard, nativeImage, Notification } = require('electron');
+const { app, BrowserWindow, ipcMain, clipboard, nativeImage, Notification, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const http = require('http');
 const { SessionManager } = require('./core/session-manager.js');
+const stateStore = require('./core/state-store.js');
+
+// Read the last user message text from a Claude Code transcript JSONL file.
+// The transcript is append-only; we scan backwards for the first entry whose
+// role/type is "user" and return its text content (strings or text blocks).
+// Returns null on any failure — caller should treat absence as non-fatal.
+function readLastUserMessage(transcriptPath) {
+  try {
+    const content = fs.readFileSync(transcriptPath, 'utf-8');
+    const lines = content.split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      let entry;
+      try { entry = JSON.parse(line); } catch { continue; }
+      const role = entry.type || entry.role;
+      if (role !== 'user') continue;
+      const msg = entry.message;
+      let text = '';
+      if (typeof msg === 'string') text = msg;
+      else if (msg && typeof msg.content === 'string') text = msg.content;
+      else if (msg && Array.isArray(msg.content)) {
+        text = msg.content.filter(c => c && c.type === 'text').map(c => c.text || '').join(' ').trim();
+      }
+      if (text) return text;
+    }
+  } catch {}
+  return null;
+}
 
 // Hook server picks the first free port in this range.
 const HOOK_PORT_CANDIDATES = [3456, 3457, 3458, 3459, 3460];
@@ -17,12 +46,21 @@ let mainWindow;
 const sessionManager = new SessionManager();
 sessionManager.hookToken = HOOK_TOKEN;  // port set after listen
 
+// Bind an explicit AppUserModelID so Windows identifies the running window as
+// Claude Session Hub (not generic electron.exe). Without this the taskbar
+// icon / grouping can fall back to the Electron default.
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.tianlin.claude-session-hub');
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     title: 'Claude Session Hub',
     backgroundColor: '#0d1117',
+    icon: path.join(__dirname, 'claude-wx.ico'),
+    show: false,
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
@@ -30,6 +68,8 @@ function createWindow() {
     },
   });
 
+  mainWindow.maximize();
+  mainWindow.show();
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   mainWindow.on('closed', () => { mainWindow = null; });
 }
@@ -84,6 +124,45 @@ ipcMain.handle('rename-session', (_e, { sessionId, title }) => {
 
 ipcMain.handle('get-sessions', () => {
   return sessionManager.getAllSessions();
+});
+
+// --- Dormant session persistence ---
+// On boot we read state.json; those entries become dormant (sidebar entries
+// with no live PTY). User clicks dormant session → resume-session IPC spawns
+// PTY with `claude --resume <ccSessionId>`.
+const bootState = stateStore.load();
+const bootWasClean = bootState.cleanShutdown;
+let lastPersistedSessions = Array.isArray(bootState.sessions) ? bootState.sessions : [];
+// Flip cleanShutdown to false immediately on boot; before-quit will flip it back.
+stateStore.save({ version: 1, cleanShutdown: false, sessions: lastPersistedSessions }, { sync: true });
+
+ipcMain.handle('get-dormant-sessions', () => ({
+  sessions: lastPersistedSessions,
+  wasCleanShutdown: bootWasClean,
+}));
+
+ipcMain.on('persist-sessions', (_e, list) => {
+  if (!Array.isArray(list)) return;
+  lastPersistedSessions = list;
+  stateStore.save({ version: 1, cleanShutdown: false, sessions: list });
+});
+
+// Wake a dormant session: spawn PTY with the same hubId, reusing stored cwd,
+// CC session id, title. The session-manager handles `claude --resume <id>` or
+// `--continue` as fallback when we don't have a CC id recorded.
+ipcMain.handle('resume-session', (_e, meta) => {
+  if (!meta || !meta.hubId) return null;
+  const session = sessionManager.createSession(meta.kind || 'claude', {
+    id: meta.hubId,
+    title: meta.title,
+    cwd: meta.cwd,
+    resumeCCSessionId: meta.ccSessionId || undefined,
+    useContinue: !meta.ccSessionId,
+    lastMessageTime: meta.lastMessageTime,
+    lastOutputPreview: meta.lastOutputPreview,
+  });
+  sendToRenderer('session-created', { session });
+  return session;
 });
 
 // Restart a Claude/PowerShell session in place: close old PTY, spawn a new one
@@ -142,6 +221,19 @@ ipcMain.handle('get-hook-status', () => ({
   port: hookPort,
 }));
 
+// Ctrl+click on a file path in the terminal routes here. shell.openPath
+// launches the OS default handler (.md → markdown viewer, .png → image
+// viewer, .html → browser, etc). Returns '' on success, error string on
+// failure — we surface it back so renderer can log.
+ipcMain.handle('open-path', async (_e, filePath) => {
+  if (typeof filePath !== 'string' || !filePath.trim()) return 'empty path';
+  try {
+    return await shell.openPath(filePath);
+  } catch (e) {
+    return String(e && e.message || e);
+  }
+});
+
 // --- Hook HTTP server ---
 // Receives POSTs from ~/.claude/scripts/session-hub-hook.py when Claude Code
 // fires Stop / UserPromptSubmit hooks. Forwards to renderer as IPC events.
@@ -172,7 +264,23 @@ const hookServer = http.createServer((req, res) => {
     if (parsed.sessionId && sessionManager.getSession(parsed.sessionId)) {
       if (isHook) {
         const event = req.url.slice('/api/hook/'.length); // 'stop' or 'prompt'
-        sendToRenderer('hook-event', { event, sessionId: parsed.sessionId });
+        // Prefer the UserPromptSubmit payload's `prompt` field when present —
+        // it's the just-submitted text and doesn't depend on CC having flushed
+        // the new transcript entry to disk. For Stop events (no `prompt` in
+        // payload) fall back to reading the transcript JSONL tail.
+        let latestUserMessage = null;
+        if (typeof parsed.prompt === 'string' && parsed.prompt.trim()) {
+          latestUserMessage = parsed.prompt;
+        } else if (parsed.transcriptPath) {
+          latestUserMessage = readLastUserMessage(parsed.transcriptPath);
+        }
+        sendToRenderer('hook-event', {
+          event,
+          sessionId: parsed.sessionId,
+          claudeSessionId: parsed.claudeSessionId,
+          cwd: parsed.cwd,
+          latestUserMessage,
+        });
       } else {
         sendToRenderer('status-event', {
           sessionId: parsed.sessionId,
@@ -182,6 +290,11 @@ const hookServer = http.createServer((req, res) => {
           usage5h: parsed.usage5h,
           usage7d: parsed.usage7d,
           model: parsed.model,
+          sessionName: parsed.sessionName,
+          cwd: parsed.cwd,
+          apiMs: parsed.apiMs,
+          linesAdded: parsed.linesAdded,
+          linesRemoved: parsed.linesRemoved,
         });
       }
     }
@@ -226,6 +339,11 @@ app.whenReady().then(async () => {
       sendToRenderer('hook-status', { up: hookPort !== null, port: hookPort });
     });
   }
+});
+
+app.on('before-quit', () => {
+  // Flush final state with cleanShutdown=true so next boot won't flag as crash.
+  stateStore.save({ version: 1, cleanShutdown: true, sessions: lastPersistedSessions }, { sync: true });
 });
 
 app.on('window-all-closed', () => {

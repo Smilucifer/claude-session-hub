@@ -152,7 +152,9 @@ const menuEl = document.getElementById('new-session-menu');
 const wrapperEl = document.getElementById('new-session-wrapper');
 const searchInputEl = document.getElementById('search-input');
 const contextMenuEl = document.getElementById('context-menu');
-const btnThemeEl = document.getElementById('btn-theme');
+const appContainerEl = document.getElementById('app-container');
+const btnCollapseEl = document.getElementById('btn-collapse-sidebar');
+const btnExpandEl = document.getElementById('btn-expand-sidebar');
 
 let searchQuery = '';
 let contextMenuSessionId = null;
@@ -209,12 +211,18 @@ function renderSessionList() {
   sessionCountEl.textContent = searchQuery
     ? `${sorted.length}/${all.length}`
     : `${all.length} open`;
+  // Preserve scroll position across rebuilds — without this, any re-render
+  // (every status-event, silence-timer, or session-updated) snaps the list
+  // back to the top, which feels like the sidebar is "fighting" the user.
+  const savedScrollTop = sessionListEl.scrollTop;
   sessionListEl.innerHTML = '';
 
   for (const s of sorted) {
     const isActive = s.id === activeSessionId;
     const div = document.createElement('div');
-    div.className = 'session-item' + (isActive ? ' selected' : '') + (!isActive && s.unreadCount > 0 ? ' has-unread' : '');
+    const dormantCls = s.status === 'dormant' ? ' dormant' : '';
+    const waitingCls = s.isWaiting && !isActive ? ' is-waiting' : '';
+    div.className = 'session-item' + (isActive ? ' selected' : '') + (!isActive && s.unreadCount > 0 ? ' has-unread' : '') + waitingCls + dormantCls;
     const ctxBadge = typeof s.contextPct === 'number'
       ? `<span class="ctx-badge ${pctClass(s.contextPct)}" title="Context ${s.contextPct}%">Ctx ${s.contextPct}%</span>`
       : '';
@@ -226,17 +234,19 @@ function renderSessionList() {
       <div class="session-item-header">
         <span class="session-title">${s.pinned ? '<span class="pin-icon" title="Pinned">📌</span>' : ''}<span class="session-status ${s.status}"></span>${escapeHtml(s.title)}</span>
         <span class="session-header-right">
+          ${s.isWaiting && !isActive ? `<span class="waiting-badge" title="${escapeHtml(s.waitingText || 'Claude is waiting for your input')}">⏸ 等你</span>` : ''}
           ${s.unreadCount > 0 && !isActive ? `<span class="unread-badge">${s.unreadCount}</span>` : ''}
           <span class="session-time">${formatTime(s.lastMessageTime)}</span>
         </span>
       </div>
-      <div class="session-preview">${escapeHtml(s.lastOutputPreview || 'No output yet')}</div>
+      <div class="session-preview">${escapeHtml((s.isWaiting && s.waitingText) || s.lastOutputPreview || 'No output yet')}</div>
       ${footerInner ? `<div class="session-footer">${footerInner}</div>` : ''}
     `;
     div.addEventListener('click', () => selectSession(s.id));
     div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY); });
     sessionListEl.appendChild(div);
   }
+  sessionListEl.scrollTop = savedScrollTop;
 }
 
 // --- Terminal management ---
@@ -289,6 +299,7 @@ function getOrCreateTerminal(sessionId) {
   terminal.loadAddon(new Unicode11Addon());
   terminal.loadAddon(searchAddon);
   terminal.loadAddon(new WebLinksAddon((e, uri) => { shell.openExternal(uri); }));
+  registerLocalPathLinks(terminal);
   terminal.unicode.activeVersion = '11';
 
   terminal.onData((data) => {
@@ -299,26 +310,51 @@ function getOrCreateTerminal(sessionId) {
   });
   terminal.onBinary((data) => { ipcRenderer.send('terminal-input', { sessionId, data }); });
 
+  // Claude Code emits an OSC set-title escape sequence once near the start of a
+  // conversation with an AI-generated short summary (e.g. "Greeting in Chinese").
+  // xterm fires onTitleChange for it. We capture that as the session title
+  // unless the user already renamed in Hub (userRenamed wins). Only for Claude
+  // kinds — PowerShell emits title sequences on every prompt, which we don't want.
+  const session = sessions.get(sessionId);
+  const isClaudeKind = session && (session.kind === 'claude' || session.kind === 'claude-resume');
+  if (isClaudeKind) {
+    terminal.onTitleChange((newTitle) => {
+      const s = sessions.get(sessionId);
+      if (!s) return;
+      if (s.userRenamed) return; // user's Hub rename is authoritative
+      const clean = String(newTitle || '').trim();
+      if (!clean) return;
+      if (clean === 'Claude Code') return; // generic startup title — ignore
+      // When `claude --resume <id>` fails (stale id, missing transcript), the
+      // PTY falls back to a plain PowerShell prompt, which emits OSC sequences
+      // setting the title to its own executable path (e.g.
+      // "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe") or
+      // the current working directory. Any of these would clobber the real
+      // conversation title. Reject anything that looks like a file path / exe.
+      if (/[\\\/]/.test(clean)) return;
+      if (/\.exe$/i.test(clean)) return;
+      if (clean === s.title) return;
+      s.title = clean;
+      s.claudeAutoTitle = clean;
+      // Persist server-side so reloads / session-updated echoes stay consistent.
+      ipcRenderer.invoke('rename-session', { sessionId, title: clean });
+    });
+  }
+
   // --- Scroll lock: pin viewport when user scrolls up, release when back at bottom ---
   // State lives on cached (per-session). scrollLock = null means follow-bottom (default).
   // scrollLock = N means pin the viewport at N lines above baseY.
   const SCROLL_LOCK_ENGAGE_THRESHOLD = 3;  // lines above bottom to engage lock
   const SCROLL_LOCK_RELEASE_THRESHOLD = 2; // lines to bottom to release
 
-  terminal.onScroll(() => {
-    const c = terminalCache.get(sessionId);
-    if (!c || c._isRestoringScroll) return;
-    const buf = terminal.buffer.active;
-    const offset = buf.baseY - buf.viewportY;
-    if (c.scrollLock === null) {
-      // Currently following. Did user scroll up past the engage threshold?
-      if (offset >= SCROLL_LOCK_ENGAGE_THRESHOLD) setScrollLock(sessionId, offset);
-    } else {
-      // Currently locked. Did user scroll (nearly) back to bottom?
-      if (offset <= SCROLL_LOCK_RELEASE_THRESHOLD) setScrollLock(sessionId, null);
-      else c.scrollLock = offset; // update anchor as user fine-tunes scroll
-    }
-  });
+  // NOTE: scroll-lock feature is currently DISABLED for diagnosis. When a
+  // session is switched to, fit()/reflow seems to fire onScroll with
+  // transient viewport state and accidentally engage the lock with a bad
+  // offset, which then causes the write wrapper to pin viewport at line 0.
+  // Disabling the onScroll handler means scrollLock stays null forever, so
+  // the write wrapper short-circuits and xterm scrolls natively.
+  // Keep the code above for future re-enable once the root cause is fixed.
+  // terminal.onScroll(() => { ... });
 
   // Wrap write so that any viewport shift caused by CC's cursor positioning
   // is re-pinned to the user's locked offset before the frame paints.
@@ -330,10 +366,18 @@ function getOrCreateTerminal(sessionId) {
     origWrite(data, () => {
       if (c.scrollLock !== null) {
         const buf = terminal.buffer.active;
-        const desired = Math.max(0, buf.baseY - c.scrollLock);
-        if (buf.viewportY !== desired) {
-          c._isRestoringScroll = true;
-          try { terminal.scrollToLine(desired); } finally { c._isRestoringScroll = false; }
+        // Release (instead of snapping) when anchor is out of valid range.
+        // Uses >= so scrollLock === baseY also releases: that case yields
+        // desired=0 and scrollToLine(0) would pin viewport to scrollback top.
+        if (c.scrollLock >= buf.baseY) {
+          c.scrollLock = null;
+          if (sessionId === activeSessionId) renderScrollLockIndicator();
+        } else {
+          const desired = buf.baseY - c.scrollLock;
+          if (buf.viewportY !== desired) {
+            c._isRestoringScroll = true;
+            try { terminal.scrollToLine(desired); } finally { c._isRestoringScroll = false; }
+          }
         }
       }
       if (cb) cb();
@@ -344,11 +388,34 @@ function getOrCreateTerminal(sessionId) {
   // doesn't fire paste events on xterm's helper textarea for real keystrokes.
   terminal.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
-    const isPaste = (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V');
-    if (!isPaste) return true;
-    e.preventDefault();
-    handlePasteForSession(sessionId);
-    return false;
+    const mod = e.ctrlKey || e.metaKey;
+    if (!mod || e.altKey) return true;
+
+    // Ctrl+V — paste (text or image)
+    if (!e.shiftKey && (e.key === 'v' || e.key === 'V')) {
+      e.preventDefault();
+      handlePasteForSession(sessionId);
+      return false;
+    }
+    // Ctrl+Shift+C — always copy selection (VSCode/Windows Terminal style)
+    if (e.shiftKey && (e.key === 'C' || e.key === 'c')) {
+      if (terminal.hasSelection()) {
+        clipboard.writeText(terminal.getSelection());
+        e.preventDefault();
+        return false;
+      }
+      return true;
+    }
+    // Ctrl+C — copy if there's a selection, else pass through as SIGINT
+    if (!e.shiftKey && (e.key === 'c' || e.key === 'C')) {
+      if (terminal.hasSelection()) {
+        clipboard.writeText(terminal.getSelection());
+        e.preventDefault();
+        return false;
+      }
+      return true;
+    }
+    return true;
   });
 
   const container = document.createElement('div');
@@ -426,6 +493,9 @@ function showTerminal(sessionId, opts = { focus: true }) {
   const header = document.createElement('div');
   header.className = 'terminal-header';
 
+  const titleRow = document.createElement('div');
+  titleRow.className = 'terminal-title-row';
+
   const titleSection = document.createElement('div');
   titleSection.className = 'terminal-title-section';
 
@@ -451,10 +521,20 @@ function showTerminal(sessionId, opts = { focus: true }) {
 
   const closeBtn = document.createElement('button');
   closeBtn.className = 'btn-close-session';
-  closeBtn.textContent = 'Close';
+  closeBtn.title = 'Close session (Ctrl+W)';
+  closeBtn.setAttribute('aria-label', 'Close session');
+  closeBtn.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg>';
   closeBtn.addEventListener('click', () => ipcRenderer.invoke('close-session', sessionId));
 
-  header.append(titleSection, closeBtn);
+  // Metrics (cwd + api time) live inline with the title now — single-row header.
+  const metricsRow = document.createElement('div');
+  metricsRow.className = 'terminal-metrics-row inline';
+  renderMetricsRow(metricsRow, session);
+  titleSection.appendChild(metricsRow);
+
+  titleRow.append(titleSection, closeBtn);
+
+  header.append(titleRow);
 
   const termContainer = document.createElement('div');
   termContainer.className = 'terminal-container';
@@ -497,6 +577,24 @@ function showTerminal(sessionId, opts = { focus: true }) {
   cached._ro.observe(cached.container);
 }
 
+// Hub → Claude /rename sync. Only fires for Claude sessions after the user
+// renames in the Hub UI. We inject the /rename command into the PTY; to keep
+// it clean we require the session to be idle (prompt is empty). If the user
+// is mid-reply we stash it and flush on the next Stop hook. Title is sanitized
+// to strip newlines and cap length so a pasted string can't inject extra input.
+function syncRenameToClaude(sessionId, title) {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+  const clean = String(title).replace(/[\r\n]/g, ' ').trim().slice(0, 80);
+  if (!clean) return;
+  if (session.status === 'idle') {
+    ipcRenderer.send('terminal-input', { sessionId, data: '/rename ' + clean + '\r' });
+    session._pendingRename = null;
+  } else {
+    session._pendingRename = clean;
+  }
+}
+
 // --- Inline rename ---
 function startRename(sessionId, titleSpan) {
   const session = sessions.get(sessionId);
@@ -509,7 +607,18 @@ function startRename(sessionId, titleSpan) {
   const finish = async () => {
     const trimmed = input.value.trim();
     if (trimmed && trimmed !== session.title) {
-      await ipcRenderer.invoke('rename-session', { sessionId, title: trimmed });
+      session.userRenamed = true;
+      if (session.status === 'dormant') {
+        // No live PTY; just mutate locally and persist.
+        session.title = trimmed;
+        renderSessionList();
+        schedulePersist();
+      } else {
+        await ipcRenderer.invoke('rename-session', { sessionId, title: trimmed });
+        if (session.kind === 'claude' || session.kind === 'claude-resume') {
+          syncRenameToClaude(sessionId, trimmed);
+        }
+      }
     }
     input.replaceWith(titleSpan);
   };
@@ -527,11 +636,20 @@ function startRename(sessionId, titleSpan) {
 
 // --- Session selection ---
 function selectSession(id) {
+  const session = sessions.get(id);
+  // Dormant session: clicking wakes it via resume-session IPC. Don't render
+  // terminal now — session-created handler below will take over once PTY is up.
+  if (session && session.status === 'dormant') {
+    resumeDormantSession(id);
+    return;
+  }
   const switching = activeSessionId !== id;
   activeSessionId = id;
-  const session = sessions.get(id);
   if (session) {
     session.unreadCount = 0;
+    session.isWaiting = false;
+    session.waitingReason = null;
+    session.waitingText = null;
     // Snapshot the current question signature as "read" — any future idle
     // transitions will compare against this and only bump unread on real new Q&A.
     session.readSignature = getQuestionsSignature(id);
@@ -558,6 +676,63 @@ for (const btn of document.querySelectorAll('.new-session-option')) {
   });
 }
 
+// Ctrl+click on a local file path in the terminal → open with OS default app.
+// xterm's WebLinksAddon only handles URLs, so we register a separate link
+// provider that matches absolute Windows paths ending in a recognizable
+// extension (1-8 alphanumerics). Click routes to main via `open-path` IPC,
+// which calls shell.openPath().
+//
+// Regex notes:
+//   - Anchored with [A-Za-z]: drive letter, followed by \ or /
+//   - Path segments forbid the Windows-illegal chars :*?"<>| plus whitespace
+//     (spaces break the match — rare in paths we emit, acceptable tradeoff)
+//   - Extension 1-8 alnum with a negative lookahead so "foo.js" doesn't
+//     greedily swallow a trailing letter from ":123" line-number suffixes
+const LOCAL_PATH_RE = /[A-Za-z]:[\\/](?:[^\\/:*?"<>|\r\n\s]+[\\/])*[^\\/:*?"<>|\r\n\s]+\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9])/g;
+
+function registerLocalPathLinks(terminal) {
+  terminal.registerLinkProvider({
+    provideLinks(lineNumber, callback) {
+      const line = terminal.buffer.active.getLine(lineNumber - 1);
+      if (!line) { callback(undefined); return; }
+      const text = line.translateToString(true);
+      const links = [];
+      LOCAL_PATH_RE.lastIndex = 0;
+      let m;
+      while ((m = LOCAL_PATH_RE.exec(text))) {
+        const filePath = m[0];
+        const startColumn = m.index + 1;
+        const endColumn = startColumn + filePath.length - 1;
+        links.push({
+          range: {
+            start: { x: startColumn, y: lineNumber },
+            end: { x: endColumn, y: lineNumber },
+          },
+          text: filePath,
+          activate: async (_event, uri) => {
+            const err = await ipcRenderer.invoke('open-path', uri);
+            if (err) console.warn('[hub] open-path failed:', uri, '→', err);
+          },
+        });
+      }
+      callback(links);
+    },
+  });
+}
+
+// Strip artifacts we ourselves injected into the user's prompt before
+// forming the sidebar preview. Today that's just clipboard-image paths:
+// Ctrl+V on an image calls save-clipboard-image and pastes the resulting
+// absolute path into the terminal, so CC's transcript records the path
+// immediately before the user's typed text. Without this the 60-char
+// preview is pure path and the real question is truncated away.
+function buildPreviewFromUserMessage(raw) {
+  const HUB_IMG_PATH = /(?:[A-Za-z]:)?[\\/][^\s]*[\\/]\.claude-session-hub[\\/]images[\\/][^\s]+?\.(?:png|jpe?g|gif|webp|bmp)/gi;
+  let clean = String(raw).replace(HUB_IMG_PATH, ' ').replace(/\s+/g, ' ').trim();
+  if (!clean) return '';
+  return clean.length > 60 ? clean.substring(0, 58) + '…' : clean;
+}
+
 // --- Terminal buffer reading (xterm.js buffer API) ---
 
 const silenceTimers = new Map();
@@ -574,7 +749,13 @@ function parseQuestionsFromLines(lines) {
   const questions = [];
   const seen = new Set();
   const AI_MARKERS = /[⏺●◉◐◑◒◓◔◕]/;
-  const RE = /❯\s+(.+?)(?:\s*[│╯╰╭╮]+\s*)?$/;
+  // NOTE: the primary source of preview text is now CC's transcript JSONL,
+  // delivered via the Stop hook (see renderer's hook-event handler). This
+  // regex is only a fallback for sessions without hook coverage.
+  // Restricted to ❯ / › — specifically Claude Code's prompt glyphs. Dropping
+  // ASCII '>' on purpose: it was matching assistant markdown/list content
+  // like "> Phase 1 …" as if it were a user question.
+  const RE = /^[\s│╭─╮╰╯]*[❯›]\s+(.+?)(?:\s*[│╯╰╭╮]+\s*)?$/;
   for (const raw of lines) {
     if (!raw) continue;
     if (AI_MARKERS.test(raw)) continue;
@@ -605,6 +786,57 @@ function extractUserQuestions(sessionId) {
 }
 
 
+/** Read the trailing N lines of the xterm buffer as plain text (post-render). */
+function extractTailLines(sessionId, count = 40) {
+  const cached = terminalCache.get(sessionId);
+  if (!cached || !cached.opened) return [];
+  const buf = cached.terminal.buffer.active;
+  const out = [];
+  const start = Math.max(0, buf.length - count);
+  for (let i = start; i < buf.length; i++) {
+    const line = buf.getLine(i);
+    if (!line) continue;
+    out.push(line.translateToString(true));
+  }
+  return out;
+}
+
+/** Strict classifier: does the session look like Claude is waiting for user input?
+ *  False positives are worse than false negatives — only fire on clear question
+ *  / choice / confirm patterns. Returns { waiting, reason, text } or { waiting:false }. */
+function isWaitingForUser(lines) {
+  if (!lines || lines.length === 0) return { waiting: false };
+  const AI_MARKERS = /[⏺●◉◐◑◒◓◔◕]/;
+  const PROMPT_PREFIX = /^[\s│╭─╮╰╯]*[❯›]\s+/;
+  let lastMeaningful = '';
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const L = (lines[i] || '').trim();
+    if (!L) continue;
+    if (PROMPT_PREFIX.test(L)) continue;
+    const stripped = L.replace(AI_MARKERS, '').trim();
+    if (!stripped) continue;
+    lastMeaningful = stripped;
+    break;
+  }
+  if (!lastMeaningful) return { waiting: false };
+  const tail = lines.slice(-12).join('\n');
+  // Rule: [y/N] / [Y/n] / (yes/no) → explicit confirm
+  if (/\[y\/N\]|\[Y\/n\]|\(yes\/no\)/i.test(tail)) {
+    return { waiting: true, reason: 'confirm', text: lastMeaningful };
+  }
+  // Rule: numbered list + question word (both Chinese and English)
+  const hasList = /(^|\n)\s*[1-9][.\)]\s+\S|(^|\n)\s*[①②③④⑤⑥⑦⑧⑨]/m.test(tail);
+  const hasQWord = /\b(which|what|choose|select|option|pick)\b|哪个|哪一|请选择|请确认|选择|选 ?[一二三1-9]/i.test(tail);
+  if (hasList && hasQWord) {
+    return { waiting: true, reason: 'choice', text: lastMeaningful };
+  }
+  // Rule: last meaningful line ends with ? / ？ and is short enough to be a question
+  if (lastMeaningful.length < 200 && /[?？]\s*$/.test(lastMeaningful)) {
+    return { waiting: true, reason: 'question', text: lastMeaningful };
+  }
+  return { waiting: false };
+}
+
 /** Signature: last question text. Used to distinguish real Q&A turns from TUI noise. */
 function getQuestionsSignature(sessionId) {
   const qs = extractUserQuestions(sessionId);
@@ -619,12 +851,17 @@ function readTerminalPreview(sessionId) {
   if (questions.length === 0) return;
 
   const lastQ = questions[questions.length - 1];
-  const newPreview = 'Q: ' + (lastQ.length > 60 ? lastQ.substring(0, 58) + '…' : lastQ);
+  const newPreview = lastQ.length > 60 ? lastQ.substring(0, 58) + '…' : lastQ;
 
-  // Preview text only; sort time + unread are bumped on AI reply completion
+  // Preview text only; sort time + unread are bumped on AI reply completion.
+  // If we've already received an authoritative preview from the CC transcript
+  // hook, don't let the regex fallback overwrite it with potentially-stale
+  // buffer content.
+  if (session._previewFromTranscript) return;
   if (newPreview && newPreview !== session.lastOutputPreview) {
     session.lastOutputPreview = newPreview;
     renderSessionList();
+    schedulePersist();
   }
 }
 
@@ -679,18 +916,34 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
 });
 
 // Status updates from our custom statusline script.
-// Carries contextPct per session + account-wide usage5h/usage7d.
+// Carries contextPct / cwd / api time / session_name per session + account-wide usage5h/usage7d.
 const accountUsage = { usage5h: null, usage7d: null };
+
 ipcRenderer.on('status-event', (_e, payload) => {
   const session = sessions.get(payload.sessionId);
   if (session) {
     session.contextPct = payload.contextPct;
     session.contextUsed = payload.contextUsed;
     session.contextMax = payload.contextMax;
+    if (payload.cwd) session.cwd = payload.cwd;
+    if (typeof payload.apiMs === 'number') session.apiMs = payload.apiMs;
+    if (typeof payload.linesAdded === 'number') session.linesAdded = payload.linesAdded;
+    if (typeof payload.linesRemoved === 'number') session.linesRemoved = payload.linesRemoved;
     if (payload.model && payload.model.id) {
       session.currentModel = payload.model;
       if (payload.sessionId === activeSessionId) updateActiveModelBadge();
     }
+    // Claude → Hub title sync: only overlay if user hasn't explicitly renamed in Hub.
+    // The /rename we inject comes back via this same field — the guard below prevents loops.
+    if (payload.sessionName && !session.userRenamed && session.title !== payload.sessionName) {
+      session.title = payload.sessionName;
+      session.claudeSessionName = payload.sessionName;
+      if (payload.sessionId === activeSessionId) {
+        const el = terminalPanelEl.querySelector('.terminal-title');
+        if (el) el.textContent = payload.sessionName;
+      }
+    }
+    if (payload.sessionId === activeSessionId) updateActiveMetricsRow();
   }
   // Usage is account-wide — keep the latest reported values
   if (payload.usage5h) accountUsage.usage5h = payload.usage5h;
@@ -743,6 +996,57 @@ function updateActiveModelBadge() {
   badge.title = session.currentModel.id;
 }
 
+// Compact "3m20s" / "1h5m" — used for api duration in the header metrics row.
+function formatDuration(ms) {
+  if (typeof ms !== 'number' || !isFinite(ms) || ms < 0) return '';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m${s % 60 ? (s % 60) + 's' : ''}`;
+  const h = Math.floor(m / 60);
+  return `${h}h${m % 60 ? (m % 60) + 'm' : ''}`;
+}
+
+// Render the per-session metrics row (cwd · api time · lines diff). Called on
+// session switch + every status-event for the active session.
+function renderMetricsRow(el, session) {
+  if (!el || !session) return;
+  el.innerHTML = '';
+  const frags = [];
+  if (session.cwd) {
+    const a = document.createElement('span');
+    a.className = 'metric-cwd';
+    a.textContent = '\uD83D\uDCC1 ' + session.cwd;
+    a.title = 'Click to copy · ' + session.cwd;
+    a.addEventListener('click', () => {
+      try { clipboard.writeText(session.cwd); } catch {}
+    });
+    frags.push(a);
+  }
+  if (typeof session.apiMs === 'number' && session.apiMs > 0) {
+    const s = document.createElement('span');
+    s.textContent = '\u23F1 ' + formatDuration(session.apiMs);
+    s.title = 'Total API time (AI actually working)';
+    frags.push(s);
+  }
+  frags.forEach((f, i) => {
+    if (i > 0) {
+      const sep = document.createElement('span');
+      sep.className = 'metric-sep';
+      sep.textContent = '\u00b7';
+      el.appendChild(sep);
+    }
+    el.appendChild(f);
+  });
+}
+
+function updateActiveMetricsRow() {
+  const session = activeSessionId ? sessions.get(activeSessionId) : null;
+  if (!session) return;
+  const row = terminalPanelEl.querySelector('.terminal-metrics-row');
+  if (row) renderMetricsRow(row, session);
+}
+
 function formatResetIn(resetsAt) {
   if (!resetsAt) return '';
   const ms = new Date(resetsAt).getTime() - Date.now();
@@ -763,16 +1067,13 @@ function renderAccountUsage() {
   if (!usage5h && !usage7d) { el.style.display = 'none'; return; }
   el.style.display = 'block';
   const parts = [];
-  if (usage5h) {
-    const pct = Math.round(usage5h.pct);
-    const reset = formatResetIn(usage5h.resetsAt);
-    parts.push(`<div class="usage-row"><span class="usage-label">5h</span><div class="usage-bar"><div class="usage-bar-fill ${pctClass(pct)}" style="width:${pct}%"></div></div><span class="usage-val">${pct}%${reset ? ' · ' + reset : ''}</span></div>`);
-  }
-  if (usage7d) {
-    const pct = Math.round(usage7d.pct);
-    const reset = formatResetIn(usage7d.resetsAt);
-    parts.push(`<div class="usage-row"><span class="usage-label">7d</span><div class="usage-bar"><div class="usage-bar-fill ${pctClass(pct)}" style="width:${pct}%"></div></div><span class="usage-val">${pct}%${reset ? ' · ' + reset : ''}</span></div>`);
-  }
+  const buildRow = (label, usage) => {
+    const pct = Math.round(usage.pct);
+    const reset = formatResetIn(usage.resetsAt);
+    return `<div class="usage-row"><span class="usage-label">${label}</span><div class="usage-bar"><div class="usage-bar-fill ${pctClass(pct)}" style="width:${pct}%"></div></div><span class="usage-val">${pct}%${reset ? ' · ' + reset : ''}</span></div>`;
+  };
+  if (usage5h) parts.push(buildRow('5h', usage5h));
+  if (usage7d) parts.push(buildRow('7d', usage7d));
   el.innerHTML = parts.join('');
 }
 
@@ -787,8 +1088,48 @@ function pctClass(pct) {
 //   Immediately flag the session as running — faster & more precise than
 //   the 200-byte PTY heuristic.
 // - 'stop' (Stop): fires when the agent loop finishes. Triggers unread/time bump.
-ipcRenderer.on('hook-event', (_e, { event, sessionId }) => {
-  if (event === 'stop') onReplyCompleteFromHook(sessionId);
+ipcRenderer.on('hook-event', (_e, { event, sessionId, claudeSessionId, cwd, latestUserMessage }) => {
+  const s = sessions.get(sessionId);
+  if (s) {
+    // Persist CC session id + cwd the first time we learn them so resumes work.
+    if (claudeSessionId && s.ccSessionId !== claudeSessionId) {
+      s.ccSessionId = claudeSessionId;
+      schedulePersist();
+    }
+    // Only capture cwd ONCE (first hook). Updating on every hook lets a later
+    // user `cd` mutate the saved value, which then breaks `claude --resume` on
+    // next launch — CC stores transcripts under a project slug derived from
+    // the cwd at CREATE time, so resume must spawn in that same cwd.
+    if (cwd && !s.cwd) {
+      s.cwd = cwd;
+      schedulePersist();
+    }
+    // Authoritative preview: CC's own transcript JSONL. Wins over any regex
+    // extraction from the xterm buffer — no more "assistant content misread
+    // as user question" false positives.
+    if (latestUserMessage) {
+      const preview = buildPreviewFromUserMessage(latestUserMessage);
+      if (preview && preview !== s.lastOutputPreview) {
+        s.lastOutputPreview = preview;
+        s._previewFromTranscript = true;
+        renderSessionList();
+        schedulePersist();
+      }
+    }
+  }
+  if (event === 'stop') {
+    onReplyCompleteFromHook(sessionId);
+    // Flush any queued /rename now that Claude is idle. Small delay so the
+    // prompt fully re-renders before we inject the command.
+    const s = sessions.get(sessionId);
+    if (s && s._pendingRename) {
+      const pending = s._pendingRename;
+      s._pendingRename = null;
+      setTimeout(() => {
+        ipcRenderer.send('terminal-input', { sessionId, data: '/rename ' + pending + '\r' });
+      }, 400);
+    }
+  }
   else if (event === 'prompt') onPromptSubmittedFromHook(sessionId);
 });
 
@@ -831,7 +1172,24 @@ function onReplyCompleteFromHook(sessionId) {
   // which is already in the buffer since the moment the user pressed Enter,
   // long before Claude's Stop hook fires.
   readTerminalPreview(sessionId);
-  if (!session.lastOutputPreview) return;
+
+  // "Claude is waiting for your input" — classify the tail of the AI's output.
+  // Strict rules: only fires when the AI asked a clear question / listed choices /
+  // asked for [y/N]. Flag lives until the user selects this session.
+  const wasWaiting = !!session.isWaiting;
+  const w = isWaitingForUser(extractTailLines(sessionId, 40));
+  session.isWaiting = w.waiting;
+  session.waitingReason = w.waiting ? w.reason : null;
+  session.waitingText = w.waiting ? String(w.text || '').slice(0, 200) : null;
+  const newlyWaiting = w.waiting && !wasWaiting;
+
+  if (!session.lastOutputPreview) {
+    if (newlyWaiting) {
+      if (sessionId !== activeSessionId) maybeNotify(session);
+      renderSessionList();
+    }
+    return;
+  }
 
   const sig = getQuestionsSignature(sessionId);
   const prev = session.readSignature || '';
@@ -843,6 +1201,9 @@ function onReplyCompleteFromHook(sessionId) {
       maybeNotify(session);
     }
     renderSessionList();
+  } else if (newlyWaiting && sessionId !== activeSessionId) {
+    maybeNotify(session);
+    renderSessionList();
   }
 }
 
@@ -851,9 +1212,10 @@ async function maybeNotify(session) {
   try {
     const focused = await ipcRenderer.invoke('is-window-focused');
     if (focused) return;
+    const isW = !!session.isWaiting;
     ipcRenderer.send('show-notification', {
-      title: session.title + ' — reply ready',
-      body: session.lastOutputPreview || '',
+      title: session.title + (isW ? ' — 等你回复' : ' — reply ready'),
+      body: (isW && session.waitingText) ? session.waitingText : (session.lastOutputPreview || ''),
     });
   } catch {}
 }
@@ -873,6 +1235,13 @@ document.addEventListener('keydown', (e) => {
   if (!e.shiftKey && !e.altKey && (e.key === 'w' || e.key === 'W')) {
     e.preventDefault();
     if (activeSessionId) ipcRenderer.invoke('close-session', activeSessionId);
+    return;
+  }
+
+  // Ctrl+B: toggle sidebar
+  if (!e.shiftKey && !e.altKey && (e.key === 'b' || e.key === 'B')) {
+    e.preventDefault();
+    toggleSidebar();
     return;
   }
 
@@ -1029,10 +1398,19 @@ for (const btn of contextMenuEl.querySelectorAll('.context-menu-item')) {
     if (action === 'pin') {
       session.pinned = !session.pinned;
       renderSessionList();
+      schedulePersist();
     } else if (action === 'restart') {
       await ipcRenderer.invoke('restart-session', sid);
     } else if (action === 'close') {
-      await ipcRenderer.invoke('close-session', sid);
+      if (session.status === 'dormant') {
+        // No PTY to kill; just forget the dormant entry and persist.
+        sessions.delete(sid);
+        if (activeSessionId === sid) activeSessionId = null;
+        renderSessionList();
+        schedulePersist();
+      } else {
+        await ipcRenderer.invoke('close-session', sid);
+      }
     }
   });
 }
@@ -1088,24 +1466,54 @@ termSearchPrev.addEventListener('click', () => runSearch(-1));
 termSearchNext.addEventListener('click', () => runSearch(1));
 termSearchClose.addEventListener('click', closeTerminalSearch);
 
-// --- Theme toggle ---
-const THEME_KEY = 'claude-hub-theme';
-function applyTheme(theme) {
-  if (theme === 'light') document.body.classList.add('theme-light');
-  else document.body.classList.remove('theme-light');
-  btnThemeEl.textContent = theme === 'light' ? '☀' : '◐';
+// --- Sidebar collapse ---
+const SIDEBAR_KEY = 'claude-hub-sidebar-collapsed';
+function applySidebarCollapsed(collapsed) {
+  appContainerEl.classList.toggle('sidebar-collapsed', collapsed);
+  // After CSS transition, refit active xterm so it claims the new width.
+  setTimeout(() => {
+    const cached = terminalCache.get(activeSessionId);
+    if (!cached) return;
+    try { cached.fitAddon.fit(); } catch (_) {}
+    ipcRenderer.send('terminal-resize', {
+      sessionId: activeSessionId,
+      cols: cached.terminal.cols,
+      rows: cached.terminal.rows,
+    });
+  }, 200);
 }
-const initialTheme = localStorage.getItem(THEME_KEY) || 'dark';
-applyTheme(initialTheme);
-btnThemeEl.addEventListener('click', () => {
-  const current = document.body.classList.contains('theme-light') ? 'light' : 'dark';
-  const next = current === 'light' ? 'dark' : 'light';
-  localStorage.setItem(THEME_KEY, next);
-  applyTheme(next);
-});
+const initialCollapsed = localStorage.getItem(SIDEBAR_KEY) === '1';
+applySidebarCollapsed(initialCollapsed);
+function toggleSidebar() {
+  const next = !appContainerEl.classList.contains('sidebar-collapsed');
+  localStorage.setItem(SIDEBAR_KEY, next ? '1' : '0');
+  applySidebarCollapsed(next);
+}
+btnCollapseEl.addEventListener('click', toggleSidebar);
+btnExpandEl.addEventListener('click', toggleSidebar);
+
+// --- Theme (dark only; toggle button removed) ---
+document.body.classList.remove('theme-light');
+localStorage.removeItem('claude-hub-theme');
 
 ipcRenderer.on('session-created', (_e, { session }) => {
-  sessions.set(session.id, session);
+  // When resuming a dormant session, the hubId matches an existing dormant
+  // entry. Merge live PTY info on top of the dormant metadata so title /
+  // preview / unread / pinned aren't wiped.
+  const existing = sessions.get(session.id);
+  if (existing && existing.status === 'dormant') {
+    sessions.set(session.id, {
+      ...existing,
+      ...session,
+      status: 'idle',
+      // preserve persisted UX state
+      pinned: existing.pinned,
+      ccSessionId: existing.ccSessionId,
+      lastOutputPreview: existing.lastOutputPreview,
+    });
+  } else {
+    sessions.set(session.id, session);
+  }
   activeSessionId = session.id;
   ipcRenderer.send('focus-session', { sessionId: session.id });
   renderSessionList();
@@ -1144,9 +1552,83 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   renderSessionList();
 });
 
+// --- Session persistence (dormant restore) ---
+// Only Claude sessions persist across app restarts. PowerShell sessions are
+// ephemeral by nature. Dormant sessions are rendered with status='dormant'
+// and no PTY; clicking them spawns `claude --resume <ccSessionId>`.
+let persistDebounceTimer = null;
+function schedulePersist() {
+  if (persistDebounceTimer) clearTimeout(persistDebounceTimer);
+  persistDebounceTimer = setTimeout(() => {
+    const list = [];
+    for (const s of sessions.values()) {
+      if (s.kind !== 'claude' && s.kind !== 'claude-resume') continue;
+      list.push({
+        hubId: s.id,
+        title: s.title,
+        kind: s.kind,
+        cwd: s.cwd || null,
+        pinned: !!s.pinned,
+        ccSessionId: s.ccSessionId || null,
+        lastMessageTime: s.lastMessageTime || Date.now(),
+        lastOutputPreview: s.lastOutputPreview || '',
+        unreadCount: s.unreadCount || 0,
+      });
+    }
+    ipcRenderer.send('persist-sessions', list);
+  }, 400);
+}
+
+// Wake a dormant session: call main to spawn PTY with --resume, then wait for
+// session-created which will replace the dormant entry.
+async function resumeDormantSession(hubId) {
+  const dormant = sessions.get(hubId);
+  if (!dormant || dormant.status !== 'dormant') return;
+  // Keep title / pinned / preview so UI stays stable through the resume.
+  await ipcRenderer.invoke('resume-session', {
+    hubId,
+    kind: dormant.kind,
+    title: dormant.title,
+    cwd: dormant.cwd,
+    ccSessionId: dormant.ccSessionId,
+    lastMessageTime: dormant.lastMessageTime,
+    lastOutputPreview: dormant.lastOutputPreview,
+  });
+  // session-created handler will replace the dormant entry. Clear unread now.
+  const s = sessions.get(hubId);
+  if (s) { s.unreadCount = 0; renderSessionList(); }
+}
+
 // --- Init ---
 (async () => {
   const existing = await ipcRenderer.invoke('get-sessions');
   for (const s of existing) sessions.set(s.id, s);
+
+  // Restore dormant sessions from persisted state.
+  const persisted = await ipcRenderer.invoke('get-dormant-sessions');
+  if (persisted && Array.isArray(persisted.sessions)) {
+    for (const meta of persisted.sessions) {
+      if (sessions.has(meta.hubId)) continue;  // already live (shouldn't happen on fresh boot)
+      sessions.set(meta.hubId, {
+        id: meta.hubId,
+        kind: meta.kind || 'claude',
+        title: meta.title || 'Claude',
+        status: 'dormant',
+        lastMessageTime: meta.lastMessageTime || Date.now(),
+        lastOutputPreview: meta.lastOutputPreview || '',
+        unreadCount: meta.unreadCount || 0,
+        createdAt: meta.lastMessageTime || Date.now(),
+        cwd: meta.cwd || null,
+        pinned: !!meta.pinned,
+        ccSessionId: meta.ccSessionId || null,
+      });
+    }
+  }
   renderSessionList();
 })();
+
+// Persist on relevant changes — listen at renderer-level for mutations that
+// touch persistable fields. Debounced.
+for (const ch of ['session-created', 'session-closed', 'session-updated']) {
+  ipcRenderer.on(ch, () => schedulePersist());
+}
