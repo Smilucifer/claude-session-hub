@@ -88,15 +88,35 @@ sessionManager.onSessionClosed = (sessionId) => {
   sendToRenderer('session-closed', { sessionId });
 };
 
-ipcMain.handle('create-session', (_e, kind) => {
-  const session = sessionManager.createSession(kind);
+ipcMain.handle('create-session', (_e, arg) => {
+  // Back-compat: legacy callers pass just a `kind` string. New callers pass
+  // `{ kind, opts }` so they can request `resumeCCSessionId` / custom cwd / etc.
+  let kind, opts;
+  if (typeof arg === 'string') { kind = arg; opts = {}; }
+  else if (arg && typeof arg === 'object') { kind = arg.kind; opts = arg.opts || {}; }
+  else { kind = 'powershell'; opts = {}; }
+  const session = sessionManager.createSession(kind, opts);
   sendToRenderer('session-created', { session });
   return session;
 });
 
+// Archive scanner: enumerate past Claude Code sessions for the Resume picker.
+const sessionArchive = require('./core/session-archive.js');
+ipcMain.handle('list-past-sessions', async (_e, { limit = 50 } = {}) => {
+  try { return await sessionArchive.listRecent(limit); }
+  catch (e) { console.warn('[hub] list-past-sessions failed:', e.message); return []; }
+});
+
+ipcMain.handle('search-past-sessions', async (_e, { query, limit = 50 } = {}) => {
+  try { return await sessionArchive.searchAcross(query, { limit }); }
+  catch (e) { console.warn('[hub] search-past-sessions failed:', e.message); return { hits: [], truncated: false }; }
+});
+
 ipcMain.handle('close-session', (_e, sessionId) => {
+  // No explicit sendToRenderer here — closeSession kills the PTY, which fires
+  // the onExit callback wired up above (line 87) and emits session-closed for
+  // us. Emitting twice would spam the renderer for no benefit.
   sessionManager.closeSession(sessionId);
-  sendToRenderer('session-closed', { sessionId });
 });
 
 ipcMain.on('terminal-input', (_e, { sessionId, data }) => {
@@ -170,8 +190,9 @@ ipcMain.handle('resume-session', (_e, meta) => {
 ipcMain.handle('restart-session', (_e, sessionId) => {
   const old = sessionManager.getSession(sessionId);
   if (!old) return null;
+  // closeSession triggers the onExit callback which emits session-closed;
+  // don't emit it a second time here.
   sessionManager.closeSession(sessionId);
-  sendToRenderer('session-closed', { sessionId });
   const fresh = sessionManager.createSession(old.kind);
   sendToRenderer('session-created', { session: fresh });
   return fresh;

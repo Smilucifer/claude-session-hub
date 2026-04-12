@@ -773,13 +773,18 @@ function selectSession(id) {
     session.isWaiting = false;
     session.waitingReason = null;
     session.waitingText = null;
-    // Snapshot the current question signature as "read" — any future idle
-    // transitions will compare against this and only bump unread on real new Q&A.
-    session.readSignature = getQuestionsSignature(id);
   }
   ipcRenderer.send('focus-session', { sessionId: id });
   renderSessionList();
   showTerminal(id, { focus: switching });
+  // Snapshot the current question signature as "read" AFTER showTerminal —
+  // on first selection that's when cached.opened flips to true, and
+  // getQuestionsSignature needs an opened buffer to read. Calling before
+  // showTerminal always returned '' on first click, which then made the very
+  // first AI reply after opening the session never bump unread.
+  if (session) {
+    session.readSignature = getQuestionsSignature(id);
+  }
   renderScrollLockIndicator();
 }
 
