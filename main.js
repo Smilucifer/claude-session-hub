@@ -7,30 +7,52 @@ const { SessionManager } = require('./core/session-manager.js');
 const stateStore = require('./core/state-store.js');
 
 // Read the last user message text from a Claude Code transcript JSONL file.
-// The transcript is append-only; we scan backwards for the first entry whose
-// role/type is "user" and return its text content (strings or text blocks).
+// Reads the trailing chunk(s) only (not the whole file) — long sessions can be
+// 10MB+ and we used to readFileSync the whole thing on every hook POST, which
+// stalled the main-process event loop. Now we seek from EOF and walk backward
+// in 64KB chunks until we hit the first complete `user`-typed entry.
 // Returns null on any failure — caller should treat absence as non-fatal.
-function readLastUserMessage(transcriptPath) {
+async function readLastUserMessage(transcriptPath) {
+  const CHUNK = 65536;
+  let fh;
   try {
-    const content = fs.readFileSync(transcriptPath, 'utf-8');
-    const lines = content.split('\n');
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i].trim();
-      if (!line) continue;
-      let entry;
-      try { entry = JSON.parse(line); } catch { continue; }
-      const role = entry.type || entry.role;
-      if (role !== 'user') continue;
-      const msg = entry.message;
-      let text = '';
-      if (typeof msg === 'string') text = msg;
-      else if (msg && typeof msg.content === 'string') text = msg.content;
-      else if (msg && Array.isArray(msg.content)) {
-        text = msg.content.filter(c => c && c.type === 'text').map(c => c.text || '').join(' ').trim();
+    fh = await fs.promises.open(transcriptPath, 'r');
+    const { size } = await fh.stat();
+    let pos = size;
+    let tail = '';
+    while (pos > 0) {
+      const readLen = Math.min(CHUNK, pos);
+      pos -= readLen;
+      const buf = Buffer.alloc(readLen);
+      await fh.read(buf, 0, readLen, pos);
+      tail = buf.toString('utf-8') + tail;
+      const lines = tail.split('\n');
+      // The first fragment may be an incomplete line — keep it for the next pass
+      // by prepending it back to `tail`, except when we've reached the very start.
+      const firstFragment = pos === 0 ? null : lines.shift();
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        let entry;
+        try { entry = JSON.parse(line); } catch { continue; }
+        const role = entry.type || entry.role;
+        if (role !== 'user') continue;
+        const msg = entry.message;
+        let text = '';
+        if (typeof msg === 'string') text = msg;
+        else if (msg && typeof msg.content === 'string') text = msg.content;
+        else if (msg && Array.isArray(msg.content)) {
+          text = msg.content.filter(c => c && c.type === 'text').map(c => c.text || '').join(' ').trim();
+        }
+        if (text) return text;
       }
-      if (text) return text;
+      tail = firstFragment == null ? '' : firstFragment;
     }
-  } catch {}
+  } catch {
+    // swallowed — non-fatal
+  } finally {
+    if (fh) { try { await fh.close(); } catch {} }
+  }
   return null;
 }
 
@@ -129,10 +151,6 @@ ipcMain.on('terminal-resize', (_e, { sessionId, cols, rows }) => {
 
 ipcMain.on('focus-session', (_e, { sessionId }) => {
   sessionManager.setFocusedSession(sessionId);
-  sessionManager.markRead(sessionId);
-});
-
-ipcMain.on('mark-read', (_e, { sessionId }) => {
   sessionManager.markRead(sessionId);
 });
 
@@ -275,7 +293,7 @@ const hookServer = http.createServer((req, res) => {
     if (body.length + c.length > 16384) { tooBig = true; return; }
     body += c;
   });
-  req.on('end', () => {
+  req.on('end', async () => {
     if (tooBig) { res.writeHead(413); res.end('{}'); return; }
     let parsed;
     try { parsed = JSON.parse(body || '{}'); } catch { parsed = {}; }
@@ -288,12 +306,13 @@ const hookServer = http.createServer((req, res) => {
         // Prefer the UserPromptSubmit payload's `prompt` field when present —
         // it's the just-submitted text and doesn't depend on CC having flushed
         // the new transcript entry to disk. For Stop events (no `prompt` in
-        // payload) fall back to reading the transcript JSONL tail.
+        // payload) fall back to reading the transcript JSONL tail (async —
+        // long transcripts used to block the main-process event loop).
         let latestUserMessage = null;
         if (typeof parsed.prompt === 'string' && parsed.prompt.trim()) {
           latestUserMessage = parsed.prompt;
         } else if (parsed.transcriptPath) {
-          latestUserMessage = readLastUserMessage(parsed.transcriptPath);
+          latestUserMessage = await readLastUserMessage(parsed.transcriptPath);
         }
         sendToRenderer('hook-event', {
           event,
