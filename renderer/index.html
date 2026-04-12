@@ -12,10 +12,11 @@
     <div class="session-sidebar">
       <div class="sidebar-header">
         <span class="sidebar-title">Sessions</span>
-        <div style="display:flex;align-items:center">
+        <div style="display:flex;align-items:center;gap:6px">
           <span class="session-count" id="session-count">0 open</span>
+          <button class="btn-theme" id="btn-theme" title="Toggle light/dark theme">◐</button>
           <div class="new-session-wrapper" id="new-session-wrapper">
-            <button class="btn-new-session" id="btn-new" title="New session">+</button>
+            <button class="btn-new-session" id="btn-new" title="New session (Ctrl+N)">+</button>
             <div class="new-session-menu" id="new-session-menu" style="display:none">
               <button class="new-session-option" data-kind="claude">Claude Code</button>
               <button class="new-session-option" data-kind="claude-resume">Claude Resume</button>
@@ -24,7 +25,15 @@
           </div>
         </div>
       </div>
+      <div class="sidebar-search">
+        <input type="text" id="search-input" class="search-input" placeholder="Search sessions…">
+      </div>
       <div class="session-list" id="session-list"></div>
+      <div class="context-menu" id="context-menu" style="display:none">
+        <button class="context-menu-item" data-action="pin">Pin to top</button>
+        <button class="context-menu-item" data-action="restart">Restart session</button>
+        <button class="context-menu-item danger" data-action="close">Close</button>
+      </div>
     </div>
     <div class="terminal-panel" id="terminal-panel">
       <div class="empty-state" id="empty-state">

@@ -142,6 +142,12 @@ const emptyStateEl = document.getElementById('empty-state');
 const btnNew = document.getElementById('btn-new');
 const menuEl = document.getElementById('new-session-menu');
 const wrapperEl = document.getElementById('new-session-wrapper');
+const searchInputEl = document.getElementById('search-input');
+const contextMenuEl = document.getElementById('context-menu');
+const btnThemeEl = document.getElementById('btn-theme');
+
+let searchQuery = '';
+let contextMenuSessionId = null;
 
 // --- Helpers ---
 function formatTime(ts) {
@@ -155,11 +161,26 @@ function escapeHtml(text) {
 }
 
 // --- Session list rendering ---
+// Sort: pinned sessions first (by their own time), then unpinned by lastMessageTime.
+// Filter: search query matches title or preview (case-insensitive).
 function renderSessionList() {
-  const sorted = Array.from(sessions.values())
-    .sort((a, b) => b.lastMessageTime - a.lastMessageTime || b.createdAt - a.createdAt);
+  const all = Array.from(sessions.values());
 
-  sessionCountEl.textContent = `${sorted.length} open`;
+  const filtered = searchQuery
+    ? all.filter(s => {
+        const q = searchQuery.toLowerCase();
+        return s.title.toLowerCase().includes(q) || (s.lastOutputPreview || '').toLowerCase().includes(q);
+      })
+    : all;
+
+  const sorted = filtered.sort((a, b) => {
+    if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+    return b.lastMessageTime - a.lastMessageTime || b.createdAt - a.createdAt;
+  });
+
+  sessionCountEl.textContent = searchQuery
+    ? `${sorted.length}/${all.length}`
+    : `${all.length} open`;
   sessionListEl.innerHTML = '';
 
   for (const s of sorted) {
@@ -168,7 +189,7 @@ function renderSessionList() {
     div.className = 'session-item' + (isActive ? ' selected' : '') + (!isActive && s.unreadCount > 0 ? ' has-unread' : '');
     div.innerHTML = `
       <div class="session-item-header">
-        <span class="session-title"><span class="session-status ${s.status}"></span>${escapeHtml(s.title)}</span>
+        <span class="session-title">${s.pinned ? '<span class="pin-icon" title="Pinned">📌</span>' : ''}<span class="session-status ${s.status}"></span>${escapeHtml(s.title)}</span>
         <span class="session-header-right">
           ${s.unreadCount > 0 && !isActive ? `<span class="unread-badge">${s.unreadCount}</span>` : ''}
           <span class="session-time">${formatTime(s.lastMessageTime)}</span>
@@ -177,6 +198,7 @@ function renderSessionList() {
       <div class="session-preview">${escapeHtml(s.lastOutputPreview || 'No output yet')}</div>
     `;
     div.addEventListener('click', () => selectSession(s.id));
+    div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY); });
     sessionListEl.appendChild(div);
   }
 }
@@ -389,15 +411,57 @@ function getQuestionsSignature(sessionId) {
   return qs.length === 0 ? '' : qs[qs.length - 1].slice(0, 200);
 }
 
+/** Extract a short AI-answer snippet that follows the most recent question. */
+function extractLatestAnswer(sessionId) {
+  const cached = terminalCache.get(sessionId);
+  if (!cached || !cached.opened) return '';
+  const buf = cached.terminal.buffer.active;
+
+  // Find the most recent non-empty ❯ question line (not the current empty prompt).
+  let qIdx = -1;
+  for (let i = buf.length - 1; i >= 0; i--) {
+    const line = buf.getLine(i);
+    if (!line) continue;
+    const t = line.translateToString(true).trim();
+    const m = t.match(/^[❯›>]\s*(.+)/);
+    if (m && m[1].length > 1) { qIdx = i; break; }
+  }
+  if (qIdx === -1) return '';
+
+  // Walk forward and take the first substantive line that isn't status bar / UI chrome.
+  for (let i = qIdx + 1; i < buf.length; i++) {
+    const line = buf.getLine(i);
+    if (!line) continue;
+    const t = line.translateToString(true).trim();
+    if (!t) continue;
+    // Skip decorative lines
+    if (/^[─━┌┐└┘│├┤┬┴┼╭╮╰╯╱╲═║╔╗╚╝]+$/.test(t)) continue;
+    if (/^[❯›>]/.test(t)) continue;
+    // Skip the Claude Code status bar strings
+    if (/^(Context|Usage|⏵⏵|CLAUDE\.md|MCPs|hooks|medium|high|low|bypass permissions|\d+\s*CLAUDE)/.test(t)) continue;
+    if (/\[(Opus|Sonnet|Haiku)/i.test(t)) continue;
+    // Strip common AI-reply prefixes (⏺ filled circle, ● bullet, > quote)
+    const cleaned = t.replace(/^[⏺●◉○•·⊙]\s*/, '').trim();
+    if (cleaned.length < 2) continue;
+    return cleaned;
+  }
+  return '';
+}
+
 function readTerminalPreview(sessionId) {
   const session = sessions.get(sessionId);
   if (!session) return;
 
   const questions = extractUserQuestions(sessionId);
-  // Take last 3, newest first, each truncated to ~40 chars
-  const recent = questions.slice(-3).reverse();
-  const previewLines = recent.map(q => 'Q: ' + (q.length > 40 ? q.substring(0, 38) + '...' : q));
-  const newPreview = previewLines.join('\n');
+  if (questions.length === 0) return;
+
+  const lastQ = questions[questions.length - 1];
+  const qLine = 'Q: ' + (lastQ.length > 50 ? lastQ.substring(0, 48) + '…' : lastQ);
+
+  const ans = extractLatestAnswer(sessionId);
+  const aLine = ans ? 'A: ' + (ans.length > 50 ? ans.substring(0, 48) + '…' : ans) : '';
+
+  const newPreview = aLine ? `${qLine}\n${aLine}` : qLine;
 
   // Preview text only; sort time + unread are bumped on AI reply completion
   if (newPreview && newPreview !== session.lastOutputPreview) {
@@ -514,10 +578,167 @@ function onReplyCompleteFromHook(sessionId) {
     session.readSignature = sig;
     if (sessionId !== activeSessionId) {
       session.unreadCount = (session.unreadCount || 0) + 1;
+      maybeNotify(session);
     }
     renderSessionList();
   }
 }
+
+// --- System notification (fire when window is in background) ---
+async function maybeNotify(session) {
+  try {
+    const focused = await ipcRenderer.invoke('is-window-focused');
+    if (focused) return;
+    ipcRenderer.send('show-notification', {
+      title: session.title + ' — reply ready',
+      body: session.lastOutputPreview || '',
+    });
+  } catch {}
+}
+
+// --- Keyboard shortcuts ---
+document.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.metaKey)) return;
+
+  // Ctrl+N: new Claude session
+  if (!e.shiftKey && !e.altKey && (e.key === 'n' || e.key === 'N')) {
+    e.preventDefault();
+    ipcRenderer.invoke('create-session', 'claude');
+    return;
+  }
+
+  // Ctrl+Tab / Ctrl+Shift+Tab: cycle sessions
+  if (e.key === 'Tab') {
+    e.preventDefault();
+    cycleSession(e.shiftKey ? -1 : 1);
+    return;
+  }
+
+  // Ctrl+1..9: jump to Nth session in current sort order
+  if (!e.shiftKey && !e.altKey && /^[1-9]$/.test(e.key)) {
+    e.preventDefault();
+    jumpToSessionByIndex(parseInt(e.key, 10) - 1);
+    return;
+  }
+
+  // Ctrl+F: focus search
+  if (!e.shiftKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
+    e.preventDefault();
+    searchInputEl.focus();
+    searchInputEl.select();
+    return;
+  }
+}, true);
+
+function getSortedVisibleSessionIds() {
+  // Same sort as renderSessionList so Ctrl+N maps to what user sees.
+  const all = Array.from(sessions.values());
+  const filtered = searchQuery
+    ? all.filter(s => {
+        const q = searchQuery.toLowerCase();
+        return s.title.toLowerCase().includes(q) || (s.lastOutputPreview || '').toLowerCase().includes(q);
+      })
+    : all;
+  return filtered
+    .sort((a, b) => {
+      if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+      return b.lastMessageTime - a.lastMessageTime || b.createdAt - a.createdAt;
+    })
+    .map(s => s.id);
+}
+
+function cycleSession(direction) {
+  const ids = getSortedVisibleSessionIds();
+  if (ids.length === 0) return;
+  const i = Math.max(0, ids.indexOf(activeSessionId));
+  const next = (i + direction + ids.length) % ids.length;
+  selectSession(ids[next]);
+}
+
+function jumpToSessionByIndex(idx) {
+  const ids = getSortedVisibleSessionIds();
+  if (idx < 0 || idx >= ids.length) return;
+  selectSession(ids[idx]);
+}
+
+// --- Search ---
+searchInputEl.addEventListener('input', () => {
+  searchQuery = searchInputEl.value.trim();
+  renderSessionList();
+});
+searchInputEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    searchInputEl.value = '';
+    searchQuery = '';
+    renderSessionList();
+    searchInputEl.blur();
+  }
+});
+
+// --- Context menu (right-click session) ---
+function openContextMenu(sessionId, x, y) {
+  contextMenuSessionId = sessionId;
+  contextMenuEl.style.display = 'block';
+  contextMenuEl.style.left = `${x}px`;
+  contextMenuEl.style.top = `${y}px`;
+  // Keep in viewport
+  requestAnimationFrame(() => {
+    const rect = contextMenuEl.getBoundingClientRect();
+    if (rect.right > window.innerWidth) contextMenuEl.style.left = `${x - rect.width}px`;
+    if (rect.bottom > window.innerHeight) contextMenuEl.style.top = `${y - rect.height}px`;
+  });
+  // Update pin label to reflect current state
+  const session = sessions.get(sessionId);
+  const pinBtn = contextMenuEl.querySelector('[data-action="pin"]');
+  if (pinBtn && session) pinBtn.textContent = session.pinned ? 'Unpin' : 'Pin to top';
+}
+
+function closeContextMenu() {
+  contextMenuEl.style.display = 'none';
+  contextMenuSessionId = null;
+}
+
+document.addEventListener('mousedown', (e) => {
+  if (contextMenuEl.style.display === 'block' && !contextMenuEl.contains(e.target)) {
+    closeContextMenu();
+  }
+});
+
+for (const btn of contextMenuEl.querySelectorAll('.context-menu-item')) {
+  btn.addEventListener('click', async () => {
+    const action = btn.dataset.action;
+    const sid = contextMenuSessionId;
+    closeContextMenu();
+    if (!sid) return;
+    const session = sessions.get(sid);
+    if (!session) return;
+
+    if (action === 'pin') {
+      session.pinned = !session.pinned;
+      renderSessionList();
+    } else if (action === 'restart') {
+      await ipcRenderer.invoke('restart-session', sid);
+    } else if (action === 'close') {
+      await ipcRenderer.invoke('close-session', sid);
+    }
+  });
+}
+
+// --- Theme toggle ---
+const THEME_KEY = 'claude-hub-theme';
+function applyTheme(theme) {
+  if (theme === 'light') document.body.classList.add('theme-light');
+  else document.body.classList.remove('theme-light');
+  btnThemeEl.textContent = theme === 'light' ? '☀' : '◐';
+}
+const initialTheme = localStorage.getItem(THEME_KEY) || 'dark';
+applyTheme(initialTheme);
+btnThemeEl.addEventListener('click', () => {
+  const current = document.body.classList.contains('theme-light') ? 'light' : 'dark';
+  const next = current === 'light' ? 'dark' : 'light';
+  localStorage.setItem(THEME_KEY, next);
+  applyTheme(next);
+});
 
 ipcRenderer.on('session-created', (_e, { session }) => {
   sessions.set(session.id, session);

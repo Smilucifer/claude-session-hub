@@ -21,6 +21,23 @@
   --session-selected: #1c2128;
 }
 
+body.theme-light {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f6f8fa;
+  --bg-tertiary: #eaeef2;
+  --border: #d0d7de;
+  --text-primary: #1f2328;
+  --text-secondary: #6e7781;
+  --text-muted: #9ca3af;
+  --accent-green: #1a7f37;
+  --accent-blue: #0969da;
+  --accent-orange: #bc4c00;
+  --accent-red: #cf222e;
+  --session-active: #dafbe1;
+  --session-waiting: #ddf4ff;
+  --session-selected: #eaeef2;
+}
+
 html, body {
   height: 100%;
   width: 100%;
@@ -357,6 +374,72 @@ html, body {
 
 .new-session-option:hover {
   background: var(--bg-secondary);
+}
+
+/* Theme toggle button */
+.btn-theme {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  width: 24px; height: 24px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+  transition: all 0.15s;
+}
+.btn-theme:hover { color: var(--accent-blue); border-color: var(--accent-blue); }
+
+/* Sidebar search */
+.sidebar-search { padding: 6px 12px 2px; }
+.search-input {
+  width: 100%;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.search-input:focus { border-color: var(--accent-blue); }
+.search-input::placeholder { color: var(--text-muted); }
+
+/* Right-click context menu */
+.context-menu {
+  position: fixed;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  min-width: 160px;
+  z-index: 200;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.context-menu-item {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+.context-menu-item:hover { background: var(--bg-secondary); }
+.context-menu-item.danger { color: var(--accent-red); }
+.context-menu-item.danger:hover { background: rgba(231,76,60,0.12); }
+
+/* Pinned session indicator */
+.session-item .pin-icon {
+  color: var(--accent-orange);
+  font-size: 11px;
+  margin-right: 4px;
+  display: inline-block;
 }
 
 /* Hook server offline banner */

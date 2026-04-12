@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, clipboard, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, clipboard, nativeImage, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -84,6 +84,32 @@ ipcMain.handle('rename-session', (_e, { sessionId, title }) => {
 
 ipcMain.handle('get-sessions', () => {
   return sessionManager.getAllSessions();
+});
+
+// Restart a Claude/PowerShell session in place: close old PTY, spawn a new one
+// with the same kind. The session gets a new id because PTY identity changes.
+ipcMain.handle('restart-session', (_e, sessionId) => {
+  const old = sessionManager.getSession(sessionId);
+  if (!old) return null;
+  sessionManager.closeSession(sessionId);
+  sendToRenderer('session-closed', { sessionId });
+  const fresh = sessionManager.createSession(old.kind);
+  sendToRenderer('session-created', { session: fresh });
+  return fresh;
+});
+
+// Show a Windows/OS notification. Renderer decides when to call it.
+ipcMain.on('show-notification', (_e, { title, body }) => {
+  if (!Notification.isSupported()) return;
+  const n = new Notification({ title: title || 'Claude Session Hub', body: body || '', silent: false });
+  n.on('click', () => {
+    if (mainWindow) { mainWindow.show(); mainWindow.focus(); }
+  });
+  n.show();
+});
+
+ipcMain.handle('is-window-focused', () => {
+  return mainWindow ? mainWindow.isFocused() : false;
 });
 
 // --- Clipboard image paste support ---
