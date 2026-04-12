@@ -13,13 +13,15 @@ class SessionManager {
 
   createSession(kind = 'powershell') {
     const id = uuid();
-    const title = kind === 'claude'
-      ? `Claude ${++this.claudeCounter}`
-      : `PowerShell ${++this.psCounter}`;
+    const isClaude = kind === 'claude' || kind === 'claude-resume';
+    let title;
+    if (kind === 'claude') title = `Claude ${++this.claudeCounter}`;
+    else if (kind === 'claude-resume') title = `Claude ${++this.claudeCounter} (resume)`;
+    else title = `PowerShell ${++this.psCounter}`;
 
     const sessionEnv = { ...process.env };
 
-    if (kind === 'claude') {
+    if (isClaude) {
       sessionEnv.ANTHROPIC_BASE_URL = '';
       sessionEnv.ANTHROPIC_AUTH_TOKEN = '';
       sessionEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL = '';
@@ -29,7 +31,7 @@ class SessionManager {
       }
     }
 
-    const shellArgs = kind === 'claude' ? ['-NoProfile', '-NoLogo'] : [];
+    const shellArgs = isClaude ? ['-NoProfile', '-NoLogo'] : [];
     const ptyProcess = pty.spawn('powershell.exe', shellArgs, {
       name: 'xterm-256color',
       cols: 120,
@@ -65,7 +67,8 @@ class SessionManager {
       ptyProcess.write('Set-PSReadLineOption -PredictionViewStyle InlineView 2>$null; clear\r\n');
     }
 
-    if (kind === 'claude') {
+    if (isClaude) {
+      const cmd = kind === 'claude-resume' ? ' claude --resume\r\n' : ' claude\r\n';
       let sent = false;
       let debounceTimer = null;
       const watcher = ptyProcess.onData(() => {
@@ -76,7 +79,7 @@ class SessionManager {
           sent = true;
           watcher.dispose();
           const s = this.sessions.get(id);
-          if (s) s.pty.write(' claude\r\n');
+          if (s) s.pty.write(cmd);
         }, 200);
       });
       const safetyTimer = setTimeout(() => {
@@ -85,7 +88,7 @@ class SessionManager {
         watcher.dispose();
         if (debounceTimer) clearTimeout(debounceTimer);
         const s = this.sessions.get(id);
-        if (s) s.pty.write(' claude\r\n');
+        if (s) s.pty.write(cmd);
       }, 3000);
       pendingTimers.push(safetyTimer);
     }
