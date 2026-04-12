@@ -229,7 +229,12 @@ function renderSessionList() {
     const modelBadge = s.currentModel
       ? `<span class="model-badge ${modelClass(s.currentModel.id)}" title="${escapeHtml(s.currentModel.displayName || s.currentModel.id)}">${escapeHtml(modelShort(s.currentModel))}</span>`
       : '';
-    const footerInner = [modelBadge, ctxBadge].filter(Boolean).join('');
+    // Burn attribution: only show if we have a rate ≥ 0.5%/h; clutter guard.
+    const burn = sessionBurnRate(s);
+    const burnBadge = (burn && burn.pctPerHour >= 0.5)
+      ? `<span class="burn-badge ${burn.pctPerHour >= 5 ? 'danger' : burn.pctPerHour >= 2 ? 'warn' : 'ok'}" title="Est. share of 5h cap / hour at current rate (${Math.round(burn.tokensPerMin).toLocaleString()} tok/min)">🔥 ${burn.pctPerHour.toFixed(1)}%/h</span>`
+      : '';
+    const footerInner = [modelBadge, ctxBadge, burnBadge].filter(Boolean).join('');
     div.innerHTML = `
       <div class="session-item-header">
         <span class="session-title">${s.pinned ? '<span class="pin-icon" title="Pinned">📌</span>' : ''}<span class="session-status ${s.status}"></span>${escapeHtml(s.title)}</span>
@@ -562,6 +567,13 @@ function showTerminal(sessionId, opts = { focus: true }) {
       if (cached.scrollLock !== null) setScrollLock(sessionId, null);
       cached.terminal.scrollToBottom();
       cached.terminal.focus();
+      // FIX: after display:none → block the .xterm-viewport div's scrollTop
+      // can stay at 0 even though xterm's buffer.viewportY is at baseY. The
+      // first wheel event then triggers xterm's scroll-sync listener which
+      // reads the stale scrollTop=0 and snaps viewportY to 0 (jump-to-top).
+      // Force the DOM scrollTop to max so it matches the bottom-pinned buffer.
+      const vp = cached.container.querySelector('.xterm-viewport');
+      if (vp) vp.scrollTop = vp.scrollHeight;
     }
   });
 
@@ -570,11 +582,122 @@ function showTerminal(sessionId, opts = { focus: true }) {
   const handleResize = () => {
     cached.fitAddon.fit();
     ipcRenderer.send('terminal-resize', { sessionId, cols: cached.terminal.cols, rows: cached.terminal.rows });
+    if (cached._minimap) cached._minimap.invalidate();
   };
   cached._resizeHandler = handleResize;
   window.addEventListener('resize', handleResize);
   cached._ro = new ResizeObserver(handleResize);
   cached._ro.observe(cached.container);
+
+  // Previous minimap (from a prior showTerminal call on any session) gets
+  // disposed so xterm onScroll/onRender listeners don't pile up. The new
+  // minimap's DOM was already removed when terminalPanelEl.innerHTML cleared.
+  if (cached._minimap) { try { cached._minimap.dispose(); } catch {} cached._minimap = null; }
+  cached._minimap = mountMinimap(sessionId, termContainer, cached.terminal);
+}
+
+// Minimap: a narrow strip on the right edge of the terminal that shows prompt
+// locations + the viewport window. Scans the xterm buffer on-demand (debounced);
+// no line-by-line callbacks, so the terminal.write fast path stays untouched.
+function mountMinimap(sessionId, termContainer, terminal) {
+  const strip = document.createElement('div');
+  strip.className = 'terminal-minimap';
+  const viewport = document.createElement('div');
+  viewport.className = 'minimap-viewport';
+  const ticksLayer = document.createElement('div');
+  ticksLayer.className = 'minimap-ticks';
+  strip.append(ticksLayer, viewport);
+  termContainer.appendChild(strip);
+
+  // Same regex as parseQuestionsFromLines — ❯ / › as prompt glyphs.
+  const PROMPT_RE = /^[\s│╭─╮╰╯]*[❯›]\s+(.+?)(?:\s*[│╯╰╭╮]+\s*)?$/;
+  const AI_MARKERS = /[⏺●◉◐◑◒◓◔◕]/;
+  let ticks = []; // [{line, text}]
+  let scanTimer = null;
+  let disposed = false;
+
+  function scanBuffer() {
+    if (disposed) return;
+    const buf = terminal.buffer.active;
+    const total = buf.length;
+    const found = [];
+    for (let i = 0; i < total; i++) {
+      const line = buf.getLine(i);
+      if (!line) continue;
+      const text = line.translateToString(true);
+      if (!text) continue;
+      if (AI_MARKERS.test(text)) continue;
+      const m = text.match(PROMPT_RE);
+      if (!m) continue;
+      const q = m[1].trim();
+      if (q.length < 2) continue;
+      found.push({ line: i, text: q });
+    }
+    ticks = found;
+    render();
+  }
+
+  function invalidate() {
+    if (disposed) return;
+    if (scanTimer) clearTimeout(scanTimer);
+    scanTimer = setTimeout(scanBuffer, 250);
+  }
+
+  function render() {
+    if (disposed) return;
+    const buf = terminal.buffer.active;
+    const total = Math.max(1, buf.length);
+    const stripH = strip.clientHeight || 1;
+    // Ticks
+    ticksLayer.innerHTML = '';
+    const frag = document.createDocumentFragment();
+    for (const t of ticks) {
+      const y = (t.line / total) * stripH;
+      const el = document.createElement('div');
+      el.className = 'minimap-tick';
+      el.style.top = Math.round(y) + 'px';
+      el.title = t.text.slice(0, 80);
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        try { terminal.scrollToLine(t.line); } catch {}
+      });
+      frag.appendChild(el);
+    }
+    ticksLayer.appendChild(frag);
+    // Viewport box
+    const top = (buf.viewportY / total) * stripH;
+    const height = Math.max(6, (terminal.rows / total) * stripH);
+    viewport.style.top = Math.round(top) + 'px';
+    viewport.style.height = Math.round(height) + 'px';
+  }
+
+  // Strip click (outside ticks) → scroll to proportional line.
+  strip.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const rect = strip.getBoundingClientRect();
+    const rel = (e.clientY - rect.top) / Math.max(1, rect.height);
+    const buf = terminal.buffer.active;
+    const target = Math.max(0, Math.min(buf.length - 1, Math.round(rel * buf.length)));
+    try { terminal.scrollToLine(target); } catch {}
+  });
+
+  // xterm listeners. Keep them disposable.
+  const scrollSub = terminal.onScroll(() => render());
+  const renderSub = terminal.onRender(() => invalidate());
+
+  // Initial scan (wait a frame so buffer is populated).
+  requestAnimationFrame(() => { scanBuffer(); render(); });
+
+  return {
+    invalidate,
+    dispose() {
+      disposed = true;
+      if (scanTimer) clearTimeout(scanTimer);
+      try { scrollSub.dispose(); } catch {}
+      try { renderSub.dispose(); } catch {}
+      if (strip.parentNode) strip.parentNode.removeChild(strip);
+    },
+  };
 }
 
 // Hub → Claude /rename sync. Only fires for Claude sessions after the user
@@ -675,6 +798,190 @@ for (const btn of document.querySelectorAll('.new-session-option')) {
     await ipcRenderer.invoke('create-session', btn.dataset.kind);
   });
 }
+
+// --- Resume past session modal ---
+const resumeModalEl = document.getElementById('resume-modal');
+const resumeListEl = document.getElementById('resume-list');
+const resumeFilterEl = document.getElementById('resume-filter');
+let resumeItems = [];
+
+function openResumeModal() {
+  resumeModalEl.style.display = 'flex';
+  resumeFilterEl.value = '';
+  resumeListEl.innerHTML = '<div class="modal-empty">Scanning…</div>';
+  requestAnimationFrame(() => resumeFilterEl.focus());
+  ipcRenderer.invoke('list-past-sessions', { limit: 50 }).then((items) => {
+    resumeItems = items || [];
+    renderResumeList(resumeItems);
+  }).catch(() => {
+    resumeListEl.innerHTML = '<div class="modal-empty">Scan failed.</div>';
+  });
+}
+
+function closeResumeModal() {
+  resumeModalEl.style.display = 'none';
+}
+
+function renderResumeList(items) {
+  if (!items || items.length === 0) {
+    resumeListEl.innerHTML = '<div class="modal-empty">No past sessions found.</div>';
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  for (const it of items) {
+    const row = document.createElement('div');
+    row.className = 'modal-row';
+    const mtimeStr = it.mtime ? new Date(it.mtime).toLocaleString('zh-CN', { hour12: false }) : '';
+    const preview = it.firstUserMessage || '(no user prompt captured)';
+    const modelShort = (it.model || '').replace(/^claude-/, '').replace(/-\d+$/, '');
+    row.innerHTML = `
+      <div class="modal-row-main">
+        <span class="modal-row-preview">${escapeHtml(preview)}</span>
+      </div>
+      <div class="modal-row-meta">
+        <span class="modal-meta-time">${escapeHtml(mtimeStr)}</span>
+        ${it.turnCount ? `<span class="modal-meta-chip">${it.turnCount}T</span>` : ''}
+        ${modelShort ? `<span class="modal-meta-chip">${escapeHtml(modelShort)}</span>` : ''}
+        ${it.cwd ? `<span class="modal-meta-cwd" title="${escapeHtml(it.cwd)}">${escapeHtml(it.cwd)}</span>` : ''}
+      </div>
+    `;
+    row.addEventListener('click', async () => {
+      closeResumeModal();
+      await ipcRenderer.invoke('create-session', {
+        kind: 'claude-resume',
+        opts: { resumeCCSessionId: it.sessionId, cwd: it.cwd || undefined },
+      });
+    });
+    frag.appendChild(row);
+  }
+  resumeListEl.innerHTML = '';
+  resumeListEl.appendChild(frag);
+}
+
+resumeFilterEl.addEventListener('input', () => {
+  const q = resumeFilterEl.value.trim().toLowerCase();
+  if (!q) { renderResumeList(resumeItems); return; }
+  const filtered = resumeItems.filter(it => {
+    const hay = ((it.firstUserMessage || '') + ' ' + (it.cwd || '') + ' ' + (it.model || '')).toLowerCase();
+    return hay.includes(q);
+  });
+  renderResumeList(filtered);
+});
+
+document.getElementById('btn-resume-picker').addEventListener('click', openResumeModal);
+document.getElementById('resume-modal-close').addEventListener('click', closeResumeModal);
+resumeModalEl.addEventListener('click', (e) => {
+  if (e.target === resumeModalEl) closeResumeModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && resumeModalEl.style.display === 'flex') {
+    e.preventDefault(); closeResumeModal();
+  }
+});
+
+// --- "昨日之我" past-session full-text search (Ctrl+Shift+F) ---
+const searchModalEl = document.getElementById('search-modal');
+const searchQueryEl = document.getElementById('search-query');
+const searchResultsEl = document.getElementById('search-results');
+let searchDebounce = null;
+let searchSeq = 0; // guard against out-of-order async responses
+
+function openSearchModal() {
+  searchModalEl.style.display = 'flex';
+  searchQueryEl.value = '';
+  searchResultsEl.innerHTML = '<div class="modal-empty">Type ≥ 2 chars to search.</div>';
+  requestAnimationFrame(() => searchQueryEl.focus());
+}
+function closeSearchModal() { searchModalEl.style.display = 'none'; }
+
+function highlightMatch(text, query) {
+  if (!query) return escapeHtml(text);
+  const ql = query.toLowerCase();
+  const tl = text.toLowerCase();
+  const out = [];
+  let i = 0;
+  while (i < text.length) {
+    const hit = tl.indexOf(ql, i);
+    if (hit < 0) { out.push(escapeHtml(text.slice(i))); break; }
+    out.push(escapeHtml(text.slice(i, hit)));
+    out.push('<mark>' + escapeHtml(text.slice(hit, hit + query.length)) + '</mark>');
+    i = hit + query.length;
+  }
+  return out.join('');
+}
+
+function renderSearchHits(hits, query, truncated) {
+  if (!hits.length) {
+    searchResultsEl.innerHTML = '<div class="modal-empty">No matches.</div>';
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  for (const h of hits) {
+    const row = document.createElement('div');
+    row.className = 'modal-row';
+    const when = new Date(h.mtime).toLocaleString('zh-CN', { hour12: false });
+    row.innerHTML = `
+      <div class="modal-row-main">
+        <span class="modal-row-preview">${highlightMatch(h.snippet, query)}</span>
+      </div>
+      <div class="modal-row-meta">
+        <span class="modal-meta-time">${escapeHtml(when)}</span>
+        <span class="modal-meta-chip">${h.role || '?'}</span>
+        <span class="modal-meta-chip">line ${h.lineNo}</span>
+      </div>
+    `;
+    row.title = 'Click to resume this session';
+    row.addEventListener('click', async () => {
+      closeSearchModal();
+      await ipcRenderer.invoke('create-session', {
+        kind: 'claude-resume',
+        opts: { resumeCCSessionId: h.sessionId },
+      });
+    });
+    frag.appendChild(row);
+  }
+  searchResultsEl.innerHTML = '';
+  if (truncated) {
+    const note = document.createElement('div');
+    note.className = 'modal-empty';
+    note.style.padding = '8px 14px';
+    note.style.textAlign = 'left';
+    note.textContent = `Showing first ${hits.length} matches (scan truncated — refine query for more).`;
+    searchResultsEl.appendChild(note);
+  }
+  searchResultsEl.appendChild(frag);
+}
+
+searchQueryEl.addEventListener('input', () => {
+  const q = searchQueryEl.value.trim();
+  if (q.length < 2) {
+    searchResultsEl.innerHTML = '<div class="modal-empty">Type ≥ 2 chars to search.</div>';
+    return;
+  }
+  if (searchDebounce) clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(async () => {
+    const seq = ++searchSeq;
+    searchResultsEl.innerHTML = '<div class="modal-empty">Searching…</div>';
+    const res = await ipcRenderer.invoke('search-past-sessions', { query: q, limit: 50 });
+    if (seq !== searchSeq) return; // newer query in flight
+    renderSearchHits(res.hits || [], q, !!res.truncated);
+  }, 300);
+});
+
+document.getElementById('search-modal-close').addEventListener('click', closeSearchModal);
+searchModalEl.addEventListener('click', (e) => {
+  if (e.target === searchModalEl) closeSearchModal();
+});
+document.addEventListener('keydown', (e) => {
+  // Ctrl+Shift+F — global search
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'F' || e.key === 'f')) {
+    e.preventDefault(); openSearchModal();
+    return;
+  }
+  if (e.key === 'Escape' && searchModalEl.style.display === 'flex') {
+    e.preventDefault(); closeSearchModal();
+  }
+});
 
 // Ctrl+click on a local file path in the terminal → open with OS default app.
 // xterm's WebLinksAddon only handles URLs, so we register a separate link
@@ -918,6 +1225,57 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
 // Status updates from our custom statusline script.
 // Carries contextPct / cwd / api time / session_name per session + account-wide usage5h/usage7d.
 const accountUsage = { usage5h: null, usage7d: null };
+// Samples for quota burn-rate attribution. Per-session contextUsed history
+// (15 min ring) → tokens/min. Global 5h samples let us estimate tokens-per-pct
+// so we can project each session's burn as "% of 5h cap per hour".
+const BURN_HISTORY_MS = 15 * 60 * 1000;
+const globalUsageSamples = []; // [{t, pct, totalUsedTokens}]
+const DEFAULT_TOKENS_PER_PCT = 2_000_000; // fallback baseline if we have no delta
+
+function pruneSamples(arr, now) {
+  const cutoff = now - BURN_HISTORY_MS;
+  while (arr.length && arr[0].t < cutoff) arr.shift();
+}
+
+function aggregateUsedTokens(now) {
+  let total = 0;
+  for (const s of sessions.values()) {
+    // Use each session's most recent contextUsed as a proxy. Not perfect —
+    // but good enough to attribute ratably.
+    if (typeof s.contextUsed === 'number') total += s.contextUsed;
+  }
+  return total;
+}
+
+function estimateTokensPerPct() {
+  // Find two global samples far enough apart with a positive pct delta.
+  for (let i = globalUsageSamples.length - 1; i >= 1; i--) {
+    const a = globalUsageSamples[i];
+    for (let j = i - 1; j >= 0; j--) {
+      const b = globalUsageSamples[j];
+      if (a.t - b.t < 60 * 1000) continue; // need ≥1 min spread
+      const dp = a.pct - b.pct;
+      const dt = a.totalUsedTokens - b.totalUsedTokens;
+      if (dp > 0.3 && dt > 0) return dt / dp;
+    }
+  }
+  return DEFAULT_TOKENS_PER_PCT;
+}
+
+function sessionBurnRate(session) {
+  const samples = session._tokenSamples;
+  if (!samples || samples.length < 2) return null;
+  const first = samples[0];
+  const last = samples[samples.length - 1];
+  const dt = last.t - first.t;
+  if (dt < 60 * 1000) return null;
+  const dTokens = last.used - first.used;
+  if (dTokens <= 0) return null;
+  const tokensPerMin = dTokens / (dt / 60000);
+  const tokensPerPct = estimateTokensPerPct();
+  const pctPerHour = (tokensPerMin * 60) / tokensPerPct;
+  return { tokensPerMin, pctPerHour };
+}
 
 ipcRenderer.on('status-event', (_e, payload) => {
   const session = sessions.get(payload.sessionId);
@@ -925,6 +1283,11 @@ ipcRenderer.on('status-event', (_e, payload) => {
     session.contextPct = payload.contextPct;
     session.contextUsed = payload.contextUsed;
     session.contextMax = payload.contextMax;
+    if (typeof payload.contextUsed === 'number') {
+      if (!session._tokenSamples) session._tokenSamples = [];
+      session._tokenSamples.push({ t: Date.now(), used: payload.contextUsed });
+      pruneSamples(session._tokenSamples, Date.now());
+    }
     if (payload.cwd) session.cwd = payload.cwd;
     if (typeof payload.apiMs === 'number') session.apiMs = payload.apiMs;
     if (typeof payload.linesAdded === 'number') session.linesAdded = payload.linesAdded;
@@ -945,8 +1308,13 @@ ipcRenderer.on('status-event', (_e, payload) => {
     }
     if (payload.sessionId === activeSessionId) updateActiveMetricsRow();
   }
-  // Usage is account-wide — keep the latest reported values
-  if (payload.usage5h) accountUsage.usage5h = payload.usage5h;
+  // Usage is account-wide — keep the latest reported values + sample for burn rate.
+  if (payload.usage5h) {
+    accountUsage.usage5h = payload.usage5h;
+    const now = Date.now();
+    globalUsageSamples.push({ t: now, pct: payload.usage5h.pct, totalUsedTokens: aggregateUsedTokens(now) });
+    pruneSamples(globalUsageSamples, now);
+  }
   if (payload.usage7d) accountUsage.usage7d = payload.usage7d;
   renderAccountUsage();
   renderSessionList();
@@ -1129,6 +1497,9 @@ ipcRenderer.on('hook-event', (_e, { event, sessionId, claudeSessionId, cwd, late
         ipcRenderer.send('terminal-input', { sessionId, data: '/rename ' + pending + '\r' });
       }, 400);
     }
+    // A new turn landed — ask minimap to rescan for any new prompt ticks.
+    const cached = terminalCache.get(sessionId);
+    if (cached && cached._minimap) cached._minimap.invalidate();
   }
   else if (event === 'prompt') onPromptSubmittedFromHook(sessionId);
 });
