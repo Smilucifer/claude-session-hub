@@ -7,6 +7,32 @@ const { WebLinksAddon } = require('@xterm/addon-web-links');
 const { WebglAddon } = require('@xterm/addon-webgl');
 const { CanvasAddon } = require('@xterm/addon-canvas');
 
+// --- Shared regex patterns ---
+// One source of truth for UI-parsing heuristics. When Claude Code changes its
+// TUI (prompt glyph, box chars, marker emoji) or we add a new file type, fix
+// it here and every caller picks it up.
+//
+// Claude Code's user-input prompt line, e.g. "❯ text" or "│ ❯ text │".
+// Deliberately excludes ASCII '>' — matched assistant markdown/list content.
+const PROMPT_LINE_RE = /^[\s│╭─╮╰╯]*[❯›]\s+(.+?)(?:\s*[│╯╰╭╮]+\s*)?$/;
+// Just the prompt prefix — no capture group. Used when we only need to skip
+// prompt lines rather than parse them.
+const PROMPT_PREFIX_RE = /^[\s│╭─╮╰╯]*[❯›]\s+/;
+// Emoji Claude Code uses at the start of an AI-reply block. A safety net: if
+// we ever mis-match a user prompt line, this filters out lines that are
+// clearly assistant output.
+const AI_MARKERS_RE = /[⏺●◉◐◑◒◓◔◕]/;
+// Absolute Windows path ending in a 1-8 char alnum extension. /g so callers
+// can iterate with exec(); reset lastIndex before each loop to avoid state
+// leakage between calls.
+const ABS_PATH_RE = /[A-Za-z]:[\\/](?:[^\\/:*?"<>|\r\n\s]+[\\/])*[^\\/:*?"<>|\r\n\s]+\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9])/g;
+// Image-only subset of ABS_PATH_RE for hover-preview detection.
+const IMAGE_PATH_RE = /[A-Za-z]:[\\/](?:[^\\/:*?"<>|\r\n\s]+[\\/])*[^\\/:*?"<>|\r\n\s]+\.(?:png|jpe?g|gif|webp|bmp)(?![A-Za-z0-9])/gi;
+// Our own clipboard-image directory. Stripped from sidebar preview: paste
+// injects the path before the user's typed text and would otherwise eat the
+// entire 60-char preview.
+const HUB_IMG_PATH_RE = /(?:[A-Za-z]:)?[\\/][^\s]*[\\/]\.claude-session-hub[\\/]images[\\/][^\s]+?\.(?:png|jpe?g|gif|webp|bmp)/gi;
+
 // --- Paste support (text + image) ---
 // Attached per-terminal via attachCustomKeyEventHandler in getOrCreateTerminal.
 // Fires only when the xterm has focus. We intercept ALL Ctrl+V, not just image
@@ -34,23 +60,15 @@ previewTooltip.className = 'image-preview-tooltip';
 previewTooltip.style.display = 'none';
 document.body.appendChild(previewTooltip);
 
-/** Check if a string looks like an image file path */
-function isImagePath(text) {
-  return /\.(png|jpg|jpeg|gif|bmp|webp)$/i.test(text.trim());
-}
-
-/** Extract potential file path from terminal line at a given position */
+/** Extract an image path around the given column, if any. Uses the shared
+ *  IMAGE_PATH_RE so all path heuristics stay in sync. */
 function extractPathAtPosition(lineText, colIndex) {
-  // Find path-like substring around the cursor position
-  // Match Windows paths like C:\...\file.png or Unix paths like /home/.../file.png
-  const pathRegex = /[A-Za-z]:\\[^\s<>"|?*]+\.(png|jpg|jpeg|gif|bmp|webp)|\/[^\s<>"|?*]+\.(png|jpg|jpeg|gif|bmp|webp)/gi;
+  IMAGE_PATH_RE.lastIndex = 0;
   let match;
-  while ((match = pathRegex.exec(lineText)) !== null) {
+  while ((match = IMAGE_PATH_RE.exec(lineText)) !== null) {
     const start = match.index;
     const end = start + match[0].length;
-    if (colIndex >= start && colIndex <= end) {
-      return match[0];
-    }
+    if (colIndex >= start && colIndex <= end) return match[0];
   }
   return null;
 }
@@ -69,7 +87,9 @@ function setupImageHover(terminal, container) {
     const lineText = line.translateToString(false);
     const filePath = extractPathAtPosition(lineText, coords.col);
 
-    if (filePath && isImagePath(filePath)) {
+    if (filePath) {
+      // extractPathAtPosition already scopes to image extensions via
+      // IMAGE_PATH_RE, so any match here is safe to preview.
       showPreview(filePath, e.clientX, e.clientY);
     } else {
       hidePreview();
@@ -307,12 +327,7 @@ function getOrCreateTerminal(sessionId) {
   registerLocalPathLinks(terminal);
   terminal.unicode.activeVersion = '11';
 
-  terminal.onData((data) => {
-    // User typed — unlock scroll so they can see what they're interacting with
-    const c = terminalCache.get(sessionId);
-    if (c && c.scrollLock !== null) setScrollLock(sessionId, null);
-    ipcRenderer.send('terminal-input', { sessionId, data });
-  });
+  terminal.onData((data) => { ipcRenderer.send('terminal-input', { sessionId, data }); });
   terminal.onBinary((data) => { ipcRenderer.send('terminal-input', { sessionId, data }); });
 
   // Claude Code emits an OSC set-title escape sequence once near the start of a
@@ -345,49 +360,6 @@ function getOrCreateTerminal(sessionId) {
       ipcRenderer.invoke('rename-session', { sessionId, title: clean });
     });
   }
-
-  // --- Scroll lock: pin viewport when user scrolls up, release when back at bottom ---
-  // State lives on cached (per-session). scrollLock = null means follow-bottom (default).
-  // scrollLock = N means pin the viewport at N lines above baseY.
-  const SCROLL_LOCK_ENGAGE_THRESHOLD = 3;  // lines above bottom to engage lock
-  const SCROLL_LOCK_RELEASE_THRESHOLD = 2; // lines to bottom to release
-
-  // NOTE: scroll-lock feature is currently DISABLED for diagnosis. When a
-  // session is switched to, fit()/reflow seems to fire onScroll with
-  // transient viewport state and accidentally engage the lock with a bad
-  // offset, which then causes the write wrapper to pin viewport at line 0.
-  // Disabling the onScroll handler means scrollLock stays null forever, so
-  // the write wrapper short-circuits and xterm scrolls natively.
-  // Keep the code above for future re-enable once the root cause is fixed.
-  // terminal.onScroll(() => { ... });
-
-  // Wrap write so that any viewport shift caused by CC's cursor positioning
-  // is re-pinned to the user's locked offset before the frame paints.
-  // Fast-path: when no lock is active (the common case), delegate directly.
-  const origWrite = terminal.write.bind(terminal);
-  terminal.write = function (data, cb) {
-    const c = terminalCache.get(sessionId);
-    if (!c || c.scrollLock === null) return origWrite(data, cb);
-    origWrite(data, () => {
-      if (c.scrollLock !== null) {
-        const buf = terminal.buffer.active;
-        // Release (instead of snapping) when anchor is out of valid range.
-        // Uses >= so scrollLock === baseY also releases: that case yields
-        // desired=0 and scrollToLine(0) would pin viewport to scrollback top.
-        if (c.scrollLock >= buf.baseY) {
-          c.scrollLock = null;
-          if (sessionId === activeSessionId) renderScrollLockIndicator();
-        } else {
-          const desired = buf.baseY - c.scrollLock;
-          if (buf.viewportY !== desired) {
-            c._isRestoringScroll = true;
-            try { terminal.scrollToLine(desired); } finally { c._isRestoringScroll = false; }
-          }
-        }
-      }
-      if (cb) cb();
-    });
-  };
 
   // Intercept Ctrl/Cmd+V ourselves (both text and image) — Electron's Chromium
   // doesn't fire paste events on xterm's helper textarea for real keystrokes.
@@ -451,38 +423,9 @@ function getOrCreateTerminal(sessionId) {
 
   const cached = {
     terminal, fitAddon, searchAddon, container, opened: false,
-    scrollLock: null,          // null = follow bottom; N = pin N lines above baseY
-    _isRestoringScroll: false, // guard against self-triggered onScroll loops
   };
   terminalCache.set(sessionId, cached);
   return cached;
-}
-
-function setScrollLock(sessionId, offsetOrNull) {
-  const c = terminalCache.get(sessionId);
-  if (!c) return;
-  c.scrollLock = offsetOrNull;
-  if (sessionId === activeSessionId) renderScrollLockIndicator();
-}
-
-function renderScrollLockIndicator() {
-  let el = document.getElementById('scroll-lock-indicator');
-  const cached = terminalCache.get(activeSessionId);
-  const locked = cached && cached.scrollLock !== null;
-  if (!locked) { if (el) el.remove(); return; }
-  if (!el) {
-    el = document.createElement('div');
-    el.id = 'scroll-lock-indicator';
-    el.className = 'scroll-lock-indicator';
-    el.textContent = '🔒 Scroll locked — click or Ctrl+End to resume';
-    el.addEventListener('click', () => {
-      const c = terminalCache.get(activeSessionId);
-      if (!c) return;
-      setScrollLock(activeSessionId, null);
-      c.terminal.scrollToBottom();
-    });
-    terminalPanelEl.appendChild(el);
-  }
 }
 
 function showTerminal(sessionId, opts = { focus: true }) {
@@ -564,7 +507,6 @@ function showTerminal(sessionId, opts = { focus: true }) {
     cached.fitAddon.fit();
     ipcRenderer.send('terminal-resize', { sessionId, cols: cached.terminal.cols, rows: cached.terminal.rows });
     if (opts.focus) {
-      if (cached.scrollLock !== null) setScrollLock(sessionId, null);
       cached.terminal.scrollToBottom();
       cached.terminal.focus();
       // FIX: after display:none → block the .xterm-viewport div's scrollTop
@@ -609,9 +551,6 @@ function mountMinimap(sessionId, termContainer, terminal) {
   strip.append(ticksLayer, viewport);
   termContainer.appendChild(strip);
 
-  // Same regex as parseQuestionsFromLines — ❯ / › as prompt glyphs.
-  const PROMPT_RE = /^[\s│╭─╮╰╯]*[❯›]\s+(.+?)(?:\s*[│╯╰╭╮]+\s*)?$/;
-  const AI_MARKERS = /[⏺●◉◐◑◒◓◔◕]/;
   let ticks = []; // [{line, text}]
   let scanTimer = null;
   let disposed = false;
@@ -626,8 +565,8 @@ function mountMinimap(sessionId, termContainer, terminal) {
       if (!line) continue;
       const text = line.translateToString(true);
       if (!text) continue;
-      if (AI_MARKERS.test(text)) continue;
-      const m = text.match(PROMPT_RE);
+      if (AI_MARKERS_RE.test(text)) continue;
+      const m = text.match(PROMPT_LINE_RE);
       if (!m) continue;
       const q = m[1].trim();
       if (q.length < 2) continue;
@@ -785,7 +724,6 @@ function selectSession(id) {
   if (session) {
     session.readSignature = getQuestionsSignature(id);
   }
-  renderScrollLockIndicator();
 }
 
 // --- Dropdown menu ---
@@ -990,18 +928,9 @@ document.addEventListener('keydown', (e) => {
 
 // Ctrl+click on a local file path in the terminal → open with OS default app.
 // xterm's WebLinksAddon only handles URLs, so we register a separate link
-// provider that matches absolute Windows paths ending in a recognizable
-// extension (1-8 alphanumerics). Click routes to main via `open-path` IPC,
+// provider that scans each buffer line for absolute Windows paths using
+// ABS_PATH_RE (shared — see top of file). Click routes to main via open-path,
 // which calls shell.openPath().
-//
-// Regex notes:
-//   - Anchored with [A-Za-z]: drive letter, followed by \ or /
-//   - Path segments forbid the Windows-illegal chars :*?"<>| plus whitespace
-//     (spaces break the match — rare in paths we emit, acceptable tradeoff)
-//   - Extension 1-8 alnum with a negative lookahead so "foo.js" doesn't
-//     greedily swallow a trailing letter from ":123" line-number suffixes
-const LOCAL_PATH_RE = /[A-Za-z]:[\\/](?:[^\\/:*?"<>|\r\n\s]+[\\/])*[^\\/:*?"<>|\r\n\s]+\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9])/g;
-
 function registerLocalPathLinks(terminal) {
   terminal.registerLinkProvider({
     provideLinks(lineNumber, callback) {
@@ -1009,9 +938,9 @@ function registerLocalPathLinks(terminal) {
       if (!line) { callback(undefined); return; }
       const text = line.translateToString(true);
       const links = [];
-      LOCAL_PATH_RE.lastIndex = 0;
+      ABS_PATH_RE.lastIndex = 0;
       let m;
-      while ((m = LOCAL_PATH_RE.exec(text))) {
+      while ((m = ABS_PATH_RE.exec(text))) {
         const filePath = m[0];
         const startColumn = m.index + 1;
         const endColumn = startColumn + filePath.length - 1;
@@ -1039,8 +968,7 @@ function registerLocalPathLinks(terminal) {
 // immediately before the user's typed text. Without this the 60-char
 // preview is pure path and the real question is truncated away.
 function buildPreviewFromUserMessage(raw) {
-  const HUB_IMG_PATH = /(?:[A-Za-z]:)?[\\/][^\s]*[\\/]\.claude-session-hub[\\/]images[\\/][^\s]+?\.(?:png|jpe?g|gif|webp|bmp)/gi;
-  let clean = String(raw).replace(HUB_IMG_PATH, ' ').replace(/\s+/g, ' ').trim();
+  let clean = String(raw).replace(HUB_IMG_PATH_RE, ' ').replace(/\s+/g, ' ').trim();
   if (!clean) return '';
   return clean.length > 60 ? clean.substring(0, 58) + '…' : clean;
 }
@@ -1060,18 +988,10 @@ const SILENCE_MS = 2000; // 2s silence = idle (Claude Code status bar refreshes 
 function parseQuestionsFromLines(lines) {
   const questions = [];
   const seen = new Set();
-  const AI_MARKERS = /[⏺●◉◐◑◒◓◔◕]/;
-  // NOTE: the primary source of preview text is now CC's transcript JSONL,
-  // delivered via the Stop hook (see renderer's hook-event handler). This
-  // regex is only a fallback for sessions without hook coverage.
-  // Restricted to ❯ / › — specifically Claude Code's prompt glyphs. Dropping
-  // ASCII '>' on purpose: it was matching assistant markdown/list content
-  // like "> Phase 1 …" as if it were a user question.
-  const RE = /^[\s│╭─╮╰╯]*[❯›]\s+(.+?)(?:\s*[│╯╰╭╮]+\s*)?$/;
   for (const raw of lines) {
     if (!raw) continue;
-    if (AI_MARKERS.test(raw)) continue;
-    const m = raw.match(RE);
+    if (AI_MARKERS_RE.test(raw)) continue;
+    const m = raw.match(PROMPT_LINE_RE);
     if (!m) continue;
     const q = m[1].replace(/\s+$/, '').trim();
     if (q.length < 2) continue;
@@ -1118,14 +1038,12 @@ function extractTailLines(sessionId, count = 40) {
  *  / choice / confirm patterns. Returns { waiting, reason, text } or { waiting:false }. */
 function isWaitingForUser(lines) {
   if (!lines || lines.length === 0) return { waiting: false };
-  const AI_MARKERS = /[⏺●◉◐◑◒◓◔◕]/;
-  const PROMPT_PREFIX = /^[\s│╭─╮╰╯]*[❯›]\s+/;
   let lastMeaningful = '';
   for (let i = lines.length - 1; i >= 0; i--) {
     const L = (lines[i] || '').trim();
     if (!L) continue;
-    if (PROMPT_PREFIX.test(L)) continue;
-    const stripped = L.replace(AI_MARKERS, '').trim();
+    if (PROMPT_PREFIX_RE.test(L)) continue;
+    const stripped = L.replace(AI_MARKERS_RE, '').trim();
     if (!stripped) continue;
     lastMeaningful = stripped;
     break;
@@ -1204,7 +1122,13 @@ function onTerminalOutput(sessionId, dataLen) {
     // Semantic signal: unread/time bump only when the last-question signature
     // actually changed (= a new Q&A turn), not just on any running→idle cycle.
     // This ignores Claude Code's periodic TUI redraws (status bar, context %).
-    if (session.lastOutputPreview) {
+    //
+    // Skip this path entirely when the hook server is up: onReplyCompleteFromHook
+    // already drives unread+time with higher precision (fires on Stop, not on
+    // 2s silence guess). Running both means every AI reply flips unread twice
+    // before the signature compare idempotently kills the second. Keeping it
+    // as fallback only when hook is down.
+    if (!hookUp && session.lastOutputPreview) {
       const sig = getQuestionsSignature(sessionId);
       const prev = session.readSignature || '';
       if (sig !== prev) {
@@ -1521,8 +1445,20 @@ function onPromptSubmittedFromHook(sessionId) {
 // Hook-server health indicator (banner in sidebar when down)
 let hookUp = true;
 ipcRenderer.on('hook-status', (_e, { up }) => {
+  const wasUp = hookUp;
   hookUp = up;
   renderHookStatus();
+  // Hook going down: re-enable the regex-based preview/unread fallback by
+  // clearing the "hook is authoritative" flag on every session. Without this
+  // the previous successful hook pinned readTerminalPreview into short-circuit
+  // forever — so if CC's hook plumbing broke mid-day, the sidebar would go
+  // silent with no visible cause. When hook comes back, the next hook-event
+  // sets the flag again on the session it touches.
+  if (wasUp && !up) {
+    for (const s of sessions.values()) {
+      if (s._previewFromTranscript) s._previewFromTranscript = false;
+    }
+  }
 });
 
 function renderHookStatus() {
@@ -1661,14 +1597,14 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
-  // Ctrl+End: jump to bottom and release scroll lock
+  // Ctrl+End: jump to bottom
   if (!e.shiftKey && !e.altKey && e.key === 'End') {
     e.preventDefault();
     const c = terminalCache.get(activeSessionId);
-    if (c) { setScrollLock(activeSessionId, null); c.terminal.scrollToBottom(); }
+    if (c) c.terminal.scrollToBottom();
     return;
   }
-  // Ctrl+Home: jump to top (engages lock at max offset)
+  // Ctrl+Home: jump to top
   if (!e.shiftKey && !e.altKey && e.key === 'Home') {
     e.preventDefault();
     const c = terminalCache.get(activeSessionId);
@@ -1907,6 +1843,9 @@ ipcRenderer.on('session-closed', (_e, { sessionId }) => {
   if (cached) {
     if (cached._ro) cached._ro.disconnect();
     if (cached._resizeHandler) window.removeEventListener('resize', cached._resizeHandler);
+    // Minimap holds xterm.onScroll/onRender subscriptions — must dispose before
+    // terminal.dispose() so it can cleanly unhook rather than leak listeners.
+    if (cached._minimap) { try { cached._minimap.dispose(); } catch {} cached._minimap = null; }
     cached.terminal.dispose();
     cached.container.remove();
     terminalCache.delete(sessionId);
