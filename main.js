@@ -147,22 +147,42 @@ ipcMain.handle('get-hook-status', () => ({
 // fires Stop / UserPromptSubmit hooks. Forwards to renderer as IPC events.
 const hookServer = http.createServer((req, res) => {
   res.setHeader('Content-Type', 'application/json');
-  if (req.method !== 'POST' || !req.url.startsWith('/api/hook/')) {
+
+  const isHook = req.method === 'POST' && req.url.startsWith('/api/hook/');
+  const isStatus = req.method === 'POST' && req.url === '/api/status';
+  if (!isHook && !isStatus) {
     res.writeHead(404); res.end('{}'); return;
   }
-  const event = req.url.slice('/api/hook/'.length); // 'stop' or 'prompt'
+
+  // Cap body size at 16KB — statusline payloads are tiny, hooks tinier
   let body = '';
-  req.on('data', c => body += c);
+  let tooBig = false;
+  req.on('data', (c) => {
+    if (tooBig) return;
+    if (body.length + c.length > 16384) { tooBig = true; return; }
+    body += c;
+  });
   req.on('end', () => {
+    if (tooBig) { res.writeHead(413); res.end('{}'); return; }
     let parsed;
     try { parsed = JSON.parse(body || '{}'); } catch { parsed = {}; }
-    // Auth: reject POSTs without the correct per-launch token
     if (parsed.token !== HOOK_TOKEN) {
       res.writeHead(403); res.end('{}'); return;
     }
-    // Attribution: must be a live session we know about
     if (parsed.sessionId && sessionManager.getSession(parsed.sessionId)) {
-      sendToRenderer('hook-event', { event, sessionId: parsed.sessionId });
+      if (isHook) {
+        const event = req.url.slice('/api/hook/'.length); // 'stop' or 'prompt'
+        sendToRenderer('hook-event', { event, sessionId: parsed.sessionId });
+      } else {
+        sendToRenderer('status-event', {
+          sessionId: parsed.sessionId,
+          contextPct: parsed.contextPct,
+          contextUsed: parsed.contextUsed,
+          contextMax: parsed.contextMax,
+          usage5h: parsed.usage5h,
+          usage7d: parsed.usage7d,
+        });
+      }
     }
     res.writeHead(200); res.end('{}');
   });

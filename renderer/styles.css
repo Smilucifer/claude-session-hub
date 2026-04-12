@@ -435,6 +435,62 @@ html, body {
 .context-menu-item.danger { color: var(--accent-red); }
 .context-menu-item.danger:hover { background: rgba(231,76,60,0.12); }
 
+/* Account usage (5h / 7d bars in sidebar) */
+.account-usage {
+  padding: 6px 12px 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+}
+.usage-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 3px 0;
+}
+.usage-label {
+  color: var(--text-muted);
+  width: 18px;
+  font-weight: 600;
+}
+.usage-bar {
+  flex: 1;
+  height: 4px;
+  background: var(--bg-tertiary);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.usage-bar-fill {
+  height: 100%;
+  transition: width 0.3s;
+}
+.usage-bar-fill.ok { background: var(--accent-green); }
+.usage-bar-fill.warn { background: var(--accent-orange); }
+.usage-bar-fill.danger { background: var(--accent-red); }
+.usage-val {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  min-width: 76px;
+  text-align: right;
+}
+
+/* Per-session context badge in footer */
+.session-footer {
+  margin-top: 4px;
+  display: flex;
+  gap: 6px;
+  font-size: 10px;
+}
+.ctx-badge {
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.ctx-badge.ok { background: rgba(63, 185, 80, 0.3); color: var(--accent-green); }
+.ctx-badge.warn { background: rgba(240, 136, 62, 0.3); color: var(--accent-orange); }
+.ctx-badge.danger { background: rgba(231, 76, 60, 0.3); color: var(--accent-red); }
+
 /* Pinned session indicator */
 .session-item .pin-icon {
   color: var(--accent-orange);

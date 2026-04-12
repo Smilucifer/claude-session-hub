@@ -213,6 +213,9 @@ function renderSessionList() {
     const isActive = s.id === activeSessionId;
     const div = document.createElement('div');
     div.className = 'session-item' + (isActive ? ' selected' : '') + (!isActive && s.unreadCount > 0 ? ' has-unread' : '');
+    const ctxBadge = typeof s.contextPct === 'number'
+      ? `<span class="ctx-badge ${pctClass(s.contextPct)}" title="Context ${s.contextPct}%">Ctx ${s.contextPct}%</span>`
+      : '';
     div.innerHTML = `
       <div class="session-item-header">
         <span class="session-title">${s.pinned ? '<span class="pin-icon" title="Pinned">📌</span>' : ''}<span class="session-status ${s.status}"></span>${escapeHtml(s.title)}</span>
@@ -222,6 +225,7 @@ function renderSessionList() {
         </span>
       </div>
       <div class="session-preview">${escapeHtml(s.lastOutputPreview || 'No output yet')}</div>
+      ${ctxBadge ? `<div class="session-footer">${ctxBadge}</div>` : ''}
     `;
     div.addEventListener('click', () => selectSession(s.id));
     div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY); });
@@ -568,6 +572,62 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
   if (cached) cached.terminal.write(data);
   onTerminalOutput(sessionId, data.length);
 });
+
+// Status updates from our custom statusline script.
+// Carries contextPct per session + account-wide usage5h/usage7d.
+const accountUsage = { usage5h: null, usage7d: null };
+ipcRenderer.on('status-event', (_e, payload) => {
+  const session = sessions.get(payload.sessionId);
+  if (session) {
+    session.contextPct = payload.contextPct;
+    session.contextUsed = payload.contextUsed;
+    session.contextMax = payload.contextMax;
+  }
+  // Usage is account-wide — keep the latest reported values
+  if (payload.usage5h) accountUsage.usage5h = payload.usage5h;
+  if (payload.usage7d) accountUsage.usage7d = payload.usage7d;
+  renderAccountUsage();
+  renderSessionList();
+});
+
+function formatResetIn(resetsAt) {
+  if (!resetsAt) return '';
+  const ms = new Date(resetsAt).getTime() - Date.now();
+  if (isNaN(ms) || ms <= 0) return '';
+  const mins = Math.round(ms / 60000);
+  if (mins < 60) return `${mins}m`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  if (h < 24) return `${h}h${m ? ' ' + m + 'm' : ''}`;
+  const d = Math.floor(h / 24);
+  return `${d}d ${h % 24}h`;
+}
+
+function renderAccountUsage() {
+  const el = document.getElementById('account-usage');
+  if (!el) return;
+  const { usage5h, usage7d } = accountUsage;
+  if (!usage5h && !usage7d) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  const parts = [];
+  if (usage5h) {
+    const pct = Math.round(usage5h.pct);
+    const reset = formatResetIn(usage5h.resetsAt);
+    parts.push(`<div class="usage-row"><span class="usage-label">5h</span><div class="usage-bar"><div class="usage-bar-fill ${pctClass(pct)}" style="width:${pct}%"></div></div><span class="usage-val">${pct}%${reset ? ' · ' + reset : ''}</span></div>`);
+  }
+  if (usage7d) {
+    const pct = Math.round(usage7d.pct);
+    const reset = formatResetIn(usage7d.resetsAt);
+    parts.push(`<div class="usage-row"><span class="usage-label">7d</span><div class="usage-bar"><div class="usage-bar-fill ${pctClass(pct)}" style="width:${pct}%"></div></div><span class="usage-val">${pct}%${reset ? ' · ' + reset : ''}</span></div>`);
+  }
+  el.innerHTML = parts.join('');
+}
+
+function pctClass(pct) {
+  if (pct >= 85) return 'danger';
+  if (pct >= 70) return 'warn';
+  return 'ok';
+}
 
 // Claude Code hooks drive the session state.
 // - 'prompt' (UserPromptSubmit): fires the moment user presses Enter.
