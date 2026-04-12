@@ -329,10 +329,9 @@ function selectSession(id) {
   const session = sessions.get(id);
   if (session) {
     session.unreadCount = 0;
-    // Any running burst in progress is considered "read" by this click.
-    // Prevents the pending silence timer from re-incrementing unread
-    // after the user switches to another session.
-    session.currentBurstConsumed = true;
+    // Snapshot the current question signature as "read" — any future idle
+    // transitions will compare against this and only bump unread on real new Q&A.
+    session.readSignature = getQuestionsSignature(id);
   }
   ipcRenderer.send('focus-session', { sessionId: id });
   renderSessionList();
@@ -366,31 +365,35 @@ function hasCJK(text) {
   return /[\u4e00-\u9fff\u3400-\u4dbf]{2,}/.test(text);
 }
 
-function readTerminalPreview(sessionId) {
+/** Extract user questions (lines starting with ❯/›/>) from xterm buffer. */
+function extractUserQuestions(sessionId) {
   const cached = terminalCache.get(sessionId);
-  const session = sessions.get(sessionId);
-  if (!cached || !session || !cached.opened) return;
-
+  if (!cached || !cached.opened) return [];
   const buf = cached.terminal.buffer.active;
-  const lines = [];
+  const questions = [];
   for (let i = 0; i < buf.length; i++) {
     const line = buf.getLine(i);
-    if (line) {
-      const text = line.translateToString(true).trim();
-      if (text) lines.push(text);
-    }
+    if (!line) continue;
+    const text = line.translateToString(true).trim();
+    if (!text) continue;
+    const m = text.match(/^[❯›>]\s*(.+)/);
+    if (m && m[1].length > 1) questions.push(m[1].trim());
   }
+  return questions;
+}
 
-  // Collect user questions (lines starting with ❯ or > prompt)
-  const questions = [];
-  for (const l of lines) {
-    const m = l.match(/^[❯›>]\s*(.+)/);
-    if (m && m[1].length > 1) {
-      questions.push(m[1].trim());
-    }
-  }
+/** Signature: last question text. Used to distinguish real Q&A turns from TUI noise. */
+function getQuestionsSignature(sessionId) {
+  const qs = extractUserQuestions(sessionId);
+  return qs.length === 0 ? '' : qs[qs.length - 1].slice(0, 200);
+}
 
-  // Take last 3 questions, newest first, each truncated to ~40 chars
+function readTerminalPreview(sessionId) {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+
+  const questions = extractUserQuestions(sessionId);
+  // Take last 3, newest first, each truncated to ~40 chars
   const recent = questions.slice(-3).reverse();
   const previewLines = recent.map(q => 'Q: ' + (q.length > 40 ? q.substring(0, 38) + '...' : q));
   const newPreview = previewLines.join('\n');
@@ -412,8 +415,6 @@ function onTerminalOutput(sessionId, dataLen) {
   // Only mark running if significant data (>200 bytes), not status bar refreshes
   if (dataCounters.get(sessionId) > 200 && session.status !== 'running') {
     session.status = 'running';
-    // A fresh burst starts — forget any earlier "read" claim for this session
-    session.currentBurstConsumed = false;
     renderSessionList();
   }
 
@@ -428,12 +429,18 @@ function onTerminalOutput(sessionId, dataLen) {
 
     readTerminalPreview(sessionId);
 
-    // running → idle = AI reply just completed. Skip the initial banner case
-    // where the user has not yet asked anything (preview still empty).
-    if (wasRunning && session.lastOutputPreview) {
-      session.lastMessageTime = Date.now();
-      if (sessionId !== activeSessionId && !session.currentBurstConsumed) {
-        session.unreadCount = (session.unreadCount || 0) + 1;
+    // Semantic signal: unread/time bump only when the last-question signature
+    // actually changed (= a new Q&A turn), not just on any running→idle cycle.
+    // This ignores Claude Code's periodic TUI redraws (status bar, context %).
+    if (session.lastOutputPreview) {
+      const sig = getQuestionsSignature(sessionId);
+      const prev = session.readSignature || '';
+      if (sig !== prev) {
+        session.lastMessageTime = Date.now();
+        session.readSignature = sig;
+        if (sessionId !== activeSessionId) {
+          session.unreadCount = (session.unreadCount || 0) + 1;
+        }
       }
     }
 
