@@ -79,6 +79,10 @@ ipcMain.handle('get-sessions', () => {
 // --- Clipboard image paste support ---
 const imageDir = path.join(process.env.USERPROFILE || process.env.HOME, '.claude-session-hub', 'images');
 
+ipcMain.handle('debug-trigger-paste', () => {
+  if (mainWindow) mainWindow.webContents.paste();
+});
+
 ipcMain.handle('save-clipboard-image', () => {
   const img = clipboard.readImage();
   if (img.isEmpty()) return null;

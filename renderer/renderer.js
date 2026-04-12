@@ -1,7 +1,140 @@
-const { ipcRenderer } = require('electron');
+const { ipcRenderer, clipboard, nativeImage } = require('electron');
 const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
 const { Unicode11Addon } = require('@xterm/addon-unicode11');
+
+// --- Image paste support ---
+// Intercept Ctrl/Cmd+V at keydown: in Electron the browser's native paste
+// action often doesn't fire a paste event for us when focus is on xterm's
+// helper textarea, so the only reliable hook is keydown.
+document.addEventListener('keydown', async (e) => {
+  if (!((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V'))) return;
+
+  const img = clipboard.readImage();
+  if (img.isEmpty()) return; // No image: let xterm handle normal text paste
+
+  e.preventDefault();
+  e.stopPropagation();
+  e.stopImmediatePropagation();
+
+  if (!activeSessionId) return;
+
+  const filePath = await ipcRenderer.invoke('save-clipboard-image');
+  if (!filePath) return;
+
+  // xterm.paste() applies bracketed-paste-mode framing which Claude Code CLI requires
+  const cached = terminalCache.get(activeSessionId);
+  if (cached) cached.terminal.paste(filePath);
+}, true);
+
+// --- Image hover preview tooltip ---
+const previewTooltip = document.createElement('div');
+previewTooltip.className = 'image-preview-tooltip';
+previewTooltip.style.display = 'none';
+document.body.appendChild(previewTooltip);
+
+/** Check if a string looks like an image file path */
+function isImagePath(text) {
+  return /\.(png|jpg|jpeg|gif|bmp|webp)$/i.test(text.trim());
+}
+
+/** Extract potential file path from terminal line at a given position */
+function extractPathAtPosition(lineText, colIndex) {
+  // Find path-like substring around the cursor position
+  // Match Windows paths like C:\...\file.png or Unix paths like /home/.../file.png
+  const pathRegex = /[A-Za-z]:\\[^\s<>"|?*]+\.(png|jpg|jpeg|gif|bmp|webp)|\/[^\s<>"|?*]+\.(png|jpg|jpeg|gif|bmp|webp)/gi;
+  let match;
+  while ((match = pathRegex.exec(lineText)) !== null) {
+    const start = match.index;
+    const end = start + match[0].length;
+    if (colIndex >= start && colIndex <= end) {
+      return match[0];
+    }
+  }
+  return null;
+}
+
+let previewTimeout = null;
+
+function setupImageHover(terminal, container) {
+  container.addEventListener('mousemove', (e) => {
+    const coords = getTerminalCoords(terminal, container, e);
+    if (!coords) { hidePreview(); return; }
+
+    const buf = terminal.buffer.active;
+    const line = buf.getLine(coords.row);
+    if (!line) { hidePreview(); return; }
+
+    const lineText = line.translateToString(false);
+    const filePath = extractPathAtPosition(lineText, coords.col);
+
+    if (filePath && isImagePath(filePath)) {
+      showPreview(filePath, e.clientX, e.clientY);
+    } else {
+      hidePreview();
+    }
+  });
+
+  container.addEventListener('mouseleave', hidePreview);
+}
+
+function getTerminalCoords(terminal, container, mouseEvent) {
+  const rect = container.getBoundingClientRect();
+  const renderer = terminal._core._renderService;
+  if (!renderer || !renderer.dimensions) return null;
+
+  const dims = renderer.dimensions;
+  const x = mouseEvent.clientX - rect.left;
+  const y = mouseEvent.clientY - rect.top;
+
+  const col = Math.floor(x / dims.css.cell.width);
+  const row = Math.floor(y / dims.css.cell.height) + terminal.buffer.active.viewportY;
+
+  if (col < 0 || row < 0 || col >= terminal.cols) return null;
+  return { col, row };
+}
+
+function showPreview(filePath, mouseX, mouseY) {
+  // Debounce to avoid flickering
+  if (previewTooltip.dataset.path === filePath && previewTooltip.style.display === 'block') {
+    // Just update position
+    positionTooltip(mouseX, mouseY);
+    return;
+  }
+
+  clearTimeout(previewTimeout);
+  previewTimeout = setTimeout(() => {
+    // Use file:// protocol for local images
+    const fileUrl = 'file:///' + filePath.replace(/\\/g, '/');
+    previewTooltip.innerHTML = `<img src="${fileUrl}" alt="preview" style="max-width:400px;max-height:300px;border-radius:6px;">`;
+    previewTooltip.dataset.path = filePath;
+    previewTooltip.style.display = 'block';
+    positionTooltip(mouseX, mouseY);
+  }, 300);
+}
+
+function positionTooltip(x, y) {
+  const pad = 12;
+  previewTooltip.style.left = `${x + pad}px`;
+  previewTooltip.style.top = `${y + pad}px`;
+
+  // Keep within viewport
+  requestAnimationFrame(() => {
+    const rect = previewTooltip.getBoundingClientRect();
+    if (rect.right > window.innerWidth) {
+      previewTooltip.style.left = `${x - rect.width - pad}px`;
+    }
+    if (rect.bottom > window.innerHeight) {
+      previewTooltip.style.top = `${y - rect.height - pad}px`;
+    }
+  });
+}
+
+function hidePreview() {
+  clearTimeout(previewTimeout);
+  previewTooltip.style.display = 'none';
+  previewTooltip.dataset.path = '';
+}
 
 // --- State ---
 const sessions = new Map();
@@ -142,6 +275,7 @@ function showTerminal(sessionId) {
   if (!cached.opened) {
     cached.terminal.open(cached.container);
     cached.opened = true;
+    setupImageHover(cached.terminal, cached.container);
   }
 
   requestAnimationFrame(() => {
