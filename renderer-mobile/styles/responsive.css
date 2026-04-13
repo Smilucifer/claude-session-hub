@@ -1,0 +1,8 @@
+/* Narrow outer screen (Mate X6 folded ~6.45") — default layout: single column with hash routing */
+
+/* Wide inner screen (Mate X6 unfolded ~7.93") — split view */
+@media (min-width: 768px) {
+  body.twopane #app { flex-direction: row; }
+  body.twopane #app > .pane-left,
+  body.twopane #app > .pane-right { height: 100vh; height: 100dvh; }
+}
