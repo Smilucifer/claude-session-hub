@@ -1,16 +1,22 @@
 const pty = require('node-pty');
 const { v4: uuid } = require('uuid');
+const { EventEmitter } = require('events');
 
-class SessionManager {
+class SessionManager extends EventEmitter {
   sessions = new Map();
   focusedSessionId = null;
   claudeCounter = 0;
   resumeCounter = 0;
   psCounter = 0;
+  _outputSeq = 0;
 
   // Injected by main: the chosen hook HTTP port + per-launch auth token.
   hookPort = null;
   hookToken = null;
+
+  constructor() {
+    super();
+  }
 
   // Callbacks
   onData = (sessionId, data) => {};
@@ -89,6 +95,8 @@ class SessionManager {
 
     ptyProcess.onData((data) => {
       this.onData(id, data);
+      this._outputSeq += 1;
+      this.emit('output', { sessionId: id, seq: this._outputSeq, data });
     });
 
     ptyProcess.onExit(() => { this.sessions.delete(id); this.onSessionClosed(id); });
@@ -166,7 +174,10 @@ class SessionManager {
 
   markRead(sessionId) {
     const session = this.sessions.get(sessionId);
-    if (session) session.info.unreadCount = 0;
+    if (session) {
+      session.info.unreadCount = 0;
+      this.emit('session-updated', this._toPublic(session.info));
+    }
   }
 
   getSession(sessionId) {
@@ -178,6 +189,37 @@ class SessionManager {
     return Array.from(this.sessions.values())
       .map(s => ({ ...s.info }))
       .sort((a, b) => b.lastMessageTime - a.lastMessageTime || b.createdAt - a.createdAt);
+  }
+
+  // Returns the public shape used by mobile API and 'session-updated' events.
+  _toPublic(info) {
+    return {
+      id: info.id,
+      title: info.title,
+      kind: info.kind,
+      cwd: info.cwd,
+      unreadCount: info.unreadCount,
+      lastMessageTime: info.lastMessageTime,
+      lastOutputPreview: info.lastOutputPreview,
+      ...(info.pinned !== undefined ? { pinned: info.pinned } : {}),
+      ...(info.ccSessionId !== undefined ? { ccSessionId: info.ccSessionId } : {}),
+    };
+  }
+
+  // Returns array of public session objects for mobile API.
+  listSessions() {
+    return Array.from(this.sessions.values())
+      .map(s => this._toPublic(s.info))
+      .sort((a, b) => b.lastMessageTime - a.lastMessageTime);
+  }
+
+  // Returns the ring-buffer string for a session, '' if exists but empty,
+  // null if session not found. (Ring buffer is populated externally via
+  // setRingBuffer; if not set, returns '' as per mobile spec.)
+  getSessionBuffer(sessionId) {
+    const s = this.sessions.get(sessionId);
+    if (!s) return null;
+    return s.ringBuffer || '';
   }
 
   dispose() {
