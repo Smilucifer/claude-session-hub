@@ -33,8 +33,9 @@ function createRouter({ sessionManager, authModule }) {
     if (!token || !deviceId) return res.status(400).json({ error: 'missing-fields' });
     const result = await authModule.registerDevice(token, deviceId, name, req.ip);
     if (!result.ok) {
-      const status = result.reason === 'token-already-bound' ? 409 : (result.reason === 'deviceid-already-registered' ? 409 : 400);
-      return res.status(status).json({ error: result.reason });
+      // All registration errors are client errors (400); 409 is gone because
+      // token-already-bound no longer exists (pending predicate replaces it).
+      return res.status(400).json({ error: result.reason });
     }
     res.json({ ok: true });
   });

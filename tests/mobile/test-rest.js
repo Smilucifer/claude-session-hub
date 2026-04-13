@@ -62,12 +62,15 @@ function req(port, pathS, { method = 'GET', headers = {}, body = null } = {}) {
   });
   assert.strictEqual(r5.status, 200);
 
+  // tok2 is now consumed from pending; second register attempt with same token
+  // must return 400 with reason 'token-not-pending' (not 409 anymore)
   const r6 = await req(port, '/api/devices/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token: tok2, deviceId: 'dev-other', name: 'Other' }),
   });
-  assert.strictEqual(r6.status, 409);
+  assert.strictEqual(r6.status, 400);
+  assert.strictEqual(JSON.parse(r6.body).error, 'token-not-pending');
 
   // 7. /api/hook/tool-use from loopback succeeds, emits event
   let emitted = null;

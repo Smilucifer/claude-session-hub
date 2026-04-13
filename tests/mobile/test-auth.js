@@ -7,6 +7,7 @@ const auth = require('../../core/mobile-auth.js');
 const TMP = path.join(os.tmpdir(), 'csh-mobile-auth-test-' + Date.now());
 fs.mkdirSync(TMP, { recursive: true });
 auth._setStorePath(path.join(TMP, 'devices.json'));
+auth._clearPendingTokens();
 
 (async () => {
   // 1. generateToken: 64 hex chars (32 bytes)
@@ -14,14 +15,20 @@ auth._setStorePath(path.join(TMP, 'devices.json'));
   assert.strictEqual(t1.length, 64, 'token should be 64 hex chars');
   assert.ok(/^[0-9a-f]+$/.test(t1), 'token hex only');
 
-  // 2. registerDevice: fresh token + deviceId -> ok
+  // 2. registerDevice: pending token + deviceId -> ok
   const reg1 = await auth.registerDevice(t1, 'dev-abc', 'Mate X6', '192.168.1.10');
   assert.strictEqual(reg1.ok, true);
 
-  // 3. registerDevice: same token + different deviceId -> rejected
+  // 3. registerDevice: same token again (now consumed from pending) -> token-not-pending
   const reg2 = await auth.registerDevice(t1, 'dev-xyz', 'Other', '1.2.3.4');
   assert.strictEqual(reg2.ok, false);
-  assert.strictEqual(reg2.reason, 'token-already-bound');
+  assert.strictEqual(reg2.reason, 'token-not-pending');
+
+  // 3b. registerDevice with an arbitrary never-generated token -> token-not-pending
+  const fakeToken = 'ab'.repeat(32); // 64 hex chars but never generated
+  const reg3b = await auth.registerDevice(fakeToken, 'dev-fake', 'Hacker', '6.6.6.6');
+  assert.strictEqual(reg3b.ok, false);
+  assert.strictEqual(reg3b.reason, 'token-not-pending');
 
   // 4. verifyToken: correct token+deviceId -> ok
   const v1 = await auth.verifyToken(t1, 'dev-abc');
@@ -63,7 +70,7 @@ auth._setStorePath(path.join(TMP, 'devices.json'));
   const rev2 = auth.revokeDevice('dev-2');
   assert.strictEqual(rev2.ok, true);
 
-  // 11. Duplicate deviceId is rejected
+  // 11. Duplicate deviceId is rejected (need a fresh pending token for each attempt)
   const t3 = auth.generateToken();
   const t4 = auth.generateToken();
   await auth.registerDevice(t3, 'dev-dup', 'First', '1.1.1.1');
