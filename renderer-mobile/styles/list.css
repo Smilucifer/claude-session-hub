@@ -1,0 +1,14 @@
+.mobile-list { flex: 1; display: flex; flex-direction: column; background: #1a1d23; }
+.list-header { padding: 14px 16px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #2e323a; }
+.list-header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+.conn-indicator { font-size: 14px; color: #4ae290; }
+.list-items { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+.session-item { padding: 12px 16px; border-bottom: 1px solid #22252b; cursor: pointer; }
+.session-item:active { background: #2e323a; }
+.session-item .row1 { display: flex; justify-content: space-between; }
+.session-item .title { font-weight: 500; color: #ffffff; font-variant-numeric: tabular-nums; }
+.session-item .time { color: #888; font-size: 12px; }
+.session-item .row2 { display: flex; justify-content: space-between; margin-top: 4px; }
+.session-item .preview { color: #aaa; font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-item .badge { background: #e24a4a; color: white; font-size: 11px; padding: 2px 6px; border-radius: 10px; margin-left: 8px; }
+.empty-hint { padding: 40px; text-align: center; color: #666; }
