@@ -164,7 +164,7 @@ class SessionManager extends EventEmitter {
 
   writeToSession(sessionId, data) {
     const s = this.sessions.get(sessionId);
-    if (s) s.pty.write(data);
+    if (s && s.pty) s.pty.write(data);
   }
 
   resizeSession(sessionId, cols, rows) {
