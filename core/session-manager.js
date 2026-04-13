@@ -58,6 +58,7 @@ class SessionManager extends EventEmitter {
       sessionEnv.CLAUDE_HUB_SESSION_ID = id;
       if (this.hookPort) sessionEnv.CLAUDE_HUB_PORT = String(this.hookPort);
       if (this.hookToken) sessionEnv.CLAUDE_HUB_TOKEN = this.hookToken;
+      sessionEnv.CLAUDE_HUB_MOBILE_PORT = String((global.__mobileSrv && global.__mobileSrv.port) || 3470);
     }
 
     const shellArgs = isClaude ? ['-NoProfile', '-NoLogo'] : [];
