@@ -526,7 +526,11 @@ function showTerminal(sessionId, opts = { focus: true }) {
   renderMetricsRow(metricsRow, session);
   titleSection.appendChild(metricsRow);
 
-  titleRow.append(titleSection, zoomOutBtn, zoomInBtn, closeBtn);
+  const headerActions = document.createElement('div');
+  headerActions.className = 'terminal-header-actions';
+  headerActions.append(zoomOutBtn, zoomInBtn, closeBtn);
+
+  titleRow.append(titleSection, headerActions);
 
   header.append(titleRow);
 

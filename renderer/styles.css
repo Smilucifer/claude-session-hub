@@ -529,6 +529,12 @@ body.theme-light .session-time {
   justify-content: space-between;
 }
 
+.terminal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .terminal-metrics-row {
   display: flex;
   align-items: center;
