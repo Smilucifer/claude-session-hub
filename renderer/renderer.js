@@ -498,6 +498,21 @@ function showTerminal(sessionId, opts = { focus: true }) {
     titleSection.appendChild(modelSpan);
   }
 
+  // Zoom controls live right next to the close button so they're always at
+  // the top-right of whichever session you're in. Buttons are recreated per
+  // showTerminal call; no need to worry about stale references.
+  const zoomOutBtn = document.createElement('button');
+  zoomOutBtn.className = 'btn-zoom';
+  zoomOutBtn.textContent = 'A−';
+  zoomOutBtn.title = 'Shrink UI (for local screen)';
+  zoomOutBtn.addEventListener('click', () => applyZoom(currentZoom - 1));
+
+  const zoomInBtn = document.createElement('button');
+  zoomInBtn.className = 'btn-zoom';
+  zoomInBtn.textContent = 'A+';
+  zoomInBtn.title = 'Enlarge UI (for remote / phone)';
+  zoomInBtn.addEventListener('click', () => applyZoom(currentZoom + 1));
+
   const closeBtn = document.createElement('button');
   closeBtn.className = 'btn-close-session';
   closeBtn.title = 'Close session (Ctrl+W)';
@@ -511,7 +526,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
   renderMetricsRow(metricsRow, session);
   titleSection.appendChild(metricsRow);
 
-  titleRow.append(titleSection, closeBtn);
+  titleRow.append(titleSection, zoomOutBtn, zoomInBtn, closeBtn);
 
   header.append(titleRow);
 
@@ -1846,10 +1861,6 @@ function toggleSidebar() {
 }
 btnCollapseEl.addEventListener('click', toggleSidebar);
 btnExpandEl.addEventListener('click', toggleSidebar);
-
-// --- Zoom buttons ---
-document.getElementById('btn-zoom-in').addEventListener('click', () => applyZoom(currentZoom + 1));
-document.getElementById('btn-zoom-out').addEventListener('click', () => applyZoom(currentZoom - 1));
 
 // --- Theme (dark only; toggle button removed) ---
 document.body.classList.remove('theme-light');
