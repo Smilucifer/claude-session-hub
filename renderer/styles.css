@@ -1002,3 +1002,32 @@ body.theme-light .session-time {
   padding: 6px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
 }
+
+/* --- Mobile pair dialog --- */
+.pair-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 9999; }
+.pair-modal-overlay.hidden { display: none; }
+.pair-modal-content { background: #23272e; border-radius: 10px; padding: 24px; max-width: 760px; width: 90%; max-height: 90vh; overflow: auto; position: relative; color: #e6e6e6; }
+.pair-modal-close { position: absolute; top: 12px; right: 12px; background: transparent; border: 0; color: #999; font-size: 24px; cursor: pointer; }
+.pair-modal-content h2 { margin: 0 0 16px; }
+.pair-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+.pair-left h3, .pair-right h3 { margin: 0 0 8px; font-size: 14px; color: #aaa; text-transform: uppercase; }
+#pair-addr-list { list-style: none; padding: 0; margin: 0; }
+#pair-addr-list li { padding: 6px 10px; background: #2e323a; border-radius: 4px; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; }
+#pair-addr-list li button { background: transparent; border: 0; color: #888; cursor: pointer; }
+.pair-addr-add { display: flex; gap: 6px; margin: 10px 0; }
+.pair-addr-add input { flex: 1; padding: 6px 10px; background: #1a1d23; border: 1px solid #3a3f47; color: #e6e6e6; border-radius: 4px; }
+.pair-modal-content label { display: block; margin: 12px 0; }
+.pair-modal-content label input { margin-left: 8px; padding: 4px 8px; background: #1a1d23; border: 1px solid #3a3f47; color: #e6e6e6; border-radius: 4px; }
+.pair-modal-content button.primary { background: #4a90e2; color: white; border: 0; padding: 10px 16px; border-radius: 4px; cursor: pointer; font-weight: 500; }
+.pair-modal-content button.primary:disabled { opacity: 0.5; cursor: default; }
+#pair-qr-area { background: white; padding: 16px; border-radius: 8px; text-align: center; min-height: 360px; display: flex; align-items: center; justify-content: center; flex-direction: column; }
+#pair-qr-area img { max-width: 100%; }
+#pair-qr-area p { color: #666; margin-top: 8px; font-size: 11px; word-break: break-all; padding: 0 8px; }
+#pair-devices { list-style: none; padding: 0; margin: 0; }
+#pair-devices li { padding: 10px; background: #2e323a; border-radius: 4px; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; }
+#pair-devices .device-info { display: flex; flex-direction: column; }
+#pair-devices .device-name { font-weight: 500; }
+#pair-devices .device-meta { color: #888; font-size: 12px; }
+#pair-devices .revoke-btn { background: #e24a4a; color: white; border: 0; padding: 6px 12px; border-radius: 4px; cursor: pointer; }
+.pair-modal-content hr { border: 0; border-top: 1px solid #3a3f47; margin: 20px 0 12px; }
+.pair-modal-content .hint { color: #888; font-size: 12px; }

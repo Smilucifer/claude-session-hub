@@ -24,6 +24,7 @@
           </div>
           <button class="btn-resume-picker" id="btn-resume-picker" title="Resume a past session">↻</button>
           <button class="btn-collapse-sidebar" id="btn-collapse-sidebar" title="Collapse sidebar (Ctrl+B)">◀</button>
+          <button class="btn-collapse-sidebar" id="btn-mobile" title="配对手机 (Mobile Pairing)">📱</button>
         </div>
       </div>
       <div class="sidebar-search">
@@ -78,5 +79,33 @@
     </div>
   </div>
   <script src="renderer.js"></script>
+
+  <div id="pair-modal" class="pair-modal-overlay hidden">
+    <div class="pair-modal-content">
+      <button class="pair-modal-close" id="pair-close">×</button>
+      <h2>配对手机 · Pair Phone</h2>
+      <div class="pair-layout">
+        <div class="pair-left">
+          <h3>1. 地址清单</h3>
+          <p class="hint">默认填入内网 IP。添加 Tailscale / 公网域名以便在外网也能连。</p>
+          <ul id="pair-addr-list"></ul>
+          <div class="pair-addr-add">
+            <input id="pair-addr-input" placeholder="如 100.64.0.12:3470 或 hub.example.com" />
+            <button id="pair-addr-add">添加</button>
+          </div>
+          <label>设备名 <input id="pair-device-name" value="华为 Mate X6" /></label>
+          <button id="pair-generate" class="primary">生成配对二维码</button>
+        </div>
+        <div class="pair-right">
+          <h3>2. 用手机扫码</h3>
+          <div id="pair-qr-area"><p class="hint">点左侧"生成"按钮</p></div>
+          <p class="hint">配对只需一次，之后手机永久可用（直到你在下方撤销）</p>
+        </div>
+      </div>
+      <hr />
+      <h3>已配对设备</h3>
+      <ul id="pair-devices"></ul>
+    </div>
+  </div>
 </body>
 </html>
