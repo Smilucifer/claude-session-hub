@@ -10,12 +10,11 @@ const TMP = path.join(os.tmpdir(), 'csh-mobile-rest-' + Date.now());
 fs.mkdirSync(TMP, { recursive: true });
 auth._setStorePath(path.join(TMP, 'devices.json'));
 
-const fakeSM = {
+const { EventEmitter } = require('events');
+const fakeSM = Object.assign(new EventEmitter(), {
   listSessions: () => [{ id: 's1', title: 'Test', kind: 'claude', cwd: 'C:/', unreadCount: 0, lastMessageTime: 0, lastOutputPreview: '' }],
   getSessionBuffer: (id) => id === 's1' ? 'mock buffer' : null,
-  on: () => {},
-  off: () => {},
-};
+});
 
 function req(port, pathS, { method = 'GET', headers = {}, body = null } = {}) {
   return new Promise((resolve, reject) => {
@@ -69,6 +68,18 @@ function req(port, pathS, { method = 'GET', headers = {}, body = null } = {}) {
     body: JSON.stringify({ token: tok2, deviceId: 'dev-other', name: 'Other' }),
   });
   assert.strictEqual(r6.status, 409);
+
+  // 7. /api/hook/tool-use from loopback succeeds, emits event
+  let emitted = null;
+  fakeSM.once('tool-use-preview', (evt) => { emitted = evt; });
+  const r7 = await req(port, '/api/hook/tool-use', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId: 's1', toolName: 'Bash', toolInput: { command: 'ls' } }),
+  });
+  assert.strictEqual(r7.status, 200);
+  assert.ok(emitted, 'should emit tool-use-preview');
+  assert.strictEqual(emitted.toolName, 'Bash');
 
   await srv.close();
   console.log('OK test-rest');

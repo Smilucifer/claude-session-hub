@@ -1,33 +1,14 @@
 const express = require('express');
 const http = require('http');
 const path = require('path');
-const { WebSocketServer } = require('ws');
+const { WebSocketServer, WebSocket } = require('ws');  // ← note WebSocket import (Fix 3)
 const auth = require('./mobile-auth.js');
 const protocol = require('./mobile-protocol.js');
 const { createRouter } = require('./mobile-routes.js');
 
 const PORT_RANGE = [3470, 3471, 3472, 3473, 3474, 3475, 3476, 3477, 3478, 3479];
 
-function pickPort(preferred) {
-  return new Promise((resolve, reject) => {
-    const candidates = preferred === 0 ? [0] : (preferred ? [preferred, ...PORT_RANGE] : PORT_RANGE);
-    let idx = 0;
-    const tryNext = () => {
-      if (idx >= candidates.length) return reject(new Error('no-port-available'));
-      const p = candidates[idx++];
-      const s = http.createServer();
-      s.once('error', () => { s.close(() => tryNext()); });
-      s.listen(p, '0.0.0.0', () => {
-        const actualPort = s.address().port;
-        s.close(() => resolve(actualPort));
-      });
-    };
-    tryNext();
-  });
-}
-
 async function createMobileServer({ sessionManager, preferredPort = 3470 }) {
-  const port = await pickPort(preferredPort);
   const app = express();
   const pwaRoot = path.join(__dirname, '..', 'renderer-mobile');
   app.use(express.static(pwaRoot, { index: 'index.html', extensions: ['html'] }));
@@ -37,8 +18,29 @@ async function createMobileServer({ sessionManager, preferredPort = 3470 }) {
 
   const server = http.createServer(app);
   const wss = new WebSocketServer({ noServer: true });
-
   const clients = new Set();
+
+  // Listen with direct-fallback, no probe race
+  const candidates = preferredPort === 0
+    ? [0]
+    : [preferredPort, ...PORT_RANGE.filter(p => p !== preferredPort)];
+  const port = await new Promise((resolve, reject) => {
+    let idx = 0;
+    const onError = () => {
+      server.removeListener('error', onError);
+      tryNext();
+    };
+    const tryNext = () => {
+      if (idx >= candidates.length) return reject(new Error('no-port-available'));
+      const p = candidates[idx++];
+      server.once('error', onError);
+      server.listen(p, '0.0.0.0', () => {
+        server.removeListener('error', onError);
+        resolve(server.address().port);
+      });
+    };
+    tryNext();
+  });
 
   server.on('upgrade', async (req, socket, head) => {
     if (!req.url.startsWith('/ws')) {
@@ -48,6 +50,8 @@ async function createMobileServer({ sessionManager, preferredPort = 3470 }) {
     const url = new URL(req.url, 'http://dummy');
     const token = url.searchParams.get('token');
     const deviceId = url.searchParams.get('deviceId');
+    const lastSeqStr = url.searchParams.get('lastSeq');
+    const lastSeq = lastSeqStr != null ? Number(lastSeqStr) : null;
     const v = await auth.verifyToken(token, deviceId);
     if (!v.ok) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
@@ -56,12 +60,12 @@ async function createMobileServer({ sessionManager, preferredPort = 3470 }) {
     }
     auth.touchDevice(deviceId, req.socket.remoteAddress);
     wss.handleUpgrade(req, socket, head, (ws) => {
-      wss.emit('connection', ws, req, { deviceId });
+      wss.emit('connection', ws, req, { deviceId, lastSeq });
     });
   });
 
   wss.on('connection', (ws, _req, ctx) => {
-    const state = { deviceId: ctx.deviceId, subscribed: new Set() };
+    const state = { deviceId: ctx.deviceId, subscribed: new Set(), lastSeq: ctx.lastSeq };
     const entry = { ws, state };
     clients.add(entry);
 
@@ -70,7 +74,7 @@ async function createMobileServer({ sessionManager, preferredPort = 3470 }) {
     ws.on('message', (buf) => {
       const msg = protocol.decode(buf.toString());
       if (!protocol.validate(msg)) {
-        ws.send(protocol.encode({ type: 'error', code: 'bad-message', message: 'invalid message shape' }));
+        safeSend(ws, protocol.encode({ type: 'error', code: 'bad-message', message: 'invalid message shape' }));
         return;
       }
       switch (msg.type) {
@@ -87,7 +91,7 @@ async function createMobileServer({ sessionManager, preferredPort = 3470 }) {
           if (typeof sessionManager.markRead === 'function') sessionManager.markRead(msg.sessionId);
           break;
         case 'ping':
-          ws.send(protocol.encode({ type: 'pong' }));
+          safeSend(ws, protocol.encode({ type: 'pong' }));
           break;
       }
     });
@@ -105,18 +109,19 @@ async function createMobileServer({ sessionManager, preferredPort = 3470 }) {
   sessionManager.on('output', onOutput);
   sessionManager.on('tool-use-preview', onToolUse);
 
+  function safeSend(ws, data) {
+    try { ws.send(data); } catch {}
+  }
   function broadcastAll(msg) {
     const enc = protocol.encode(msg);
-    for (const { ws } of clients) if (ws.readyState === ws.OPEN) ws.send(enc);
+    for (const { ws } of clients) if (ws.readyState === WebSocket.OPEN) safeSend(ws, enc);
   }
   function broadcastToSubscribers(sessionId, msg) {
     const enc = protocol.encode(msg);
     for (const { ws, state } of clients) {
-      if (ws.readyState === ws.OPEN && state.subscribed.has(sessionId)) ws.send(enc);
+      if (ws.readyState === WebSocket.OPEN && state.subscribed.has(sessionId)) safeSend(ws, enc);
     }
   }
-
-  await new Promise(r => server.listen(port, '0.0.0.0', r));
 
   return {
     server, app, port,

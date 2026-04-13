@@ -72,6 +72,14 @@ function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
   ws.send(JSON.stringify({ type: 'rogue' }));
   await wait(50);
 
+  // 7. tool-use-preview -> permission-prompt broadcast
+  sm.emit('tool-use-preview', { sessionId: 's1', toolName: 'Bash', toolInput: { command: 'ls' } });
+  await wait(50);
+  const promptMsg = received.find(m => m.type === 'permission-prompt');
+  assert.ok(promptMsg, 'should receive permission-prompt from tool-use-preview');
+  assert.strictEqual(promptMsg.toolName, 'Bash');
+  assert.strictEqual(promptMsg.toolInput.command, 'ls');
+
   ws.close();
   await srv.close();
   console.log('OK test-ws');

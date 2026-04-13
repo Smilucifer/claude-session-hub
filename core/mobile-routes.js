@@ -40,8 +40,12 @@ function createRouter({ sessionManager, authModule }) {
   });
 
   r.post('/hook/tool-use', express.json(), (req, res) => {
+    const addr = req.socket.remoteAddress;
+    if (addr !== '127.0.0.1' && addr !== '::1' && addr !== '::ffff:127.0.0.1') {
+      return res.status(403).json({ error: 'loopback-only' });
+    }
     const { sessionId, toolName, toolInput } = req.body || {};
-    if (sessionId && toolName) {
+    if (sessionId && toolName && typeof sessionManager.emit === 'function') {
       sessionManager.emit('tool-use-preview', { sessionId, toolName, toolInput });
     }
     res.json({ ok: true });
