@@ -40,6 +40,8 @@ export function renderSessionView(root, transport, sessionId, onBack) {
   });
   term.open(termHost);
 
+  // Initial buffer fetch — starts before reconnect listener is attached, so the
+  // 'connected' event (fired on WS reopen, NOT on first open) never races this.
   transport.fetchBuffer(sessionId).then(buf => { if (buf) term.write(buf); });
   transport.subscribe(sessionId);
   transport.markRead(sessionId);
@@ -55,6 +57,18 @@ export function renderSessionView(root, transport, sessionId, onBack) {
     }
   };
   transport.addEventListener('msg', onMsg);
+
+  // On WS reconnect: re-fetch the ring buffer to recover output missed during
+  // the disconnect. The 'connected' event fires only on reopens, not on initial
+  // connect, so this never double-writes with the fetchBuffer above.
+  const onReconnected = async () => {
+    try {
+      term.clear();
+      const buf = await transport.fetchBuffer(sessionId);
+      if (buf) term.write(buf);
+    } catch {}
+  };
+  transport.addEventListener('connected', onReconnected);
 
   wrap.querySelector('.back-btn').addEventListener('click', onBack);
   wrap.querySelector('#send-btn').addEventListener('click', send);
@@ -87,6 +101,7 @@ export function renderSessionView(root, transport, sessionId, onBack) {
     destroy() {
       transport.unsubscribe(sessionId);
       transport.removeEventListener('msg', onMsg);
+      transport.removeEventListener('connected', onReconnected);
       try { term.dispose(); } catch {}
     },
   };
