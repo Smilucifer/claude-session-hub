@@ -1,5 +1,93 @@
 const { ipcRenderer, clipboard, nativeImage, shell, webFrame } = require('electron');
 const { Terminal } = require('@xterm/xterm');
+
+// --- Wheel/scroll diagnostic logger (DEBUG ONLY) ---
+// Toggle in DevTools: __scrollDebug.on() / .off() / .read(20)
+// Writes a JSON-ish line to scroll-debug.log on each tagged event.
+window.__scrollDebug = (() => {
+  const fs = require('fs');
+  const pathMod = require('path');
+  const LOG = pathMod.join(__dirname, '..', 'scroll-debug.log');
+  let enabled = false;
+  function snap(terminal, sessionId) {
+    if (!terminal) return null;
+    const buf = terminal.buffer.active;
+    const out = {
+      sid: sessionId ? sessionId.slice(0, 6) : '?',
+      bufLen: buf.length, baseY: buf.baseY, vpY: buf.viewportY,
+      cols: terminal.cols, rows: terminal.rows,
+    };
+    try {
+      const vpEl = terminal.element && terminal.element.querySelector('.xterm-viewport');
+      if (vpEl) {
+        out.scrollH = vpEl.scrollHeight;
+        out.scrollT = vpEl.scrollTop;
+        out.clientH = vpEl.clientHeight;
+        out.canScrollMore = vpEl.scrollHeight - vpEl.scrollTop - vpEl.clientHeight;
+      }
+      const vpInst = terminal._core && terminal._core._viewport;
+      if (vpInst) {
+        out.lastBufLen = vpInst._lastRecordedBufferLength;
+        out.hasInnerRefresh = typeof vpInst._innerRefresh === 'function';
+        out.hasQueueRefresh = typeof vpInst.queueRefresh === 'function';
+        if (vpInst._lastRecordedViewportHeight !== undefined) {
+          out.lastVpH = vpInst._lastRecordedViewportHeight;
+        }
+      }
+    } catch (e) { out.err = String(e); }
+    return out;
+  }
+  function log(tag, payload) {
+    if (!enabled) return;
+    try {
+      const t = new Date().toISOString().slice(11, 23);
+      fs.appendFileSync(LOG, `[${t}] ${tag} ${JSON.stringify(payload)}\n`);
+    } catch {}
+  }
+  function probe(terminal, sessionId) {
+    if (!terminal) return;
+    try {
+      const core = terminal._core || {};
+      const out = {
+        sid: sessionId ? sessionId.slice(0, 6) : '?',
+        coreKeys: Object.keys(core).slice(0, 100),
+        publicMethods: ['refresh','resize','scrollToBottom','scrollLines','scrollToLine','reset','clear'].filter(m => typeof terminal[m] === 'function'),
+      };
+      const candidates = ['_viewport','viewport','_renderService','_inputHandler','_bufferService','_renderer'];
+      out.coreSubKeys = {};
+      for (const k of candidates) {
+        if (core[k]) {
+          out.coreSubKeys[k] = Object.keys(core[k]).filter(x => /refresh|scroll|update|recompute|resize|inner/i.test(x)).slice(0, 30);
+        }
+      }
+      const el = terminal.element;
+      if (el) {
+        out.elClasses = el.className;
+        out.children = Array.from(el.children).map(c => c.className || c.tagName);
+        const vp = el.querySelector('.xterm-viewport');
+        if (vp) {
+          out.vpChildren = Array.from(vp.children).map(c => `${c.tagName}.${c.className}(h=${c.clientHeight})`);
+        }
+      }
+      fs.appendFileSync(LOG, `[PROBE] ${JSON.stringify(out, null, 2)}\n`);
+      console.log('[scrollDebug] probe written to log');
+    } catch (e) {
+      fs.appendFileSync(LOG, `[PROBE-ERR] ${String(e)}\n`);
+    }
+  }
+  return {
+    on() {
+      enabled = true;
+      try { fs.writeFileSync(LOG, ''); } catch {}
+      console.log('[scrollDebug] ON, log:', LOG);
+    },
+    off() { enabled = false; console.log('[scrollDebug] OFF'); },
+    log, snap, probe,
+    isOn() { return enabled; },
+    path: LOG,
+  };
+})();
+
 const { FitAddon } = require('@xterm/addon-fit');
 const { Unicode11Addon } = require('@xterm/addon-unicode11');
 const { SearchAddon } = require('@xterm/addon-search');
@@ -447,6 +535,12 @@ function getOrCreateTerminal(sessionId) {
   // can't preventDefault. The browser's page-zoom on Ctrl+wheel is already
   // disabled globally in Electron for non-text areas.
   container.addEventListener('wheel', (e) => {
+    if (window.__scrollDebug && window.__scrollDebug.isOn()) {
+      window.__scrollDebug.log('wheel:before', { deltaY: e.deltaY, mode: e.deltaMode, ctrl: !!e.ctrlKey, ...window.__scrollDebug.snap(terminal, sessionId) });
+      requestAnimationFrame(() => {
+        window.__scrollDebug.log('wheel:after-raf', window.__scrollDebug.snap(terminal, sessionId));
+      });
+    }
     if (!e.ctrlKey && !e.metaKey) return;
     const delta = e.deltaY < 0 ? 1 : -1;
     setFontSize(currentFontSize + delta);
@@ -554,29 +648,40 @@ function showTerminal(sessionId, opts = { focus: true }) {
   }
 
   requestAnimationFrame(() => {
+    const dbg = window.__scrollDebug;
+    if (dbg && dbg.isOn()) dbg.log('show:raf-enter', { focus: opts.focus, ...dbg.snap(cached.terminal, sessionId) });
     cached.fitAddon.fit();
+    if (dbg && dbg.isOn()) dbg.log('show:after-fit', dbg.snap(cached.terminal, sessionId));
     ipcRenderer.send('terminal-resize', { sessionId, cols: cached.terminal.cols, rows: cached.terminal.rows });
     if (opts.focus) {
       cached.terminal.scrollToBottom();
+      if (dbg && dbg.isOn()) dbg.log('show:after-stb', dbg.snap(cached.terminal, sessionId));
       cached.terminal.focus();
       const vp = cached.container.querySelector('.xterm-viewport');
       if (vp) vp.scrollTop = vp.scrollHeight;
+      if (dbg && dbg.isOn()) dbg.log('show:after-vp1', dbg.snap(cached.terminal, sessionId));
 
-      // While this session was display:none, PTY writes grew the buffer but
-      // xterm's Viewport didn't refresh (its ResizeObserver / layout paths
-      // don't fire on hidden elements). Result: scrollArea stays N rows short,
-      // so scrollTop maxes out before the real buffer tail (the input prompt
-      // sits below the fold and wheel can't reach it). Force _innerRefresh to
-      // recompute scrollArea = buffer.lines.length * cellHeight.
+      // Ask xterm's Viewport to sync its inner .xterm-scroll-area height with
+      // the buffer length. Without this, a session that grew while display:none
+      // can have a stale (short) scrollHeight, causing wheel to max out before
+      // the real buffer tail. The instance lives at `_core.viewport` in xterm
+      // 5.5 (the previous attempt used `_viewport` which doesn't exist).
+      // Do NOT manually set .xterm-scroll-area's height — _charSizeService.height
+      // is character height, not line height (line-height multiplier missing),
+      // so manual recomputation undershoots and breaks scrollHeight further.
       try {
-        const vpInst = cached.terminal && cached.terminal._core && cached.terminal._core._viewport;
-        if (vpInst) {
-          if (typeof vpInst._innerRefresh === 'function') vpInst._innerRefresh();
-          else if (typeof vpInst.queueRefresh === 'function') vpInst.queueRefresh(true);
+        const vpInst = cached.terminal && cached.terminal._core && cached.terminal._core.viewport;
+        if (vpInst && typeof vpInst.syncScrollArea === 'function') {
+          vpInst.syncScrollArea(true);
         }
       } catch {}
+      if (dbg && dbg.isOn()) dbg.log('show:after-refresh', dbg.snap(cached.terminal, sessionId));
       requestAnimationFrame(() => {
         if (vp) vp.scrollTop = vp.scrollHeight;
+        // Re-pin xterm's logical viewport too (scrollToBottom may have been
+        // a no-op the first time when scrollArea was still stale).
+        try { cached.terminal.scrollToBottom(); } catch {}
+        if (dbg && dbg.isOn()) dbg.log('show:raf2-final', dbg.snap(cached.terminal, sessionId));
       });
     }
   });
@@ -1279,7 +1384,11 @@ ipcRenderer.on('status-event', (_e, payload) => {
       session._tokenSamples.push({ t: Date.now(), used: payload.contextUsed });
       pruneSamples(session._tokenSamples, Date.now());
     }
-    if (payload.cwd) session.cwd = payload.cwd;
+    // cwd is write-once: only record it if we don't have one yet. Statusline
+    // fires repeatedly and the user's `cd` during the session would otherwise
+    // corrupt the saved cwd, breaking future `claude --resume` (CC scopes
+    // resume to the transcript's original project slug = original cwd).
+    if (payload.cwd && !session.cwd) session.cwd = payload.cwd;
     if (typeof payload.apiMs === 'number') session.apiMs = payload.apiMs;
     if (typeof payload.linesAdded === 'number') session.linesAdded = payload.linesAdded;
     if (typeof payload.linesRemoved === 'number') session.linesRemoved = payload.linesRemoved;
@@ -1471,6 +1580,12 @@ ipcRenderer.on('hook-event', (_e, { event, sessionId, claudeSessionId, cwd, late
       if (preview && preview !== s.lastOutputPreview) {
         s.lastOutputPreview = preview;
         s._previewFromTranscript = true;
+        // Sync lastMessageTime with the preview change. Previously time only
+        // updated on Stop (via onReplyCompleteFromHook), so if Stop missed or
+        // only UserPromptSubmit fired, the sidebar showed fresh text next to a
+        // stale timestamp. Keep text and time in lockstep — a preview change
+        // IS a message event regardless of event type.
+        s.lastMessageTime = Date.now();
         renderSessionList();
         schedulePersist();
       }
@@ -1542,14 +1657,12 @@ function onReplyCompleteFromHook(sessionId) {
   const session = sessions.get(sessionId);
   if (!session) return;
 
-  // No setTimeout wait: sig is derived from the user's question line (❯ ...)
-  // which is already in the buffer since the moment the user pressed Enter,
-  // long before Claude's Stop hook fires.
+  // Fallback preview from xterm buffer — only matters when hook didn't supply
+  // a transcript-sourced preview (very rare). Primary preview is written by
+  // the hook-event handler directly from CC's JSONL.
   readTerminalPreview(sessionId);
 
   // "Claude is waiting for your input" — classify the tail of the AI's output.
-  // Strict rules: only fires when the AI asked a clear question / listed choices /
-  // asked for [y/N]. Flag lives until the user selects this session.
   const wasWaiting = !!session.isWaiting;
   const w = isWaitingForUser(extractTailLines(sessionId, 40));
   session.isWaiting = w.waiting;
@@ -1557,28 +1670,23 @@ function onReplyCompleteFromHook(sessionId) {
   session.waitingText = w.waiting ? String(w.text || '').slice(0, 200) : null;
   const newlyWaiting = w.waiting && !wasWaiting;
 
-  if (!session.lastOutputPreview) {
-    if (newlyWaiting) {
-      if (sessionId !== activeSessionId) maybeNotify(session);
-      renderSessionList();
-    }
-    return;
+  // Stop hook IS the "AI finished replying" signal — fires once per Q&A turn.
+  // Bump unread when the user hasn't actually seen the message: either this
+  // session isn't the active one, OR the Hub window is unfocused (user alt-
+  // tabbed away). The old check `sessionId !== activeSessionId` alone missed
+  // the "focus lost, active-session reply lands, user returns with no badge"
+  // case — matches the intermittent "有时候不提示" report.
+  session.lastMessageTime = Date.now();
+  const isActive = sessionId === activeSessionId;
+  const seenByUser = isActive && document.hasFocus();
+  if (!seenByUser) {
+    session.unreadCount = (session.unreadCount || 0) + 1;
   }
-
-  const sig = getQuestionsSignature(sessionId);
-  const prev = session.readSignature || '';
-  if (sig !== prev) {
-    session.lastMessageTime = Date.now();
-    session.readSignature = sig;
-    if (sessionId !== activeSessionId) {
-      session.unreadCount = (session.unreadCount || 0) + 1;
-      maybeNotify(session);
-    }
-    renderSessionList();
-  } else if (newlyWaiting && sessionId !== activeSessionId) {
-    maybeNotify(session);
-    renderSessionList();
-  }
+  // maybeNotify has its own focus guard (it returns early when focused) so
+  // calling it unconditionally is safe — it handles system-notification policy.
+  if (!isActive || newlyWaiting) maybeNotify(session);
+  renderSessionList();
+  schedulePersist();
 }
 
 // --- System notification (fire when window is in background) ---

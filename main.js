@@ -6,6 +6,62 @@ const http = require('http');
 const { SessionManager } = require('./core/session-manager.js');
 const stateStore = require('./core/state-store.js');
 
+// Find the project directory holding a given CC session's JSONL by globbing
+// ~/.claude/projects/<slug>/<ccSessionId>.jsonl across all project slugs.
+// Returns the full path, or null if not found.
+function findTranscriptByCCSessionId(ccSessionId) {
+  if (!ccSessionId) return null;
+  try {
+    const projectsDir = path.join(process.env.USERPROFILE || process.env.HOME || '.', '.claude', 'projects');
+    const entries = fs.readdirSync(projectsDir, { withFileTypes: true });
+    for (const d of entries) {
+      if (!d.isDirectory()) continue;
+      const candidate = path.join(projectsDir, d.name, ccSessionId + '.jsonl');
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  } catch {}
+  return null;
+}
+
+// Pull the original cwd out of a transcript JSONL. CC embeds `cwd` in most
+// message entries as JSON; we read enough to grab the first occurrence.
+// Authoritative — this is what the session was actually running in when the
+// transcript was written, so using it guarantees `claude --resume <id>` can
+// locate the project slug.
+function extractCwdFromTranscript(transcriptPath) {
+  try {
+    const fd = fs.openSync(transcriptPath, 'r');
+    try {
+      // Read up to 64KB from the head; cwd appears very early.
+      const buf = Buffer.alloc(64 * 1024);
+      const n = fs.readSync(fd, buf, 0, buf.length, 0);
+      const text = buf.slice(0, n).toString('utf-8');
+      const m = text.match(/"cwd":"((?:[^"\\]|\\.)*)"/);
+      if (m) return JSON.parse('"' + m[1] + '"');
+    } finally { fs.closeSync(fd); }
+  } catch {}
+  return null;
+}
+
+// Heal stale cwds in a persisted session list by looking up each session's
+// transcript file and reading the authoritative cwd. Fixes legacy entries
+// that were corrupted by the old `status-event` overwrite bug.
+function healPersistedCwds(sessions) {
+  let fixed = 0;
+  for (const s of sessions) {
+    if (!s.ccSessionId) continue;
+    const tp = findTranscriptByCCSessionId(s.ccSessionId);
+    if (!tp) continue;
+    const realCwd = extractCwdFromTranscript(tp);
+    if (realCwd && realCwd !== s.cwd) {
+      console.log(`[hub] heal cwd: "${s.title}" ${s.cwd} -> ${realCwd}`);
+      s.cwd = realCwd;
+      fixed++;
+    }
+  }
+  return fixed;
+}
+
 // Read the last user message text from a Claude Code transcript JSONL file.
 // Reads the trailing chunk(s) only (not the whole file) — long sessions can be
 // 10MB+ and we used to readFileSync the whole thing on every hook POST, which
@@ -39,9 +95,16 @@ async function readLastUserMessage(transcriptPath) {
         if (role !== 'user') continue;
         const msg = entry.message;
         let text = '';
-        if (typeof msg === 'string') text = msg;
-        else if (msg && typeof msg.content === 'string') text = msg.content;
-        else if (msg && Array.isArray(msg.content)) {
+        if (typeof msg === 'string') {
+          text = msg;
+        } else if (msg && typeof msg.content === 'string') {
+          text = msg.content;
+        } else if (msg && Array.isArray(msg.content)) {
+          // CC stores tool_result entries as role=user too (Anthropic API
+          // convention). Skip those — they pollute the preview with strings
+          // like "[Image: source: ]" pulled from tool return payloads.
+          const hasTool = msg.content.some(c => c && c.type === 'tool_result');
+          if (hasTool) continue;
           text = msg.content.filter(c => c && c.type === 'text').map(c => c.text || '').join(' ').trim();
         }
         if (text) return text;
@@ -68,20 +131,26 @@ let mainWindow;
 const sessionManager = new SessionManager();
 sessionManager.hookToken = HOOK_TOKEN;  // port set after listen
 
-// Bind an explicit AppUserModelID so Windows identifies the running window as
-// Claude Session Hub (not generic electron.exe). Without this the taskbar
-// icon / grouping can fall back to the Electron default.
-if (process.platform === 'win32') {
-  app.setAppUserModelId('com.tianlin.claude-session-hub');
-}
+// NOTE: Don't call app.setAppUserModelId here. Setting an AUMID without also
+// registering an icon resource for that AUMID (or matching it on the launcher
+// .lnk) decouples the running process from the launching shortcut, and Windows
+// falls back to electron.exe's default atom icon in the taskbar. With no AUMID
+// set, Windows uses the .lnk's icon for taskbar entries spawned via the .lnk
+// and BrowserWindow.icon for the title bar — both end up the octopus.
 
 function createWindow() {
+  // Load the icon as a NativeImage so we can pass it to BrowserWindow AND
+  // re-apply via setIcon — on Windows the constructor `icon` alone sometimes
+  // misses the taskbar; the explicit setIcon nails it.
+  const iconPath = path.join(__dirname, 'claude-wx.ico');
+  const winIcon = nativeImage.createFromPath(iconPath);
+
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     title: 'Claude Session Hub',
     backgroundColor: '#0d1117',
-    icon: path.join(__dirname, 'claude-wx.ico'),
+    icon: winIcon,
     show: false,
     webPreferences: {
       nodeIntegration: true,
@@ -89,6 +158,12 @@ function createWindow() {
       sandbox: false,
     },
   });
+
+  if (!winIcon.isEmpty()) {
+    mainWindow.setIcon(winIcon);
+  } else {
+    console.warn('[icon] failed to load', iconPath);
+  }
 
   mainWindow.maximize();
   mainWindow.show();
@@ -171,6 +246,10 @@ ipcMain.handle('get-sessions', () => {
 const bootState = stateStore.load();
 const bootWasClean = bootState.cleanShutdown;
 let lastPersistedSessions = Array.isArray(bootState.sessions) ? bootState.sessions : [];
+// Heal any cwds that legacy code corrupted (see extractCwdFromTranscript).
+// This reads CC's own JSONL transcripts which carry the authoritative cwd.
+const healed = healPersistedCwds(lastPersistedSessions);
+if (healed > 0) console.log(`[hub] healed ${healed} stale cwd(s) from CC transcripts`);
 // Flip cleanShutdown to false immediately on boot; before-quit will flip it back.
 stateStore.save({ version: 1, cleanShutdown: false, sessions: lastPersistedSessions }, { sync: true });
 
