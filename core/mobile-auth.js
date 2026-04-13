@@ -7,14 +7,15 @@ const bcrypt = require('bcryptjs');
 const DEFAULT_STORE = path.join(os.homedir(), '.claude-session-hub', 'mobile-devices.json');
 let STORE_PATH = DEFAULT_STORE;
 const BCRYPT_ROUNDS = 10;
-const PENDING_TOKENS = new Map();
-
 function _setStorePath(p) { STORE_PATH = p; }
 
 function _load() {
   try {
     return JSON.parse(fs.readFileSync(STORE_PATH, 'utf-8'));
-  } catch {
+  } catch (e) {
+    if (e.code !== 'ENOENT') {
+      console.error('[mobile-auth] devices file unreadable, starting empty:', e.message);
+    }
     return { version: 1, devices: [] };
   }
 }
@@ -22,19 +23,22 @@ function _load() {
 function _save(data) {
   fs.mkdirSync(path.dirname(STORE_PATH), { recursive: true });
   const tmp = STORE_PATH + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
   fs.renameSync(tmp, STORE_PATH);
 }
 
+// Tokens are validated against the device store (not an in-memory set) so
+// verification survives process restarts.
 function generateToken() {
-  const t = crypto.randomBytes(32).toString('hex');
-  PENDING_TOKENS.set(t, { createdAt: Date.now() });
-  return t;
+  return crypto.randomBytes(32).toString('hex');
 }
 
 async function registerDevice(token, deviceId, name, ip) {
   if (!token || !deviceId) return { ok: false, reason: 'bad-args' };
   const data = _load();
+  if (data.devices.some(d => d.deviceId === deviceId)) {
+    return { ok: false, reason: 'deviceid-already-registered' };
+  }
   for (const d of data.devices) {
     if (await bcrypt.compare(token, d.tokenHash)) {
       return { ok: false, reason: 'token-already-bound' };
@@ -50,7 +54,6 @@ async function registerDevice(token, deviceId, name, ip) {
     lastIp: ip || null,
   });
   _save(data);
-  PENDING_TOKENS.delete(token);
   return { ok: true };
 }
 
@@ -69,10 +72,11 @@ async function verifyToken(token, deviceId) {
 function touchDevice(deviceId, ip) {
   const data = _load();
   const d = data.devices.find(x => x.deviceId === deviceId);
-  if (!d) return;
+  if (!d) return { ok: false, reason: 'not-found' };
   d.lastSeenAt = Date.now();
   if (ip) d.lastIp = ip;
   _save(data);
+  return { ok: true };
 }
 
 function listDevices() {
@@ -81,8 +85,11 @@ function listDevices() {
 
 function revokeDevice(deviceId) {
   const data = _load();
+  const before = data.devices.length;
   data.devices = data.devices.filter(d => d.deviceId !== deviceId);
+  if (data.devices.length === before) return { ok: false, reason: 'not-found' };
   _save(data);
+  return { ok: true };
 }
 
 module.exports = {

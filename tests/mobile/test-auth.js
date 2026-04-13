@@ -49,5 +49,32 @@ auth._setStorePath(path.join(TMP, 'devices.json'));
   assert.strictEqual(list[0].deviceId, 'dev-2');
   assert.ok(!list[0].tokenHash, 'token hash must not leak');
 
+  // 9. touchDevice: existing deviceId returns ok; unknown returns not-found
+  const touch1 = auth.touchDevice('dev-2', '9.9.9.9');
+  assert.strictEqual(touch1.ok, true);
+  const touch2 = auth.touchDevice('dev-nonexistent', '0.0.0.0');
+  assert.strictEqual(touch2.ok, false);
+  assert.strictEqual(touch2.reason, 'not-found');
+
+  // 10. revokeDevice: unknown deviceId returns not-found
+  const rev1 = auth.revokeDevice('dev-nonexistent');
+  assert.strictEqual(rev1.ok, false);
+  assert.strictEqual(rev1.reason, 'not-found');
+  const rev2 = auth.revokeDevice('dev-2');
+  assert.strictEqual(rev2.ok, true);
+
+  // 11. Duplicate deviceId is rejected
+  const t3 = auth.generateToken();
+  const t4 = auth.generateToken();
+  await auth.registerDevice(t3, 'dev-dup', 'First', '1.1.1.1');
+  const dupReg = await auth.registerDevice(t4, 'dev-dup', 'Second', '2.2.2.2');
+  assert.strictEqual(dupReg.ok, false);
+  assert.strictEqual(dupReg.reason, 'deviceid-already-registered');
+
+  // 12. Corrupt JSON file -> _load returns empty, listDevices works
+  fs.writeFileSync(path.join(TMP, 'devices.json'), '{not valid json');
+  const list2 = auth.listDevices();
+  assert.strictEqual(list2.length, 0);
+
   console.log('OK test-auth');
 })().catch(e => { console.error(e); process.exit(1); });
