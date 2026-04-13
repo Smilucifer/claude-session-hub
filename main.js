@@ -493,16 +493,18 @@ app.whenReady().then(async () => {
   } else {
     console.warn('[hub] hook server failed to bind — falling back to silence detection');
   }
-  // Start mobile server (non-blocking — failure is logged, not fatal)
-  (async () => {
-    try {
-      mobileSrv = await createMobileServer({ sessionManager, preferredPort: 3470 });
-      console.log(`[mobile] listening on :${mobileSrv.port}`);
-      global.__mobileSrv = mobileSrv;
-    } catch (e) {
-      console.error('[mobile] failed to start:', e);
-    }
-  })();
+  // Start mobile server — awaited so that CLAUDE_HUB_MOBILE_PORT is set before
+  // any PTY session is created (dormant restore, etc.). Failure is logged but
+  // not fatal: global.__mobileSrv stays null and session-manager falls back to
+  // port 3470 as a best-effort default.
+  try {
+    mobileSrv = await createMobileServer({ sessionManager, preferredPort: 3470 });
+    console.log(`[mobile] listening on :${mobileSrv.port}`);
+    global.__mobileSrv = mobileSrv;
+  } catch (e) {
+    console.error('[mobile] failed to start:', e);
+    global.__mobileSrv = null;
+  }
   createWindow();
   // Push status to renderer after window is ready
   if (mainWindow) {
