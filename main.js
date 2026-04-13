@@ -3,8 +3,12 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const http = require('http');
+const os = require('os');
+const QRCode = require('qrcode');
 const { SessionManager } = require('./core/session-manager.js');
 const stateStore = require('./core/state-store.js');
+const { createMobileServer } = require('./core/mobile-server.js');
+const mobileAuth = require('./core/mobile-auth.js');
 
 // Find the project directory holding a given CC session's JSONL by globbing
 // ~/.claude/projects/<slug>/<ccSessionId>.jsonl across all project slugs.
@@ -126,6 +130,7 @@ const HOOK_PORT_CANDIDATES = [3456, 3457, 3458, 3459, 3460];
 const HOOK_TOKEN = crypto.randomBytes(16).toString('hex');
 
 let hookPort = null;  // set after listen() succeeds
+let mobileSrv = null; // set after app.whenReady startup
 
 let mainWindow;
 const sessionManager = new SessionManager();
@@ -352,6 +357,43 @@ ipcMain.handle('open-path', async (_e, filePath) => {
   }
 });
 
+// --- Mobile remote IPC handlers ---
+
+ipcMain.handle('mobile:get-ips', () => {
+  const nets = os.networkInterfaces();
+  const out = [];
+  for (const [name, addrs] of Object.entries(nets)) {
+    if (!addrs) continue;
+    for (const a of addrs) {
+      if (a.family === 'IPv4' && !a.internal) out.push({ name, address: a.address });
+    }
+  }
+  return out;
+});
+
+ipcMain.handle('mobile:get-port', () => {
+  return (mobileSrv && mobileSrv.port) || 3470;
+});
+
+ipcMain.handle('mobile:create-pairing', async (_e, { addresses, deviceName }) => {
+  const token = mobileAuth.generateToken();
+  const port = (mobileSrv && mobileSrv.port) || 3470;
+  const addrs = (addresses && addresses.length) ? addresses : [`127.0.0.1:${port}`];
+  const payload = Buffer.from(JSON.stringify(addrs)).toString('base64url');
+  const first = addrs[0];
+  const scheme = first.startsWith('http://') || first.startsWith('https://') ? '' : 'http://';
+  const host = first.replace(/^https?:\/\//, '');
+  const pairUrl = `${scheme}${host}/pair?token=${token}&addresses=${payload}&name=${encodeURIComponent(deviceName || 'Phone')}`;
+  const qrDataUrl = await QRCode.toDataURL(pairUrl, { margin: 1, width: 360 });
+  return { token, pairUrl, qrDataUrl };
+});
+
+ipcMain.handle('mobile:list-devices', () => mobileAuth.listDevices());
+
+ipcMain.handle('mobile:revoke-device', (_e, deviceId) => {
+  return mobileAuth.revokeDevice(deviceId);
+});
+
 // --- Hook HTTP server ---
 // Receives POSTs from ~/.claude/scripts/session-hub-hook.py when Claude Code
 // fires Stop / UserPromptSubmit hooks. Forwards to renderer as IPC events.
@@ -451,6 +493,18 @@ app.whenReady().then(async () => {
   } else {
     console.warn('[hub] hook server failed to bind — falling back to silence detection');
   }
+  // Start mobile server — awaited so that CLAUDE_HUB_MOBILE_PORT is set before
+  // any PTY session is created (dormant restore, etc.). Failure is logged but
+  // not fatal: global.__mobileSrv stays null and session-manager falls back to
+  // port 3470 as a best-effort default.
+  try {
+    mobileSrv = await createMobileServer({ sessionManager, preferredPort: 3470 });
+    console.log(`[mobile] listening on :${mobileSrv.port}`);
+    global.__mobileSrv = mobileSrv;
+  } catch (e) {
+    console.error('[mobile] failed to start:', e);
+    global.__mobileSrv = null;
+  }
   createWindow();
   // Push status to renderer after window is ready
   if (mainWindow) {
@@ -460,9 +514,10 @@ app.whenReady().then(async () => {
   }
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', async () => {
   // Flush final state with cleanShutdown=true so next boot won't flag as crash.
   stateStore.save({ version: 1, cleanShutdown: true, sessions: lastPersistedSessions }, { sync: true });
+  if (mobileSrv) { try { await mobileSrv.close(); } catch {} }
 });
 
 app.on('window-all-closed', () => {

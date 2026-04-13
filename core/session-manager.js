@@ -1,16 +1,24 @@
 const pty = require('node-pty');
 const { v4: uuid } = require('uuid');
+const { EventEmitter } = require('events');
 
-class SessionManager {
+const RING_BUFFER_BYTES = 8192;
+
+class SessionManager extends EventEmitter {
   sessions = new Map();
   focusedSessionId = null;
   claudeCounter = 0;
   resumeCounter = 0;
   psCounter = 0;
+  _outputSeq = 0;
 
   // Injected by main: the chosen hook HTTP port + per-launch auth token.
   hookPort = null;
   hookToken = null;
+
+  constructor() {
+    super();
+  }
 
   // Callbacks
   onData = (sessionId, data) => {};
@@ -50,6 +58,7 @@ class SessionManager {
       sessionEnv.CLAUDE_HUB_SESSION_ID = id;
       if (this.hookPort) sessionEnv.CLAUDE_HUB_PORT = String(this.hookPort);
       if (this.hookToken) sessionEnv.CLAUDE_HUB_TOKEN = this.hookToken;
+      sessionEnv.CLAUDE_HUB_MOBILE_PORT = String((global.__mobileSrv && global.__mobileSrv.port) || 3470);
     }
 
     const shellArgs = isClaude ? ['-NoProfile', '-NoLogo'] : [];
@@ -85,10 +94,13 @@ class SessionManager {
     };
 
     const pendingTimers = [];
-    this.sessions.set(id, { info, pty: ptyProcess, pendingTimers });
+    this.sessions.set(id, { info, pty: ptyProcess, pendingTimers, ringBuffer: '' });
 
     ptyProcess.onData((data) => {
+      this._appendToRingBuffer(id, data);
       this.onData(id, data);
+      this._outputSeq += 1;
+      this.emit('output', { sessionId: id, seq: this._outputSeq, data });
     });
 
     ptyProcess.onExit(() => { this.sessions.delete(id); this.onSessionClosed(id); });
@@ -152,7 +164,7 @@ class SessionManager {
 
   writeToSession(sessionId, data) {
     const s = this.sessions.get(sessionId);
-    if (s) s.pty.write(data);
+    if (s && s.pty) s.pty.write(data);
   }
 
   resizeSession(sessionId, cols, rows) {
@@ -166,7 +178,10 @@ class SessionManager {
 
   markRead(sessionId) {
     const session = this.sessions.get(sessionId);
-    if (session) session.info.unreadCount = 0;
+    if (session) {
+      session.info.unreadCount = 0;
+      this.emit('session-updated', this._toPublic(session.info));
+    }
   }
 
   getSession(sessionId) {
@@ -178,6 +193,66 @@ class SessionManager {
     return Array.from(this.sessions.values())
       .map(s => ({ ...s.info }))
       .sort((a, b) => b.lastMessageTime - a.lastMessageTime || b.createdAt - a.createdAt);
+  }
+
+  // Returns the public shape used by mobile API and 'session-updated' events.
+  _toPublic(info) {
+    return {
+      id: info.id,
+      title: info.title,
+      kind: info.kind,
+      cwd: info.cwd,
+      unreadCount: info.unreadCount,
+      lastMessageTime: info.lastMessageTime,
+      lastOutputPreview: info.lastOutputPreview,
+      ...(info.pinned !== undefined ? { pinned: info.pinned } : {}),
+      ...(info.ccSessionId !== undefined ? { ccSessionId: info.ccSessionId } : {}),
+    };
+  }
+
+  // Returns array of public session objects for mobile API.
+  listSessions() {
+    return Array.from(this.sessions.values())
+      .map(s => this._toPublic(s.info))
+      .sort((a, b) => b.lastMessageTime - a.lastMessageTime);
+  }
+
+  // Appends data to the session's ring buffer, capping at RING_BUFFER_BYTES (tail-slice).
+  // After truncation, trims any lone low-surrogate left at the start of the buffer
+  // that could result from cutting a UTF-16 surrogate pair at the boundary.
+  // Extracted as a named method so tests can drive it without spawning a real PTY.
+  _appendToRingBuffer(id, data) {
+    const s = this.sessions.get(id);
+    if (!s) return;
+    let rb = (s.ringBuffer || '') + data;
+    if (rb.length > RING_BUFFER_BYTES) {
+      rb = rb.slice(rb.length - RING_BUFFER_BYTES);
+      // Trim leading lone low-surrogates (unpaired 0xDC00–0xDFFF) left by the cut.
+      // A high surrogate (0xD800–0xDBFF) at position 0 is fine only if it's
+      // immediately followed by a low surrogate; otherwise drop it too.
+      let i = 0;
+      while (i < rb.length && i < 4) {
+        const cc = rb.charCodeAt(i);
+        // Lone low-surrogate — definitely unpaired, drop it
+        if (cc >= 0xDC00 && cc <= 0xDFFF) { i++; continue; }
+        // High surrogate followed by something that is NOT a low surrogate — drop it
+        if (cc >= 0xD800 && cc <= 0xDBFF) {
+          const next = rb.charCodeAt(i + 1);
+          if (!(next >= 0xDC00 && next <= 0xDFFF)) { i++; continue; }
+        }
+        break;
+      }
+      if (i > 0) rb = rb.slice(i);
+    }
+    s.ringBuffer = rb;
+  }
+
+  // Returns the ring-buffer string for a session, '' if exists but empty,
+  // null if session not found.
+  getSessionBuffer(sessionId) {
+    const s = this.sessions.get(sessionId);
+    if (!s) return null;
+    return s.ringBuffer || '';
   }
 
   dispose() {
