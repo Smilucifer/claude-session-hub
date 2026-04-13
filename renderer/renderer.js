@@ -2117,3 +2117,115 @@ async function resumeDormantSession(hubId) {
 for (const ch of ['session-created', 'session-closed', 'session-updated']) {
   ipcRenderer.on(ch, () => schedulePersist());
 }
+
+// --- Mobile Pair Dialog ---
+(function initMobilePair() {
+  const modal = document.getElementById('pair-modal');
+  if (!modal) return; // pair UI not present (dev fallback)
+
+  const btn = document.getElementById('btn-mobile');
+  const closeBtn = document.getElementById('pair-close');
+  const addrList = document.getElementById('pair-addr-list');
+  const addrInput = document.getElementById('pair-addr-input');
+  const addrAddBtn = document.getElementById('pair-addr-add');
+  const deviceNameInput = document.getElementById('pair-device-name');
+  const generateBtn = document.getElementById('pair-generate');
+  const qrArea = document.getElementById('pair-qr-area');
+  const devicesList = document.getElementById('pair-devices');
+
+  let addresses = [];
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  function renderAddrs() {
+    addrList.innerHTML = '';
+    addresses.forEach((a, i) => {
+      const li = document.createElement('li');
+      li.innerHTML = `<span>${escapeHtml(a)}</span><button aria-label="删除">×</button>`;
+      li.querySelector('button').addEventListener('click', () => {
+        addresses.splice(i, 1);
+        renderAddrs();
+      });
+      addrList.appendChild(li);
+    });
+  }
+
+  async function refreshDevices() {
+    const list = await ipcRenderer.invoke('mobile:list-devices');
+    devicesList.innerHTML = '';
+    if (!list.length) {
+      const li = document.createElement('li');
+      li.className = 'hint';
+      li.textContent = '暂无已配对设备';
+      devicesList.appendChild(li);
+      return;
+    }
+    for (const d of list) {
+      const li = document.createElement('li');
+      const seen = d.lastSeenAt ? new Date(d.lastSeenAt).toLocaleString() : '—';
+      li.innerHTML = `
+        <div class="device-info">
+          <span class="device-name">${escapeHtml(d.name)}</span>
+          <span class="device-meta">最近连接 ${escapeHtml(seen)} · IP ${escapeHtml(d.lastIp || '—')}</span>
+        </div>
+        <button class="revoke-btn" data-id="${escapeHtml(d.deviceId)}">撤销</button>
+      `;
+      li.querySelector('.revoke-btn').addEventListener('click', async () => {
+        if (!confirm(`确定撤销设备 "${d.name}"？撤销后该手机将无法连接`)) return;
+        await ipcRenderer.invoke('mobile:revoke-device', d.deviceId);
+        refreshDevices();
+      });
+      devicesList.appendChild(li);
+    }
+  }
+
+  async function openModal() {
+    modal.classList.remove('hidden');
+    // Default addresses = LAN IPs + actual mobile port
+    const [ips, port] = await Promise.all([
+      ipcRenderer.invoke('mobile:get-ips'),
+      ipcRenderer.invoke('mobile:get-port'),
+    ]);
+    addresses = ips.map(i => `${i.address}:${port}`);
+    renderAddrs();
+    qrArea.innerHTML = '<p class="hint">点左侧"生成"按钮</p>';
+    refreshDevices();
+  }
+
+  function closeModal() { modal.classList.add('hidden'); }
+
+  btn && btn.addEventListener('click', openModal);
+  closeBtn.addEventListener('click', closeModal);
+  modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !modal.classList.contains('hidden')) closeModal();
+  });
+
+  addrAddBtn.addEventListener('click', () => {
+    const v = addrInput.value.trim();
+    if (v && !addresses.includes(v)) {
+      addresses.push(v);
+      addrInput.value = '';
+      renderAddrs();
+    }
+  });
+  addrInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addrAddBtn.click(); });
+
+  generateBtn.addEventListener('click', async () => {
+    if (!addresses.length) { alert('至少填一个地址'); return; }
+    generateBtn.disabled = true;
+    try {
+      const { qrDataUrl, pairUrl } = await ipcRenderer.invoke('mobile:create-pairing', {
+        addresses,
+        deviceName: deviceNameInput.value.trim() || 'Phone',
+      });
+      qrArea.innerHTML = `<img src="${qrDataUrl}" alt="Pair QR" /><p>${escapeHtml(pairUrl)}</p>`;
+    } catch (e) {
+      qrArea.innerHTML = `<p style="color:#e24a4a">生成失败: ${escapeHtml(e.message || String(e))}</p>`;
+    } finally {
+      generateBtn.disabled = false;
+    }
+  });
+})();
