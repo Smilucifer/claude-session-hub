@@ -218,14 +218,33 @@ class SessionManager extends EventEmitter {
   }
 
   // Appends data to the session's ring buffer, capping at RING_BUFFER_BYTES (tail-slice).
+  // After truncation, trims any lone low-surrogate left at the start of the buffer
+  // that could result from cutting a UTF-16 surrogate pair at the boundary.
   // Extracted as a named method so tests can drive it without spawning a real PTY.
   _appendToRingBuffer(id, data) {
     const s = this.sessions.get(id);
     if (!s) return;
-    const rb = (s.ringBuffer || '') + data;
-    s.ringBuffer = rb.length > RING_BUFFER_BYTES
-      ? rb.slice(rb.length - RING_BUFFER_BYTES)
-      : rb;
+    let rb = (s.ringBuffer || '') + data;
+    if (rb.length > RING_BUFFER_BYTES) {
+      rb = rb.slice(rb.length - RING_BUFFER_BYTES);
+      // Trim leading lone low-surrogates (unpaired 0xDC00–0xDFFF) left by the cut.
+      // A high surrogate (0xD800–0xDBFF) at position 0 is fine only if it's
+      // immediately followed by a low surrogate; otherwise drop it too.
+      let i = 0;
+      while (i < rb.length && i < 4) {
+        const cc = rb.charCodeAt(i);
+        // Lone low-surrogate — definitely unpaired, drop it
+        if (cc >= 0xDC00 && cc <= 0xDFFF) { i++; continue; }
+        // High surrogate followed by something that is NOT a low surrogate — drop it
+        if (cc >= 0xD800 && cc <= 0xDBFF) {
+          const next = rb.charCodeAt(i + 1);
+          if (!(next >= 0xDC00 && next <= 0xDFFF)) { i++; continue; }
+        }
+        break;
+      }
+      if (i > 0) rb = rb.slice(i);
+    }
+    s.ringBuffer = rb;
   }
 
   // Returns the ring-buffer string for a session, '' if exists but empty,
