@@ -2,6 +2,8 @@ const pty = require('node-pty');
 const { v4: uuid } = require('uuid');
 const { EventEmitter } = require('events');
 
+const RING_BUFFER_BYTES = 8192;
+
 class SessionManager extends EventEmitter {
   sessions = new Map();
   focusedSessionId = null;
@@ -91,9 +93,10 @@ class SessionManager extends EventEmitter {
     };
 
     const pendingTimers = [];
-    this.sessions.set(id, { info, pty: ptyProcess, pendingTimers });
+    this.sessions.set(id, { info, pty: ptyProcess, pendingTimers, ringBuffer: '' });
 
     ptyProcess.onData((data) => {
+      this._appendToRingBuffer(id, data);
       this.onData(id, data);
       this._outputSeq += 1;
       this.emit('output', { sessionId: id, seq: this._outputSeq, data });
@@ -213,9 +216,19 @@ class SessionManager extends EventEmitter {
       .sort((a, b) => b.lastMessageTime - a.lastMessageTime);
   }
 
+  // Appends data to the session's ring buffer, capping at RING_BUFFER_BYTES (tail-slice).
+  // Extracted as a named method so tests can drive it without spawning a real PTY.
+  _appendToRingBuffer(id, data) {
+    const s = this.sessions.get(id);
+    if (!s) return;
+    const rb = (s.ringBuffer || '') + data;
+    s.ringBuffer = rb.length > RING_BUFFER_BYTES
+      ? rb.slice(rb.length - RING_BUFFER_BYTES)
+      : rb;
+  }
+
   // Returns the ring-buffer string for a session, '' if exists but empty,
-  // null if session not found. (Ring buffer is populated externally via
-  // setRingBuffer; if not set, returns '' as per mobile spec.)
+  // null if session not found.
   getSessionBuffer(sessionId) {
     const s = this.sessions.get(sessionId);
     if (!s) return null;
