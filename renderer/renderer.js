@@ -1,4 +1,4 @@
-const { ipcRenderer, clipboard, nativeImage, shell } = require('electron');
+const { ipcRenderer, clipboard, nativeImage, shell, webFrame } = require('electron');
 const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
 const { Unicode11Addon } = require('@xterm/addon-unicode11');
@@ -198,6 +198,37 @@ function setFontSize(size) {
     }
   }
 }
+
+// --- Global UI zoom (Electron webFrame) ---
+// Scales the entire renderer: sidebar, buttons, xterm cells, modals. Used
+// mainly to bump everything up for remote/phone control vs. shrink for
+// desktop. Distinct from setFontSize, which only touches the xterm font.
+// Level is an integer; each step is ~20% per Electron's zoom curve. 0 = 100%.
+const ZOOM_KEY = 'claude-hub-zoom-level';
+const ZOOM_MIN = -3;
+const ZOOM_MAX = 5;
+let currentZoom = parseInt(localStorage.getItem(ZOOM_KEY), 10);
+if (isNaN(currentZoom)) currentZoom = 0;
+
+function applyZoom(level) {
+  level = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, level));
+  currentZoom = level;
+  webFrame.setZoomLevel(level);
+  localStorage.setItem(ZOOM_KEY, String(level));
+  // Re-fit the active xterm so terminal cols/rows match the new render size.
+  const active = activeSessionId && terminalCache.get(activeSessionId);
+  if (active && active.opened) {
+    try { active.fitAddon.fit(); } catch {}
+    ipcRenderer.send('terminal-resize', {
+      sessionId: activeSessionId,
+      cols: active.terminal.cols,
+      rows: active.terminal.rows,
+    });
+  }
+}
+
+// Restore persisted zoom on boot.
+applyZoom(currentZoom);
 
 // --- Helpers ---
 function formatTime(ts) {
@@ -509,13 +540,25 @@ function showTerminal(sessionId, opts = { focus: true }) {
     if (opts.focus) {
       cached.terminal.scrollToBottom();
       cached.terminal.focus();
-      // FIX: after display:none → block the .xterm-viewport div's scrollTop
-      // can stay at 0 even though xterm's buffer.viewportY is at baseY. The
-      // first wheel event then triggers xterm's scroll-sync listener which
-      // reads the stale scrollTop=0 and snaps viewportY to 0 (jump-to-top).
-      // Force the DOM scrollTop to max so it matches the bottom-pinned buffer.
       const vp = cached.container.querySelector('.xterm-viewport');
       if (vp) vp.scrollTop = vp.scrollHeight;
+
+      // While this session was display:none, PTY writes grew the buffer but
+      // xterm's Viewport didn't refresh (its ResizeObserver / layout paths
+      // don't fire on hidden elements). Result: scrollArea stays N rows short,
+      // so scrollTop maxes out before the real buffer tail (the input prompt
+      // sits below the fold and wheel can't reach it). Force _innerRefresh to
+      // recompute scrollArea = buffer.lines.length * cellHeight.
+      try {
+        const vpInst = cached.terminal && cached.terminal._core && cached.terminal._core._viewport;
+        if (vpInst) {
+          if (typeof vpInst._innerRefresh === 'function') vpInst._innerRefresh();
+          else if (typeof vpInst.queueRefresh === 'function') vpInst.queueRefresh(true);
+        }
+      } catch {}
+      requestAnimationFrame(() => {
+        if (vp) vp.scrollTop = vp.scrollHeight;
+      });
     }
   });
 
@@ -1803,6 +1846,10 @@ function toggleSidebar() {
 }
 btnCollapseEl.addEventListener('click', toggleSidebar);
 btnExpandEl.addEventListener('click', toggleSidebar);
+
+// --- Zoom buttons ---
+document.getElementById('btn-zoom-in').addEventListener('click', () => applyZoom(currentZoom + 1));
+document.getElementById('btn-zoom-out').addEventListener('click', () => applyZoom(currentZoom - 1));
 
 // --- Theme (dark only; toggle button removed) ---
 document.body.classList.remove('theme-light');
