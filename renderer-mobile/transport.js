@@ -70,12 +70,26 @@ export class Transport extends EventTarget {
       if (msg.type === 'output' && typeof msg.seq === 'number') this.lastSeq = msg.seq;
       this.dispatchEvent(new CustomEvent('msg', { detail: msg }));
     });
-    this.ws.addEventListener('close', () => {
+    this.ws.addEventListener('close', async () => {
       this.dispatchEvent(new Event('disconnected'));
-      if (this.shouldReconnect) {
-        setTimeout(() => this._openWs(), this.reconnectDelay);
-        this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
+      if (!this.shouldReconnect) return;
+      let delay = this.reconnectDelay;
+      this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
+      // After a few failed retries on the same address (backoff >= 8s means ~3
+      // consecutive failures), re-probe all configured addresses. This handles
+      // Wi-Fi → cellular switchover or any route change that makes the chosen
+      // address permanently unreachable.
+      if (delay >= 8000) {
+        try {
+          const alt = await this._probeAddresses();
+          if (alt && alt !== this.baseUrl) {
+            this.baseUrl = alt;
+            this.reconnectDelay = 1000; // reset backoff on new route
+            delay = 300;
+          }
+        } catch {}
       }
+      setTimeout(() => this._openWs(), delay);
     });
     this.ws.addEventListener('error', () => { /* close will fire */ });
   }
