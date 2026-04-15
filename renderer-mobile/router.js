@@ -11,6 +11,9 @@ export class Router {
   async start() {
     this._checkLayout();
     window.addEventListener('resize', () => this._checkLayout());
+    // hashchange fires on programmatic location.hash = ... assignments.
+    // popstate only fires on back/forward navigation, so we need both.
+    window.addEventListener('hashchange', () => this.route());
     window.addEventListener('popstate', () => this.route());
     this.transport.addEventListener('connected', () => this.route());
     this.transport.addEventListener('fatal', (e) => {

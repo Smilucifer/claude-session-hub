@@ -1,4 +1,4 @@
-const CACHE = 'csh-mobile-v1';
+const CACHE = 'csh-mobile-v2';
 const ASSETS = ['/', '/index.html', '/app.js', '/router.js', '/transport.js',
                 '/views/session-list.js', '/views/session-view.js', '/views/permission-card.js',
                 '/styles/base.css', '/styles/list.css', '/styles/session.css', '/styles/responsive.css',
@@ -9,17 +9,24 @@ self.addEventListener('install', (e) => {
 });
 
 self.addEventListener('activate', (e) => {
-  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))));
+  e.waitUntil(
+    caches.keys()
+      .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
+      .then(() => self.clients.claim())
+  );
 });
 
+// Network-first for same-origin static assets: always try fresh, fall back to
+// cache when offline. This lets server-side code changes land on the next
+// page load without requiring a CACHE version bump every time.
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (url.pathname.startsWith('/api') || url.pathname.startsWith('/ws')) return;
   e.respondWith(
-    caches.match(e.request).then(cached => cached || fetch(e.request).then(resp => {
+    fetch(e.request).then(resp => {
       const clone = resp.clone();
       caches.open(CACHE).then(c => c.put(e.request, clone).catch(() => {}));
       return resp;
-    }).catch(() => caches.match('/index.html')))
+    }).catch(() => caches.match(e.request).then(c => c || caches.match('/index.html')))
   );
 });
