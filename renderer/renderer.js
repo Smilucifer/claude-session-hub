@@ -2119,7 +2119,10 @@ for (const ch of ['session-created', 'session-closed', 'session-updated']) {
 }
 
 // --- Mobile Pair Dialog ---
-(function initMobilePair() {
+// This file is loaded as a synchronous <script> in <body> BEFORE the
+// #pair-modal element is parsed. Guard with DOMContentLoaded so all
+// IDs are present when we wire up listeners.
+function initMobilePair() {
   const modal = document.getElementById('pair-modal');
   if (!modal) return; // pair UI not present (dev fallback)
 
@@ -2228,4 +2231,10 @@ for (const ch of ['session-created', 'session-closed', 'session-updated']) {
       generateBtn.disabled = false;
     }
   });
-})();
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initMobilePair);
+} else {
+  initMobilePair();
+}
