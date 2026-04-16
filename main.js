@@ -6,6 +6,7 @@ const http = require('http');
 const os = require('os');
 const QRCode = require('qrcode');
 const { SessionManager } = require('./core/session-manager.js');
+const appConfig = require('./core/app-config.js');
 const stateStore = require('./core/state-store.js');
 const { createMobileServer } = require('./core/mobile-server.js');
 const mobileAuth = require('./core/mobile-auth.js');
@@ -213,7 +214,9 @@ let hookPort = null;  // set after listen() succeeds
 let mobileSrv = null; // set after app.whenReady startup
 
 let mainWindow;
-const sessionManager = new SessionManager();
+const sessionManager = new SessionManager({
+  getDefaultCwd: () => appConfig.getDefaultWorkingDirectory(),
+});
 sessionManager.hookToken = HOOK_TOKEN;  // port set after listen
 
 // NOTE: Don't call app.setAppUserModelId here. Setting an AUMID without also
@@ -320,6 +323,21 @@ ipcMain.handle('rename-session', (_e, { sessionId, title }) => {
   return session;
 });
 
+ipcMain.handle('set-session-cwd', (_e, { sessionId, cwd }) => {
+  const nextCwd = typeof cwd === 'string' ? cwd.trim() : '';
+  if (!nextCwd) return { error: 'empty cwd' };
+  try {
+    const st = fs.statSync(nextCwd);
+    if (!st.isDirectory()) return { error: 'cwd is not a directory' };
+  } catch {
+    return { error: 'cwd does not exist' };
+  }
+
+  const session = sessionManager.changeSessionCwd(sessionId, nextCwd);
+  if (session) sendToRenderer('session-updated', { session });
+  return session || { error: 'session not found' };
+});
+
 ipcMain.handle('get-sessions', () => {
   return sessionManager.getAllSessions();
 });
@@ -375,7 +393,9 @@ ipcMain.handle('restart-session', (_e, sessionId) => {
   // closeSession triggers the onExit callback which emits session-closed;
   // don't emit it a second time here.
   sessionManager.closeSession(sessionId);
-  const fresh = sessionManager.createSession(old.kind);
+  const fresh = sessionManager.createSession(old.kind, {
+    cwd: old.cwd,
+  });
   sendToRenderer('session-created', { session: fresh });
   return fresh;
 });

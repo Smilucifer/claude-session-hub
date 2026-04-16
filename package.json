@@ -6,6 +6,8 @@
   "scripts": {
     "start": "electron .",
     "test": "node test-e2e.js",
+    "test:config": "node tests/test-app-config.js",
+    "test:session-cwd": "node tests/test-session-cwd.js",
     "test:mobile": "node tests/mobile/test-all.js",
     "test:mobile:auth": "node tests/mobile/test-auth.js",
     "test:mobile:rest": "node tests/mobile/test-rest.js",

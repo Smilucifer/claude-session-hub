@@ -19,8 +19,11 @@ class SessionManager extends EventEmitter {
   hookPort = null;
   hookToken = null;
 
-  constructor() {
+  constructor({ getDefaultCwd } = {}) {
     super();
+    this.getDefaultCwd = typeof getDefaultCwd === 'function'
+      ? getDefaultCwd
+      : () => (process.env.USERPROFILE || process.env.HOME || '.');
   }
 
   // Callbacks
@@ -71,7 +74,15 @@ class SessionManager extends EventEmitter {
     if (spawnCwd) {
       try { require('fs').accessSync(spawnCwd); } catch { spawnCwd = null; }
     }
-    if (!spawnCwd) spawnCwd = process.env.USERPROFILE || process.env.HOME || '.';
+    if (!spawnCwd) {
+      const configured = this.getDefaultCwd();
+      try {
+        require('fs').accessSync(configured);
+        spawnCwd = configured;
+      } catch {
+        spawnCwd = process.env.USERPROFILE || process.env.HOME || '.';
+      }
+    }
 
     const ptyProcess = pty.spawn('powershell.exe', shellArgs, {
       name: 'xterm-256color',
@@ -256,6 +267,22 @@ class SessionManager extends EventEmitter {
     const s = this.sessions.get(sessionId);
     if (!s) return null;
     return s.ringBuffer || '';
+  }
+
+  changeSessionCwd(sessionId, cwd) {
+    const session = this.sessions.get(sessionId);
+    if (!session || !cwd) return undefined;
+
+    session.info.cwd = cwd;
+
+    if (session.info.kind === 'powershell' && session.pty) {
+      const escaped = cwd.replace(/'/g, "''");
+      session.pty.write(`Set-Location -LiteralPath '${escaped}'\r\n`);
+    }
+
+    const publicInfo = this._toPublic(session.info);
+    this.emit('session-updated', publicInfo);
+    return publicInfo;
   }
 
   dispose() {

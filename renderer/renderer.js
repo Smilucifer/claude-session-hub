@@ -386,6 +386,13 @@ function renderSessionList() {
       <div class="session-preview">${escapeHtml((s.isWaiting && s.waitingText) || s.lastOutputPreview || 'No output yet')}</div>
       ${footerInner ? `<div class="session-footer">${footerInner}</div>` : ''}
     `;
+    const titleEl = div.querySelector('.session-title');
+    if (titleEl) {
+      titleEl.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        beginRenameSession(s.id, titleEl, 'session-title-input');
+      });
+    }
     div.addEventListener('click', () => selectSession(s.id));
     div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY); });
     sessionListEl.appendChild(div);
@@ -576,7 +583,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
   titleSpan.className = 'terminal-title';
   titleSpan.textContent = session.title;
   titleSpan.title = 'Click to rename';
-  titleSpan.addEventListener('click', () => startRename(sessionId, titleSpan));
+  titleSpan.addEventListener('click', () => beginRenameSession(sessionId, titleSpan, 'terminal-title-input'));
 
   const statusSpan = document.createElement('span');
   statusSpan.className = `terminal-status ${session.status}`;
@@ -825,20 +832,19 @@ function syncRenameToClaude(sessionId, title) {
 }
 
 // --- Inline rename ---
-function startRename(sessionId, titleSpan) {
+function beginRenameSession(sessionId, titleSpan, inputClass = 'terminal-title-input') {
   const session = sessions.get(sessionId);
-  if (!session) return;
+  if (!session || !titleSpan) return;
 
   const input = document.createElement('input');
-  input.className = 'terminal-title-input';
+  input.className = inputClass;
   input.value = session.title;
 
   const finish = async () => {
-    const trimmed = input.value.trim();
+    const trimmed = input.value.trim().slice(0, 80);
     if (trimmed && trimmed !== session.title) {
       session.userRenamed = true;
       if (session.status === 'dormant') {
-        // No live PTY; just mutate locally and persist.
         session.title = trimmed;
         renderSessionList();
         schedulePersist();
@@ -855,10 +861,48 @@ function startRename(sessionId, titleSpan) {
   input.addEventListener('blur', finish);
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') input.blur();
-    if (e.key === 'Escape') { input.value = session.title; input.blur(); }
+    if (e.key === 'Escape') {
+      input.value = session.title;
+      input.blur();
+    }
   });
 
   titleSpan.replaceWith(input);
+  input.focus();
+  input.select();
+}
+
+async function beginEditSessionCwd(sessionId, cwdEl) {
+  const session = sessions.get(sessionId);
+  if (!session || !cwdEl) return;
+
+  const input = document.createElement('input');
+  input.className = 'metric-cwd-input';
+  input.value = session.cwd || '';
+
+  const finish = async (commit) => {
+    const next = input.value.trim();
+    if (commit && next && next !== session.cwd) {
+      const updated = await ipcRenderer.invoke('set-session-cwd', { sessionId, cwd: next });
+      if (updated && !updated.error) {
+        Object.assign(session, updated);
+        renderSessionList();
+        updateActiveMetricsRow();
+        schedulePersist();
+      } else {
+        input.value = session.cwd || '';
+      }
+    }
+    input.replaceWith(cwdEl);
+  };
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') finish(true);
+    if (e.key === 'Escape') finish(false);
+  });
+  input.addEventListener('blur', () => finish(true));
+
+  cwdEl.replaceWith(input);
   input.focus();
   input.select();
 }
@@ -1482,13 +1526,12 @@ function renderMetricsRow(el, session) {
   el.innerHTML = '';
   const frags = [];
   if (session.cwd) {
-    const a = document.createElement('span');
+    const a = document.createElement('button');
+    a.type = 'button';
     a.className = 'metric-cwd';
     a.textContent = '\uD83D\uDCC1 ' + session.cwd;
-    a.title = 'Click to copy · ' + session.cwd;
-    a.addEventListener('click', () => {
-      try { clipboard.writeText(session.cwd); } catch {}
-    });
+    a.title = 'Click to edit working directory';
+    a.addEventListener('click', () => beginEditSessionCwd(session.id, a));
     frags.push(a);
   }
   if (typeof session.apiMs === 'number' && session.apiMs > 0) {
@@ -1881,6 +1924,9 @@ for (const btn of contextMenuEl.querySelectorAll('.context-menu-item')) {
       session.pinned = !session.pinned;
       renderSessionList();
       schedulePersist();
+    } else if (action === 'rename') {
+      const row = sessionListEl.querySelector(`.session-item .session-title`);
+      if (row) beginRenameSession(sid, row, 'session-title-input');
     } else if (action === 'restart') {
       await ipcRenderer.invoke('restart-session', sid);
     } else if (action === 'close') {
@@ -2032,9 +2078,14 @@ ipcRenderer.on('session-closed', (_e, { sessionId }) => {
 ipcRenderer.on('session-updated', (_e, { session }) => {
   if (!sessions.has(session.id)) return;
   const local = sessions.get(session.id);
-  // Merge server updates but keep local preview/status (managed by renderer)
   local.title = session.title;
+  if (session.cwd !== undefined) local.cwd = session.cwd;
+  if (session.unreadCount !== undefined) local.unreadCount = session.unreadCount;
+  if (session.lastMessageTime !== undefined) local.lastMessageTime = session.lastMessageTime;
+  if (session.lastOutputPreview !== undefined) local.lastOutputPreview = session.lastOutputPreview;
+  if (session.pinned !== undefined) local.pinned = session.pinned;
   renderSessionList();
+  updateActiveMetricsRow();
 });
 
 // --- Session persistence (dormant restore) ---

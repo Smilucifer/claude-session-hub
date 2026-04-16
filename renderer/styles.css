@@ -214,7 +214,63 @@ html, body {
   border-color: var(--text-secondary);
 }
 
-/* Resume / search modal */
+.terminal-title-input {
+  background: #161b22;
+  color: #f0f6fc;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 2px 8px;
+}
+
+.terminal-title-input:focus {
+  outline: none;
+  border-color: #58a6ff;
+  box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.2);
+}
+
+.session-title-input {
+  width: 100%;
+  min-width: 0;
+  background: #161b22;
+  color: #f0f6fc;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 2px 6px;
+  font: inherit;
+}
+
+.session-title-input:focus {
+  outline: none;
+  border-color: #58a6ff;
+  box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.18);
+}
+
+.metric-cwd {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+}
+
+.metric-cwd-input {
+  min-width: 280px;
+  max-width: min(60vw, 720px);
+  background: #161b22;
+  color: #f0f6fc;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 2px 8px;
+  font: inherit;
+}
+
+.metric-cwd-input:focus {
+  outline: none;
+  border-color: #58a6ff;
+  box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.18);
+}
+
 .modal-overlay {
   position: fixed;
   inset: 0;

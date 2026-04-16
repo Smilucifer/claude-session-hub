@@ -82,6 +82,10 @@ async function run() {
     const d = await evaluate('document.getElementById("new-session-menu").style.display');
     if (d !== 'block') throw new Error('display=' + d);
   });
+  await test('Context menu has Rename session item', async () => {
+    const r = await evaluate('document.querySelector("#context-menu [data-action=rename]") ? "OK" : "MISSING"');
+    if (r !== 'OK') throw new Error(r);
+  });
   await test('Menu has Claude Code option', async () => {
     const r = await evaluate('document.querySelector("[data-kind=claude]") ? "OK" : "MISSING"');
     if (r !== 'OK') throw new Error(r);
