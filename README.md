@@ -6,6 +6,15 @@
 
 ![主界面](docs/images/demo-main.png)
 
+## v0.1.1 更新
+
+- 新增项目内 JSON 默认工作路径配置：`config/session-hub.json`
+- 顶部工作路径支持直接点击编辑
+- `PowerShell` session 修改路径后会立即切换目录
+- 右键菜单新增 `Rename session`
+- 支持双击 session 标题内联重命名
+- 重启 session 时保留原工作路径
+
 ## 功能特性
 
 | 功能 | 说明 |
@@ -136,6 +145,15 @@ MIT
 > WeChat-style multi-session terminal manager for Claude Code on Windows. Manage all your AI coding sessions in one window.
 
 ![Main UI](docs/images/demo-main.png)
+
+## v0.1.1 Update
+
+- Added project-local JSON default working directory config: `config/session-hub.json`
+- Working directory in the header is now directly editable
+- `PowerShell` sessions switch directory immediately after cwd edit
+- Added `Rename session` to the context menu
+- Added double-click inline session renaming for session titles
+- Session restart now preserves the current working directory
 
 ## Features
 
