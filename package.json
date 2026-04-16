@@ -1,6 +1,6 @@
 {
   "name": "claude-session-hub",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Chat-style multi-session terminal manager for Claude Code",
   "main": "main.js",
   "scripts": {
@@ -58,6 +58,7 @@
       "renderer/**/*",
       "renderer-mobile/**/*",
       "scripts/**/*",
+      "config/**/*",
       "claude-wx.ico",
       "package.json"
     ],
