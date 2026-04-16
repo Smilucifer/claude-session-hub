@@ -35,11 +35,13 @@
     "electron-builder": "^26.0.0"
   },
   "build": {
+    "npmRebuild": false,
     "appId": "com.claude-session-hub",
     "productName": "Claude Session Hub",
     "win": {
       "target": "nsis",
-      "icon": "claude-wx.ico"
+      "icon": "claude-wx.ico",
+      "signAndEditExecutable": false
     },
     "nsis": {
       "oneClick": false,
