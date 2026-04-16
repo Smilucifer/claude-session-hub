@@ -444,10 +444,12 @@ function renderTeamRooms() {
 function selectTeamRoom(roomId) {
   activeSessionId = null;
   activeTeamRoomId = roomId;
-  document.getElementById('terminal-panel').style.display = 'none';
-  document.getElementById('empty-state').style.display = 'none';
+  const termPanel = document.getElementById('terminal-panel');
+  if (termPanel) termPanel.style.display = 'none';
+  const emptyState = document.getElementById('empty-state');
+  if (emptyState) emptyState.style.display = 'none';
   const trPanel = document.getElementById('team-room-panel');
-  trPanel.style.display = 'flex';
+  if (trPanel) trPanel.style.display = 'flex';
   if (typeof TeamRoom !== 'undefined' && TeamRoom.openRoom) {
     const room = teamRooms.find(r => r.id === roomId);
     TeamRoom.openRoom(roomId, room);
@@ -929,8 +931,10 @@ function startRename(sessionId, titleSpan) {
 function selectSession(id) {
   // Hide team room if showing
   activeTeamRoomId = null;
-  document.getElementById('team-room-panel').style.display = 'none';
-  document.getElementById('terminal-panel').style.display = '';
+  const trp = document.getElementById('team-room-panel');
+  if (trp) trp.style.display = 'none';
+  const tp = document.getElementById('terminal-panel');
+  if (tp) tp.style.display = '';
 
   const session = sessions.get(id);
   // Dormant session: clicking wakes it via resume-session IPC. Don't render
