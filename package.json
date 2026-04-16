@@ -9,7 +9,8 @@
     "test:mobile": "node tests/mobile/test-all.js",
     "test:mobile:auth": "node tests/mobile/test-auth.js",
     "test:mobile:rest": "node tests/mobile/test-rest.js",
-    "test:mobile:ws": "node tests/mobile/test-ws.js"
+    "test:mobile:ws": "node tests/mobile/test-ws.js",
+    "dist": "electron-builder --win"
   },
   "engines": {
     "node": ">=18"
@@ -30,6 +31,37 @@
     "ws": "^8.20.0"
   },
   "devDependencies": {
-    "electron": "^41.2.0"
+    "electron": "^41.2.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "com.claude-session-hub",
+    "productName": "Claude Session Hub",
+    "win": {
+      "target": "nsis",
+      "icon": "claude-wx.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "claude-wx.ico",
+      "uninstallerIcon": "claude-wx.ico",
+      "createDesktopShortcut": true
+    },
+    "files": [
+      "main.js",
+      "core/**/*",
+      "renderer/**/*",
+      "renderer-mobile/**/*",
+      "scripts/**/*",
+      "claude-wx.ico",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "scripts",
+        "to": "scripts"
+      }
+    ]
   }
 }
