@@ -625,6 +625,7 @@ ipcMain.handle('team:ask', async (event, roomId, message) => {
 app.on('before-quit', async () => {
   // Flush final state with cleanShutdown=true so next boot won't flag as crash.
   stateStore.save({ version: 1, cleanShutdown: true, sessions: lastPersistedSessions }, { sync: true });
+  try { teamBridge.cleanup(); } catch(e) {}
   if (mobileSrv) { try { await mobileSrv.close(); } catch {} }
 });
 

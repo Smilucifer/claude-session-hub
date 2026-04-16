@@ -60,7 +60,7 @@ class TeamBridge {
 
     // Timeout guard
     const timer = setTimeout(() => {
-      proc.kill('SIGTERM');
+      proc.kill();
       if (onEvent) onEvent('error', { message: 'Timeout after ' + timeout + 'ms' });
     }, timeout);
 
@@ -99,7 +99,7 @@ class TeamBridge {
 
   cleanup() {
     if (this._runningProc) {
-      this._runningProc.kill('SIGTERM');
+      this._runningProc.kill();
       this._runningProc = null;
     }
   }

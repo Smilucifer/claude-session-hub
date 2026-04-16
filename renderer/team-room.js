@@ -86,7 +86,7 @@ const TeamRoom = (() => {
       inputBox.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault();
-          sendMessage();
+          if (!sending) sendMessage();
         }
       });
     }
@@ -301,10 +301,14 @@ const TeamRoom = (() => {
 
   // --- Send Message ---
 
+  let sending = false;
+
   async function sendMessage() {
+    if (sending) return;
+    sending = true;
     const inputBox = $('tr-input-box');
     const sendBtn = $('tr-send-btn');
-    if (!inputBox || !currentRoomId) return;
+    if (!inputBox || !currentRoomId) { sending = false; return; }
 
     const text = inputBox.innerText.trim();
     if (!text) return;
@@ -353,6 +357,7 @@ const TeamRoom = (() => {
         threadEl.appendChild(errNote);
       }
     } finally {
+      sending = false;
       // Remove thinking indicator
       if (thinkingEl && thinkingEl.parentNode) {
         thinkingEl.parentNode.removeChild(thinkingEl);
