@@ -10,6 +10,86 @@ const stateStore = require('./core/state-store.js');
 const { createMobileServer } = require('./core/mobile-server.js');
 const mobileAuth = require('./core/mobile-auth.js');
 
+// Auto-deploy hook scripts + settings.json config on first launch.
+// Idempotent — skips if already present, never overwrites user's existing hooks.
+function ensureHooksDeployed() {
+  const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
+  const claudeDir = path.join(home, '.claude');
+  const scriptsDir = path.join(claudeDir, 'scripts');
+
+  // 1. Copy hook scripts if missing
+  const srcDir = app.isPackaged
+    ? path.join(process.resourcesPath, 'scripts')
+    : path.join(__dirname, 'scripts');
+
+  const scriptFiles = ['session-hub-hook.py', 'claude-hub-statusline.js'];
+  for (const file of scriptFiles) {
+    const dest = path.join(scriptsDir, file);
+    const src = path.join(srcDir, file);
+    if (!fs.existsSync(dest) && fs.existsSync(src)) {
+      fs.mkdirSync(scriptsDir, { recursive: true });
+      fs.copyFileSync(src, dest);
+      console.log(`[hub] deployed ${file} -> ${dest}`);
+    }
+  }
+
+  // 2. Merge hook config into settings.json if not present
+  const settingsPath = path.join(claudeDir, 'settings.json');
+  let settings = {};
+  try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch {}
+
+  const hookPyPath = path.join(scriptsDir, 'session-hub-hook.py').replace(/\\/g, '\\\\');
+  const statusJsPath = path.join(scriptsDir, 'claude-hub-statusline.js').replace(/\\/g, '/');
+
+  let changed = false;
+
+  // Ensure hooks object
+  if (!settings.hooks) settings.hooks = {};
+
+  // Stop hook
+  const stopCmd = `python "${hookPyPath}" stop`;
+  if (!settings.hooks.Stop) settings.hooks.Stop = [];
+  const hasStop = settings.hooks.Stop.some(entry =>
+    entry.hooks && entry.hooks.some(h => h.command && h.command.includes('session-hub-hook'))
+  );
+  if (!hasStop) {
+    settings.hooks.Stop.push({
+      matcher: '',
+      hooks: [{ type: 'command', command: stopCmd, timeout: 5 }]
+    });
+    changed = true;
+  }
+
+  // UserPromptSubmit hook
+  const promptCmd = `python "${hookPyPath}" prompt`;
+  if (!settings.hooks.UserPromptSubmit) settings.hooks.UserPromptSubmit = [];
+  const hasPrompt = settings.hooks.UserPromptSubmit.some(entry =>
+    entry.hooks && entry.hooks.some(h => h.command && h.command.includes('session-hub-hook'))
+  );
+  if (!hasPrompt) {
+    settings.hooks.UserPromptSubmit.push({
+      matcher: '',
+      hooks: [{ type: 'command', command: promptCmd, timeout: 5 }]
+    });
+    changed = true;
+  }
+
+  // Statusline
+  if (!settings.statusLine || !String(settings.statusLine.command || '').includes('claude-hub-statusline')) {
+    settings.statusLine = {
+      type: 'command',
+      command: `node "${statusJsPath}"`
+    };
+    changed = true;
+  }
+
+  if (changed) {
+    fs.mkdirSync(claudeDir, { recursive: true });
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+    console.log('[hub] settings.json updated with hook config');
+  }
+}
+
 // Find the project directory holding a given CC session's JSONL by globbing
 // ~/.claude/projects/<slug>/<ccSessionId>.jsonl across all project slugs.
 // Returns the full path, or null if not found.
@@ -486,6 +566,7 @@ function listenWithFallback() {
 }
 
 app.whenReady().then(async () => {
+  ensureHooksDeployed();
   hookPort = await listenWithFallback();
   if (hookPort) {
     console.log(`[hub] hook server listening on 127.0.0.1:${hookPort}`);
