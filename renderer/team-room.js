@@ -68,8 +68,8 @@ const TeamRoom = (() => {
     // Load characters once
     try {
       const chars = await ipcRenderer.invoke('team:loadCharacters');
-      if (Array.isArray(chars)) {
-        chars.forEach(ch => { characters[ch.id] = ch; });
+      if (chars && typeof chars === 'object') {
+        characters = chars;
       }
     } catch (e) {
       console.warn('[TeamRoom] loadCharacters failed:', e.message);
@@ -116,7 +116,7 @@ const TeamRoom = (() => {
     // Build members bar HTML
     const membersHtml = members.map(mid => {
       const ch = characters[mid];
-      const cli = ch ? (ch.cli || mid) : mid;
+      const cli = ch ? (ch.backing_cli || mid) : mid;
       const colorCls = avatarColor(cli);
       const name = charName(mid);
       const av = initials(name);
@@ -164,18 +164,18 @@ const TeamRoom = (() => {
         threadEl.appendChild(label);
       }
 
-      const t = evt.event_type || evt.type || '';
+      const t = evt.kind || '';
       if (t === 'message' || t === 'user_message') {
         appendMessage(threadEl, evt);
-      } else if (t === 'convergence' || t === 'pass_result') {
+      } else if (t === 'converged' || t === 'pass') {
         const label = document.createElement('div');
         label.className = 'tr-round-label';
-        const txt = t === 'convergence'
+        const txt = t === 'converged'
           ? `[收敛] ${evt.data ? JSON.stringify(evt.data).slice(0, 80) : ''}`
-          : `[Pass] ${evt.character_id || ''}: ${(evt.data && evt.data.decision) || ''}`;
+          : `[Pass] ${evt.actor || ''}: ${(evt.data && evt.data.decision) || ''}`;
         label.textContent = txt;
         threadEl.appendChild(label);
-      } else if (t === 'system' || t === 'error') {
+      } else if (t === 'system_note' || t === 'error') {
         const note = document.createElement('div');
         note.className = 'tr-system-note';
         note.textContent = evt.content || (evt.data ? JSON.stringify(evt.data) : t);
@@ -195,14 +195,14 @@ const TeamRoom = (() => {
 
   /** Render a single message bubble and append to container */
   function appendMessage(container, evt) {
-    const charId = evt.character_id || evt.author || 'user';
+    const charId = evt.actor || 'user';
     const ch = characters[charId];
-    const cli = ch ? (ch.cli || charId) : (charId === 'user' ? 'user' : charId);
+    const cli = ch ? (ch.backing_cli || charId) : (charId === 'user' ? 'user' : charId);
     const colorCls = avatarColor(cli);
     const name = charName(charId);
     const av = initials(name);
     const content = evt.content || (evt.data ? JSON.stringify(evt.data) : '');
-    const ts = formatTs(evt.timestamp || evt.created_at);
+    const ts = formatTs(evt.ts);
 
     const msgEl = document.createElement('div');
     msgEl.className = `tr-msg ${colorCls}`;
@@ -248,16 +248,13 @@ const TeamRoom = (() => {
     wikiTitle.textContent = 'Wiki';
     wikiSection.appendChild(wikiTitle);
 
-    if (wiki && typeof wiki === 'object' && Object.keys(wiki).length > 0) {
-      const entries = Array.isArray(wiki) ? wiki : Object.entries(wiki).map(([k, v]) => ({ title: k, body: v }));
-      for (const item of entries) {
+    if (wiki && Array.isArray(wiki) && wiki.length > 0) {
+      for (const item of wiki) {
         const el = document.createElement('div');
         el.className = 'tr-wiki-item';
-        const titleStr = item.title || item.key || '';
-        const bodyStr = typeof item.body === 'string' ? item.body : (item.value ? String(item.value) : JSON.stringify(item.body || {}));
         el.innerHTML = `
-          <div class="tr-wiki-item-title">${esc(titleStr)}</div>
-          <div class="tr-wiki-item-body">${esc(bodyStr)}</div>
+          <div class="tr-wiki-item-title">${esc(item.what || '')}</div>
+          <div class="tr-wiki-item-body">${esc(item.why || '')}</div>
         `;
         wikiSection.appendChild(el);
       }
@@ -281,7 +278,7 @@ const TeamRoom = (() => {
     for (const evt of recent) {
       const el = document.createElement('div');
       el.className = 'tr-event-item';
-      const typeStr = evt.event_type || evt.type || '?';
+      const typeStr = evt.kind || '?';
       const bodyStr = evt.content
         ? String(evt.content).slice(0, 60)
         : (evt.data ? JSON.stringify(evt.data).slice(0, 60) : '');
@@ -317,10 +314,10 @@ const TeamRoom = (() => {
     const threadEl = $('tr-thread');
     if (threadEl) {
       const fakeEvt = {
-        event_type: 'user_message',
-        character_id: 'user',
+        kind: 'message',
+        actor: 'user',
         content: text,
-        timestamp: Math.floor(Date.now() / 1000),
+        ts: Math.floor(Date.now() / 1000),
       };
       appendMessage(threadEl, fakeEvt);
       threadEl.scrollTop = threadEl.scrollHeight;
