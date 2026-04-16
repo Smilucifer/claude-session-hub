@@ -6,6 +6,7 @@
   <title>Claude Session Hub</title>
   <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css">
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="team-room.css">
 </head>
 <body>
   <div class="app-container" id="app-container">
@@ -46,6 +47,17 @@
         <div class="empty-state-hint">Click "+" to create a new session</div>
       </div>
     </div>
+    <div class="team-room-panel" id="team-room-panel" style="display:none">
+      <div class="tr-header" id="tr-header"></div>
+      <div class="tr-body">
+        <div class="tr-thread" id="tr-thread"></div>
+        <div class="tr-inspector" id="tr-inspector"></div>
+      </div>
+      <div class="tr-input" id="tr-input">
+        <div class="tr-input-box" id="tr-input-box" contenteditable="true" data-placeholder="输入消息... @team 或 @角色名"></div>
+        <button class="tr-send-btn" id="tr-send-btn" title="发送">▶</button>
+      </div>
+    </div>
     <div class="modal-overlay" id="resume-modal" style="display:none">
       <div class="modal">
         <div class="modal-header">
@@ -79,6 +91,7 @@
     </div>
   </div>
   <script src="renderer.js"></script>
+  <script src="team-room.js"></script>
 
   <div id="pair-modal" class="pair-modal-overlay hidden">
     <div class="pair-modal-content">
