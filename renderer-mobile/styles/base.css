@@ -1,7 +1,10 @@
-* { box-sizing: border-box; }
-html, body { margin: 0; height: 100%; background: #1a1d23; color: #e6e6e6; font-family: -apple-system, "Noto Sans SC", "PingFang SC", sans-serif; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; background: #1a1d23; color: #e6e6e6; font-family: -apple-system, "Noto Sans SC", "PingFang SC", sans-serif; }
 #app { height: 100vh; height: 100dvh; overflow: hidden; display: flex; flex-direction: column; }
 body { -webkit-tap-highlight-color: transparent; overscroll-behavior: contain; }
+/* Kill browser default focus glow on all inputs/buttons */
+input, textarea, button, select { outline: none; -webkit-appearance: none; }
+input:focus, textarea:focus { outline: none; }
 .hidden { display: none !important; }
 #toast-area { position: fixed; top: 10px; left: 10px; right: 10px; z-index: 999; }
 .toast { background: #e24a4a; color: white; padding: 10px 14px; border-radius: 6px; margin-bottom: 6px; }
