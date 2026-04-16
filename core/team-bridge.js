@@ -10,6 +10,7 @@ const DB_PATH = path.join(AI_TEAM_DIR, 'team.db');
 class TeamBridge {
   constructor() {
     this.baseDir = AI_TEAM_DIR;
+    this._runningProc = null;
   }
 
   isInitialized() {
@@ -18,66 +19,27 @@ class TeamBridge {
            fs.existsSync(path.join(this.baseDir, 'rooms'));
   }
 
-  // Load rooms via Python (avoids js-yaml dependency)
   async loadRooms() {
-    return this._pyQuery(`
-import yaml, json, os
-rooms = []
-room_dir = os.path.join(r'${this.baseDir.replace(/\\/g, '\\\\')}', 'rooms')
-for f in os.listdir(room_dir):
-    if f.endswith('.yaml'):
-        with open(os.path.join(room_dir, f), 'r', encoding='utf-8') as fh:
-            rooms.append(yaml.safe_load(fh))
-print(json.dumps(rooms, ensure_ascii=False))
-`);
+    return this._pyScript(['rooms']);
   }
 
   async loadCharacters() {
-    return this._pyQuery(`
-import yaml, json, os
-chars = {}
-char_dir = os.path.join(r'${this.baseDir.replace(/\\/g, '\\\\')}', 'characters')
-for f in os.listdir(char_dir):
-    if f.endswith('.yaml'):
-        with open(os.path.join(char_dir, f), 'r', encoding='utf-8') as fh:
-            d = yaml.safe_load(fh)
-            chars[d['id']] = d
-print(json.dumps(chars, ensure_ascii=False))
-`);
+    return this._pyScript(['characters']);
   }
 
   async getEvents(roomId, limit = 50) {
-    return this._pyQuery(`
-import json, sys, sqlite3
-conn = sqlite3.connect(r'${DB_PATH.replace(/\\/g, '\\\\')}')
-conn.row_factory = sqlite3.Row
-rows = conn.execute(
-    "SELECT id, actor, kind, content, mentions, ts FROM events WHERE room_id=? ORDER BY ts DESC LIMIT ?",
-    (${JSON.stringify(roomId)}, ${limit})
-).fetchall()
-events = [dict(r) for r in rows]
-events.reverse()
-print(json.dumps(events, ensure_ascii=False))
-conn.close()
-`);
+    if (typeof roomId !== 'string') throw new Error('roomId must be string');
+    if (!Number.isInteger(limit)) limit = 50;
+    return this._pyScript(['events', roomId, String(limit)]);
   }
 
   async getWiki(roomId) {
-    return this._pyQuery(`
-import json, sqlite3
-conn = sqlite3.connect(r'${DB_PATH.replace(/\\/g, '\\\\')}')
-conn.row_factory = sqlite3.Row
-rows = conn.execute(
-    "SELECT id, what, why, status, importance, contributed_by FROM room_facts WHERE room_id=? AND status='active' ORDER BY importance DESC",
-    (${JSON.stringify(roomId)},)
-).fetchall()
-print(json.dumps([dict(r) for r in rows], ensure_ascii=False))
-conn.close()
-`);
+    if (typeof roomId !== 'string') throw new Error('roomId must be string');
+    return this._pyScript(['wiki', roomId]);
   }
 
   // Spawn the full Python orchestrator for a @team question
-  askTeam(roomId, message, onEvent) {
+  askTeam(roomId, message, onEvent, timeout = 300000) {
     const env = Object.assign({}, process.env, {
       PYTHONUTF8: '1',
       CLAUDE_CODE_SKIP_HOOKS: '1',
@@ -93,6 +55,14 @@ conn.close()
       path.join(this.baseDir, 'integration_test.py'),
       message
     ], { cwd: this.baseDir, env, stdio: ['pipe', 'pipe', 'pipe'] });
+
+    this._runningProc = proc;
+
+    // Timeout guard
+    const timer = setTimeout(() => {
+      proc.kill('SIGTERM');
+      if (onEvent) onEvent('error', { message: 'Timeout after ' + timeout + 'ms' });
+    }, timeout);
 
     let stdout = '';
     proc.stdout.on('data', (data) => {
@@ -110,17 +80,35 @@ conn.close()
 
     return new Promise((resolve, reject) => {
       proc.on('close', (code) => {
+        clearTimeout(timer);
+        this._runningProc = null;
         if (onEvent) onEvent('done', { code });
-        resolve({ code, stderr });
+        if (code !== 0) {
+          reject(new Error(`Orchestrator exit ${code}: ${stderr.substring(0, 300)}`));
+        } else {
+          resolve({ code, stderr });
+        }
       });
-      proc.on('error', (err) => reject(err));
+      proc.on('error', (err) => {
+        clearTimeout(timer);
+        this._runningProc = null;
+        reject(err);
+      });
     });
   }
 
-  // Helper: run inline Python, parse JSON output
-  _pyQuery(code) {
+  cleanup() {
+    if (this._runningProc) {
+      this._runningProc.kill('SIGTERM');
+      this._runningProc = null;
+    }
+  }
+
+  // Helper: run bridge_query.py with given args, parse JSON output
+  _pyScript(args) {
+    const scriptPath = path.join(this.baseDir, 'ai_team', 'bridge_query.py');
     return new Promise((resolve, reject) => {
-      const proc = spawn('python', ['-c', code], {
+      const proc = spawn('python', [scriptPath, ...args], {
         env: Object.assign({}, process.env, { PYTHONUTF8: '1' }),
         stdio: ['pipe', 'pipe', 'pipe'],
       });
@@ -128,7 +116,7 @@ conn.close()
       proc.stdout.on('data', d => out += d.toString('utf-8'));
       proc.stderr.on('data', d => err += d.toString('utf-8'));
       proc.on('close', (code) => {
-        if (code !== 0) { reject(new Error(`Python exit ${code}: ${err.substring(0, 300)}`)); return; }
+        if (code !== 0) { reject(new Error(`bridge_query exit ${code}: ${err.substring(0, 300)}`)); return; }
         try { resolve(JSON.parse(out.trim())); }
         catch (e) { reject(new Error(`JSON parse: ${out.substring(0, 200)}`)); }
       });

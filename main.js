@@ -609,12 +609,17 @@ ipcMain.handle('team:loadCharacters', () => teamBridge.loadCharacters());
 ipcMain.handle('team:getEvents', (_, roomId, limit) => teamBridge.getEvents(roomId, limit));
 ipcMain.handle('team:getWiki', (_, roomId) => teamBridge.getWiki(roomId));
 ipcMain.handle('team:ask', async (event, roomId, message) => {
-  const result = await teamBridge.askTeam(roomId, message, (type, data) => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('team:event', { type, data });
-    }
-  });
-  return result;
+  try {
+    const result = await teamBridge.askTeam(roomId, message, (type, data) => {
+      const sender = event.sender;
+      if (sender && !sender.isDestroyed()) {
+        sender.send('team:event', { type, data });
+      }
+    });
+    return result;
+  } catch (e) {
+    return { code: 1, stderr: e.message, error: true };
+  }
 });
 
 app.on('before-quit', async () => {

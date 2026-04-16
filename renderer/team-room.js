@@ -9,6 +9,7 @@ const TeamRoom = (() => {
   let currentRoomConfig = null;
   let characters = {};    // id -> character object
   let thinkingEl = null;  // reference to thinking indicator DOM node
+  let streamHandler = null; // registered team:event listener (for cleanup on re-init)
 
   // DOM refs (resolved once DOM is ready)
   const $ = id => document.getElementById(id);
@@ -90,11 +91,12 @@ const TeamRoom = (() => {
       });
     }
 
-    // Stream events from main process
-    ipcRenderer.on('team:event', (_event, { type, data }) => {
-      console.log('[TeamRoom] stream event:', type, data);
-      // Live streaming not needed for now — we refresh after askTeam resolves
-    });
+    // Stream events — register once, remove old handler if re-init
+    if (streamHandler) ipcRenderer.removeListener('team:event', streamHandler);
+    streamHandler = (_event, payload) => {
+      console.log('[TeamRoom] stream:', payload.type);
+    };
+    ipcRenderer.on('team:event', streamHandler);
   }
 
   // --- Open Room ---
