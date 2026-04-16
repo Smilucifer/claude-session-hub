@@ -391,6 +391,67 @@ function renderSessionList() {
     sessionListEl.appendChild(div);
   }
   sessionListEl.scrollTop = savedScrollTop;
+  renderTeamRooms();
+}
+
+// --- AI Team Room sidebar ---
+let teamRooms = [];
+let activeTeamRoomId = null;
+
+async function loadTeamRooms() {
+  try {
+    const initialized = await ipcRenderer.invoke('team:isInitialized');
+    if (!initialized) { teamRooms = []; return; }
+    teamRooms = await ipcRenderer.invoke('team:loadRooms');
+  } catch (e) {
+    console.warn('[team] loadRooms failed:', e.message);
+    teamRooms = [];
+  }
+}
+
+function renderTeamRooms() {
+  const old = sessionListEl.querySelectorAll('.team-divider, .team-section-label, .session-item.team-room');
+  old.forEach(el => el.remove());
+  if (teamRooms.length === 0) return;
+
+  const divider = document.createElement('div');
+  divider.className = 'team-divider';
+  sessionListEl.appendChild(divider);
+
+  const label = document.createElement('div');
+  label.className = 'team-section-label';
+  label.textContent = 'AI Team Rooms';
+  sessionListEl.appendChild(label);
+
+  for (const room of teamRooms) {
+    const div = document.createElement('div');
+    div.className = 'session-item team-room' + (activeTeamRoomId === room.id ? ' selected' : '');
+    div.innerHTML = `
+      <div class="session-item-header">
+        <span class="session-title"><span class="session-status running"></span>${escapeHtml(room.display_name || room.id)}</span>
+        <span class="session-header-right">
+          <span class="session-time">${room.task_mode || 'natural'}</span>
+        </span>
+      </div>
+      <div class="session-preview">${escapeHtml((room.members || []).join(', '))}</div>
+    `;
+    div.addEventListener('click', () => selectTeamRoom(room.id));
+    sessionListEl.appendChild(div);
+  }
+}
+
+function selectTeamRoom(roomId) {
+  activeSessionId = null;
+  activeTeamRoomId = roomId;
+  document.getElementById('terminal-panel').style.display = 'none';
+  document.getElementById('empty-state').style.display = 'none';
+  const trPanel = document.getElementById('team-room-panel');
+  trPanel.style.display = 'flex';
+  if (typeof TeamRoom !== 'undefined' && TeamRoom.openRoom) {
+    const room = teamRooms.find(r => r.id === roomId);
+    TeamRoom.openRoom(roomId, room);
+  }
+  renderSessionList();
 }
 
 // --- Terminal management ---
@@ -865,6 +926,11 @@ function startRename(sessionId, titleSpan) {
 
 // --- Session selection ---
 function selectSession(id) {
+  // Hide team room if showing
+  activeTeamRoomId = null;
+  document.getElementById('team-room-panel').style.display = 'none';
+  document.getElementById('terminal-panel').style.display = '';
+
   const session = sessions.get(id);
   // Dormant session: clicking wakes it via resume-session IPC. Don't render
   // terminal now — session-created handler below will take over once PTY is up.
@@ -2238,3 +2304,5 @@ if (document.readyState === 'loading') {
 } else {
   initMobilePair();
 }
+
+loadTeamRooms();
