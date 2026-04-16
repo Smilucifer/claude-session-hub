@@ -105,7 +105,7 @@ foreach ($sz in $sizes) {
     $ms.Dispose()
 }
 
-$icoPath = "C:\Users\lintian\claude-session-hub\claude-wx.ico"
+$icoPath = Join-Path $PSScriptRoot "claude-wx.ico"
 $fs = [System.IO.File]::Create($icoPath)
 $bw = New-Object System.IO.BinaryWriter $fs
 
@@ -141,9 +141,9 @@ Write-Host "Icon written: $icoPath ($($entries.Count) sizes: $($sizes -join '/')
 $lnkPath = "$env:USERPROFILE\Desktop\claudeWX.lnk"
 $shell = New-Object -ComObject WScript.Shell
 $s = $shell.CreateShortcut($lnkPath)
-$s.TargetPath        = "C:\Users\lintian\claude-session-hub\node_modules\electron\dist\electron.exe"
-$s.Arguments         = '"C:\Users\lintian\claude-session-hub"'
-$s.WorkingDirectory  = "C:\Users\lintian\claude-session-hub"
+$s.TargetPath        = Join-Path $PSScriptRoot "node_modules\electron\dist\electron.exe"
+$s.Arguments         = "`"$PSScriptRoot`""
+$s.WorkingDirectory  = $PSScriptRoot
 $s.IconLocation      = "$icoPath,0"
 $s.WindowStyle       = 7
 $s.Description       = "Claude Session Hub"
