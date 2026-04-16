@@ -8,8 +8,8 @@
 .quick-bar button { background: #2e323a; color: #e6e6e6; border: 1px solid #3a3f47; border-radius: 4px; padding: 6px 10px; font-size: 12px; white-space: nowrap; cursor: pointer; }
 .quick-bar button:active { background: #3a3f47; }
 .input-bar { display: flex; gap: 6px; padding: 8px; border-top: 1px solid #2e323a; background: #1f2228; padding-bottom: max(8px, env(safe-area-inset-bottom)); }
-.input-bar textarea { flex: 1; resize: none; background: #2e323a; color: #e6e6e6; border: 1px solid #3a3f47; border-radius: 6px; padding: 8px 10px; font-size: 15px; font-family: inherit; outline: none; -webkit-appearance: none; }
-.input-bar textarea:focus { border-color: #4a90e2; }
+.input-bar textarea { flex: 1; resize: none; background: #2e323a; color: #e6e6e6; border: 1px solid #3a3f47; border-radius: 6px; padding: 8px 10px; font-size: 15px; font-family: inherit; outline: none !important; -webkit-appearance: none; box-shadow: none !important; }
+.input-bar textarea:focus { border-color: #3a3f47; outline: none !important; box-shadow: none !important; }
 #send-btn { background: #4a90e2; color: white; border: 0; padding: 0 16px; border-radius: 6px; cursor: pointer; font-weight: 500; }
 #send-btn:active { background: #3a80d2; }
 
