@@ -4,7 +4,7 @@
 
 > 类微信风格的 Claude Code 多会话终端管理器，在一个窗口里管理所有 AI 编程会话。
 
-![主界面](docs/images/main-ui.png)
+![主界面](docs/images/demo-main.png)
 
 ## 功能特性
 
@@ -60,14 +60,17 @@ cd claude-session-hub
 
 ### 侧栏
 
+![侧栏细节](docs/images/demo-sidebar.png)
+
 侧栏显示所有会话列表，每个会话包含：
 - **会话标题** — 自动从对话内容提取
 - **最后消息预览** — 显示最近一条用户输入
 - **时间戳** — 最后活动时间
 - **Context 徽章** — `Ctx XX%` 显示上下文使用率（绿 <70% / 橙 70-85% / 红 >85%）
 - **未读计数** — 红色角标显示未读 AI 回复数
+- **Burn Rate** — 高消耗会话显示 `🔥 X%/h` 估算每小时用量
 
-侧栏顶部显示 5 小时和 7 天的用量进度条。
+侧栏顶部显示 5 小时和 7 天的用量进度条。休眠会话以半透明显示，点击即可恢复。
 
 ### 右键菜单
 
@@ -77,6 +80,8 @@ cd claude-session-hub
 - **Close** — 关闭会话
 
 ## 快捷键
+
+![快捷键](docs/images/demo-shortcuts.png)
 
 | 快捷键 | 功能 |
 |--------|------|
@@ -130,7 +135,7 @@ MIT
 
 > WeChat-style multi-session terminal manager for Claude Code on Windows. Manage all your AI coding sessions in one window.
 
-![Main UI](docs/images/main-ui.png)
+![Main UI](docs/images/demo-main.png)
 
 ## Features
 
