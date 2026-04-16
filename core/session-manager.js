@@ -4,6 +4,9 @@ const { EventEmitter } = require('events');
 
 const RING_BUFFER_BYTES = 8192;
 
+// Default proxy for Claude sessions. Change if your proxy differs.
+const CLAUDE_PROXY = 'http://127.0.0.1:7890';
+
 class SessionManager extends EventEmitter {
   sessions = new Map();
   focusedSessionId = null;
@@ -51,8 +54,8 @@ class SessionManager extends EventEmitter {
       delete sessionEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL;
       // Force Clash proxy — don't rely on how Electron was launched.
       // User's hard rule: all CLI calls must go through 127.0.0.1:7890.
-      sessionEnv.HTTP_PROXY = 'http://127.0.0.1:7890';
-      sessionEnv.HTTPS_PROXY = 'http://127.0.0.1:7890';
+      sessionEnv.HTTP_PROXY = CLAUDE_PROXY;
+      sessionEnv.HTTPS_PROXY = CLAUDE_PROXY;
       sessionEnv.NO_PROXY = 'localhost,127.0.0.1';
       // Attribution + auth for the Stop/UserPromptSubmit hook script
       sessionEnv.CLAUDE_HUB_SESSION_ID = id;
