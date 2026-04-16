@@ -403,6 +403,7 @@ async function loadTeamRooms() {
     const initialized = await ipcRenderer.invoke('team:isInitialized');
     if (!initialized) { teamRooms = []; return; }
     teamRooms = await ipcRenderer.invoke('team:loadRooms');
+    renderTeamRooms(); // Re-render after async load completes
   } catch (e) {
     console.warn('[team] loadRooms failed:', e.message);
     teamRooms = [];
