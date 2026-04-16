@@ -599,6 +599,24 @@ app.whenReady().then(async () => {
   }
 });
 
+// --- AI Team Room IPC ---
+const { TeamBridge } = require('./core/team-bridge.js');
+const teamBridge = new TeamBridge();
+
+ipcMain.handle('team:isInitialized', () => teamBridge.isInitialized());
+ipcMain.handle('team:loadRooms', () => teamBridge.loadRooms());
+ipcMain.handle('team:loadCharacters', () => teamBridge.loadCharacters());
+ipcMain.handle('team:getEvents', (_, roomId, limit) => teamBridge.getEvents(roomId, limit));
+ipcMain.handle('team:getWiki', (_, roomId) => teamBridge.getWiki(roomId));
+ipcMain.handle('team:ask', async (event, roomId, message) => {
+  const result = await teamBridge.askTeam(roomId, message, (type, data) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('team:event', { type, data });
+    }
+  });
+  return result;
+});
+
 app.on('before-quit', async () => {
   // Flush final state with cleanShutdown=true so next boot won't flag as crash.
   stateStore.save({ version: 1, cleanShutdown: true, sessions: lastPersistedSessions }, { sync: true });
