@@ -4,17 +4,17 @@ const path = require('path');
 const { WebSocketServer, WebSocket } = require('ws');  // ← note WebSocket import (Fix 3)
 const auth = require('./mobile-auth.js');
 const protocol = require('./mobile-protocol.js');
-const { createRouter } = require('./mobile-routes.js');
+const { createRouter, mergeAllSessions } = require('./mobile-routes.js');
 
 const PORT_RANGE = [3470, 3471, 3472, 3473, 3474, 3475, 3476, 3477, 3478, 3479];
 
-async function createMobileServer({ sessionManager, preferredPort = 3470 }) {
+async function createMobileServer({ sessionManager, preferredPort = 3470, getDormantSessions }) {
   const app = express();
   const pwaRoot = path.join(__dirname, '..', 'renderer-mobile');
   app.use(express.static(pwaRoot, { index: 'index.html', extensions: ['html'] }));
   app.use('/vendor/xterm', express.static(path.join(__dirname, '..', 'node_modules', '@xterm', 'xterm', 'lib')));
   app.use('/vendor/xterm-css', express.static(path.join(__dirname, '..', 'node_modules', '@xterm', 'xterm', 'css')));
-  app.use('/api', createRouter({ sessionManager, authModule: auth }));
+  app.use('/api', createRouter({ sessionManager, authModule: auth, getDormantSessions }));
 
   const server = http.createServer(app);
   const wss = new WebSocketServer({ noServer: true });
@@ -69,7 +69,7 @@ async function createMobileServer({ sessionManager, preferredPort = 3470 }) {
     const entry = { ws, state };
     clients.add(entry);
 
-    ws.send(protocol.encode({ type: 'session-list', sessions: sessionManager.listSessions() }));
+    ws.send(protocol.encode({ type: 'session-list', sessions: mergeAllSessions(sessionManager, getDormantSessions) }));
 
     ws.on('message', (buf) => {
       const msg = protocol.decode(buf.toString());

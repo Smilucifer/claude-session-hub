@@ -1,6 +1,28 @@
 const express = require('express');
 
-function createRouter({ sessionManager, authModule }) {
+// Merge active PTY sessions with dormant (state.json) sessions.
+// Active wins on id collision. Dormant entries get { dormant: true }.
+function mergeAllSessions(sessionManager, getDormantSessions) {
+  const active = sessionManager.listSessions();
+  const activeIds = new Set(active.map(s => s.id));
+  const dormant = (typeof getDormantSessions === 'function' ? getDormantSessions() : [])
+    .filter(d => d.hubId && !activeIds.has(d.hubId))
+    .map(d => ({
+      id: d.hubId,
+      title: d.title,
+      kind: d.kind,
+      cwd: d.cwd,
+      pinned: d.pinned,
+      ccSessionId: d.ccSessionId,
+      lastMessageTime: d.lastMessageTime,
+      lastOutputPreview: d.lastOutputPreview,
+      unreadCount: d.unreadCount || 0,
+      dormant: true,
+    }));
+  return [...active, ...dormant];
+}
+
+function createRouter({ sessionManager, authModule, getDormantSessions }) {
   const r = express.Router();
 
   async function guard(req, res, next) {
@@ -19,7 +41,7 @@ function createRouter({ sessionManager, authModule }) {
   });
 
   r.get('/sessions', guard, (_req, res) => {
-    res.json({ sessions: sessionManager.listSessions() });
+    res.json({ sessions: mergeAllSessions(sessionManager, getDormantSessions) });
   });
 
   r.get('/sessions/:id/buffer', guard, (req, res) => {
@@ -55,4 +77,4 @@ function createRouter({ sessionManager, authModule }) {
   return r;
 }
 
-module.exports = { createRouter };
+module.exports = { createRouter, mergeAllSessions };

@@ -498,7 +498,11 @@ app.whenReady().then(async () => {
   // not fatal: global.__mobileSrv stays null and session-manager falls back to
   // port 3470 as a best-effort default.
   try {
-    mobileSrv = await createMobileServer({ sessionManager, preferredPort: 3470 });
+    mobileSrv = await createMobileServer({
+      sessionManager,
+      preferredPort: 3470,
+      getDormantSessions: () => lastPersistedSessions,
+    });
     console.log(`[mobile] listening on :${mobileSrv.port}`);
     global.__mobileSrv = mobileSrv;
   } catch (e) {
