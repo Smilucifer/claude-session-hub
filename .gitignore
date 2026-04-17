@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .superpowers/
+.worktrees/
 
 # Ad-hoc diagnostic probes + experiment files (not part of the product)
 _probe-*.js
