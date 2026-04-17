@@ -976,6 +976,10 @@ document.addEventListener('mousedown', (e) => {
 for (const btn of document.querySelectorAll('.new-session-option')) {
   btn.addEventListener('click', async () => {
     menuEl.style.display = 'none';
+    if (btn.dataset.kind === 'team-room') {
+      openCreateRoomModal();
+      return;
+    }
     await ipcRenderer.invoke('create-session', btn.dataset.kind);
   });
 }
@@ -1002,6 +1006,82 @@ function openResumeModal() {
 function closeResumeModal() {
   resumeModalEl.style.display = 'none';
 }
+
+// --- Create Team Room modal ---
+const createRoomModalEl = document.getElementById('create-room-modal');
+const createRoomNameEl = document.getElementById('create-room-name');
+const createRoomMembersEl = document.getElementById('create-room-members');
+const createRoomConfirmEl = document.getElementById('create-room-confirm');
+
+async function openCreateRoomModal() {
+  createRoomModalEl.style.display = 'flex';
+  createRoomNameEl.value = '';
+  createRoomConfirmEl.disabled = true;
+  createRoomConfirmEl.textContent = '创建';
+  createRoomMembersEl.innerHTML = '';
+
+  try {
+    const chars = await ipcRenderer.invoke('team:loadCharacters');
+    const charEntries = Object.entries(chars || {});
+    for (const [id, ch] of charEntries) {
+      const label = document.createElement('label');
+      label.style.cssText = 'display:flex;align-items:center;gap:8px;color:var(--text-primary);font-size:14px;cursor:pointer';
+      label.innerHTML = `<input type="checkbox" class="create-room-cb" data-char-id="${escapeHtml(id)}" checked>
+        ${escapeHtml(ch.display_name || id)} <span style="color:var(--text-secondary);font-size:12px">(${escapeHtml(ch.backing_cli || '')})</span>`;
+      createRoomMembersEl.appendChild(label);
+    }
+  } catch (e) {
+    createRoomMembersEl.innerHTML = '<div style="color:var(--text-secondary)">无法加载角色列表</div>';
+  }
+
+  requestAnimationFrame(() => createRoomNameEl.focus());
+}
+
+function closeCreateRoomModal() {
+  createRoomModalEl.style.display = 'none';
+}
+
+async function submitCreateRoom() {
+  const name = createRoomNameEl.value.trim();
+  if (!name) return;
+  const memberIds = [...document.querySelectorAll('.create-room-cb:checked')]
+    .map(cb => cb.dataset.charId);
+  if (memberIds.length === 0) return;
+
+  createRoomConfirmEl.disabled = true;
+  createRoomConfirmEl.textContent = '创建中...';
+
+  try {
+    const result = await ipcRenderer.invoke('team:createRoom', name, memberIds);
+    closeCreateRoomModal();
+    await loadTeamRooms();
+    if (result && result.id) {
+      selectTeamRoom(result.id);
+    }
+  } catch (e) {
+    console.error('[create-room] failed:', e.message);
+    createRoomConfirmEl.textContent = '失败，重试';
+    createRoomConfirmEl.disabled = false;
+  }
+}
+
+createRoomNameEl.addEventListener('input', () => {
+  createRoomConfirmEl.disabled = !createRoomNameEl.value.trim();
+  createRoomConfirmEl.textContent = '创建';
+});
+
+createRoomNameEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !createRoomConfirmEl.disabled) submitCreateRoom();
+  if (e.key === 'Escape') closeCreateRoomModal();
+});
+
+createRoomConfirmEl.addEventListener('click', submitCreateRoom);
+document.getElementById('create-room-cancel').addEventListener('click', closeCreateRoomModal);
+document.getElementById('create-room-close').addEventListener('click', closeCreateRoomModal);
+
+createRoomModalEl.addEventListener('mousedown', (e) => {
+  if (e.target === createRoomModalEl) closeCreateRoomModal();
+});
 
 function renderResumeList(items) {
   if (!items || items.length === 0) {
