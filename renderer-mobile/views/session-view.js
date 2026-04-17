@@ -71,11 +71,47 @@ export function renderSessionView(root, transport, sessionId, onBack) {
       if (cols !== term.cols || rows !== term.rows) term.resize(cols, rows);
     } catch {}
   }
-  // TUI prompt hiding is done purely via CSS (nth-last-child opacity fade).
-  // No scrollLines hack — it causes visible jank on every write.
   setTimeout(fitTerminal, 50);
   setTimeout(fitTerminal, 300);
   window.addEventListener('resize', fitTerminal);
+
+  // Hide Claude TUI chrome (prompt, bypass-permissions, token counter,
+  // separator lines, session tab labels) by scanning ALL visible xterm rows
+  // and zeroing opacity on rows matching TUI patterns. xterm DOM renderer
+  // only creates divs for visible viewport rows (~40), so full scan is cheap.
+  const TUI_PATTERNS = [
+    /bypass permissions/i,
+    /tab to cycle/i,           // wrap fragment of "shift+tab to cycle)"
+    /new task\?/i,
+    /\/clear to save/i,
+    /how is claude doing/i,
+    /\d+:\s*(Bad|Fine|Good|Dismiss)/,  // feedback prompt options
+    /^\d*k?\s*tokens?\s*$/i,           // wrap fragment of "save 409k tokens"
+    /─{2,}/,                   // 2+ box-drawing dashes (U+2500) = separator / tab line
+    /^[─━═┈┉⎯⏵⏴\s]+$/,       // entire line is separators
+  ];
+  let tuiHideScheduled = false;
+  function hideTuiRows() {
+    tuiHideScheduled = false;
+    const rowsEl = termHost.querySelector('.xterm-rows');
+    if (!rowsEl) return;
+    for (const row of rowsEl.children) {
+      const trimmed = row.textContent.trim();
+      const isTui = (
+        trimmed === '>' ||
+        trimmed === '❯' ||
+        TUI_PATTERNS.some(p => p.test(trimmed))
+      );
+      row.style.opacity = isTui ? '0' : '';
+    }
+  }
+  function scheduleHideTui() {
+    if (!tuiHideScheduled) { tuiHideScheduled = true; requestAnimationFrame(hideTuiRows); }
+  }
+  const tuiObserver = new MutationObserver(scheduleHideTui);
+  const rowsContainer = termHost.querySelector('.xterm-rows');
+  if (rowsContainer) tuiObserver.observe(rowsContainer, { childList: true, subtree: true, characterData: true });
+  setTimeout(hideTuiRows, 200);
 
   // Connection status indicator
   function setConn(ok) {
@@ -145,6 +181,7 @@ export function renderSessionView(root, transport, sessionId, onBack) {
 
   return {
     destroy() {
+      tuiObserver.disconnect();
       window.removeEventListener('resize', fitTerminal);
       transport.unsubscribe(sessionId);
       transport.removeEventListener('msg', onMsg);
