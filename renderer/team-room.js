@@ -275,15 +275,37 @@ const TeamRoom = (() => {
     const sendBtn = $('tr-send-btn');
     if (sendBtn) sendBtn.addEventListener('click', sendMessage);
 
-    // Enter key in input box (Shift+Enter = newline)
+    // Input box event bindings
     const inputBox = $('tr-input-box');
     if (inputBox) {
+      // @mention autocomplete: detect on every input change
+      inputBox.addEventListener('input', () => detectMention());
+
+      // Keydown: mention navigation takes priority, then Enter to send
       inputBox.addEventListener('keydown', (e) => {
+        // Let mention handler intercept arrow/enter/tab/escape first
+        if (mentionState.active) {
+          onMentionKeydown(e);
+          if (e.defaultPrevented) return;
+        }
         if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault();
           if (!sending) sendMessage();
         }
       });
+
+      // Click on mention popup items
+      const popup = $('tr-mention-popup');
+      if (popup) {
+        popup.addEventListener('mousedown', (e) => {
+          const item = e.target.closest('.tr-mention-item');
+          if (item) {
+            e.preventDefault();
+            mentionState.selectedIdx = parseInt(item.dataset.idx || '0', 10);
+            commitMention();
+          }
+        });
+      }
     }
 
     // Stream events — register once, remove old handler if re-init
