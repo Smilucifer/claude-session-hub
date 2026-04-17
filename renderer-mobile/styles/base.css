@@ -2,14 +2,20 @@
 html, body { height: 100%; background: #1a1d23; color: #e6e6e6; font-family: -apple-system, "Noto Sans SC", "PingFang SC", sans-serif; }
 #app { height: 100vh; height: 100dvh; overflow: hidden; display: flex; flex-direction: column; }
 body { -webkit-tap-highlight-color: transparent; overscroll-behavior: contain; }
-/* Kill browser default focus glow — Huawei ArkWeb uses box-shadow */
+/* Kill ALL focus outlines — catch-all for every element including xterm internals */
+*:focus, *:focus-visible, *:focus-within {
+  outline: none !important;
+  outline-width: 0 !important;
+  box-shadow: none !important;
+  -webkit-tap-highlight-color: transparent !important;
+}
 input, textarea, button, select {
   outline: none !important;
   -webkit-appearance: none !important;
   -webkit-tap-highlight-color: transparent;
   box-shadow: none !important;
 }
-input:focus, textarea:focus, button:focus {
+input:focus, textarea:focus, button:focus, select:focus {
   outline: none !important;
   box-shadow: none !important;
 }

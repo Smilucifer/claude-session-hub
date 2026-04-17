@@ -1,4 +1,4 @@
-const CACHE = 'csh-mobile-v2';
+const CACHE = 'csh-mobile-v3';
 const ASSETS = ['/', '/index.html', '/app.js', '/router.js', '/transport.js',
                 '/views/session-list.js', '/views/session-view.js', '/views/permission-card.js',
                 '/styles/base.css', '/styles/list.css', '/styles/session.css', '/styles/responsive.css',
