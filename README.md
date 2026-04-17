@@ -11,6 +11,7 @@
 - 新增项目内 JSON 默认工作路径配置：`config/session-hub.json`
 - 顶部工作路径支持直接点击编辑
 - `PowerShell` session 修改路径后会立即切换目录
+- 新增 `PowerShell (Admin)` 快捷入口，可直接弹出 UAC 启动管理员 PowerShell
 - 右键菜单新增 `Rename session`
 - 支持双击 session 标题内联重命名
 - 重启 session 时保留原工作路径
@@ -64,6 +65,8 @@ cd claude-session-hub
 1. 双击桌面 **Claude Hub** 快捷方式
 2. 按 **Ctrl+N** 新建 Claude 会话
 3. 首次使用需在终端内输入 `/login` 登录你的 Claude 账号（登录一次后续自动生效）
+
+`PowerShell (Admin)` 会打开一个独立的管理员 PowerShell 窗口，不会作为 Hub 内嵌 session 出现在侧栏中。
 
 ## 界面说明
 
@@ -151,6 +154,7 @@ MIT
 - Added project-local JSON default working directory config: `config/session-hub.json`
 - Working directory in the header is now directly editable
 - `PowerShell` sessions switch directory immediately after cwd edit
+- Added a `PowerShell (Admin)` shortcut that opens an elevated PowerShell via UAC
 - Added `Rename session` to the context menu
 - Added double-click inline session renaming for session titles
 - Session restart now preserves the current working directory
@@ -204,6 +208,8 @@ The installer will:
 1. Double-click the **Claude Hub** desktop shortcut
 2. Press **Ctrl+N** to create your first Claude session
 3. Type `/login` in the terminal to authenticate (one-time setup)
+
+`PowerShell (Admin)` opens a separate elevated PowerShell window and does not appear as an in-app Hub session in the sidebar.
 
 ## Keyboard Shortcuts
 

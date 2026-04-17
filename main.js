@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain, clipboard, nativeImage, Notification, shell } = require('electron');
+const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -219,6 +220,64 @@ const sessionManager = new SessionManager({
 });
 sessionManager.hookToken = HOOK_TOKEN;  // port set after listen
 
+function escapePowerShellSingleQuoted(value) {
+  return String(value || '').replace(/'/g, "''");
+}
+
+function normalizeAdminLaunchCwd(cwd, exists = fs.existsSync, fallback = (process.env.USERPROFILE || process.env.HOME || os.homedir())) {
+  if (cwd && exists(cwd)) return cwd;
+  return fallback;
+}
+
+function launchAdminPowerShell({ cwd, spawnProcess = spawn } = {}) {
+  const safeCwd = normalizeAdminLaunchCwd(cwd);
+  const escapedCwd = escapePowerShellSingleQuoted(safeCwd);
+  const innerCommand = `Set-Location -LiteralPath '${escapedCwd}'`;
+  const command = `Start-Process powershell.exe -Verb RunAs -ArgumentList '-NoExit','-Command',\"${innerCommand}\"`;
+
+  return new Promise((resolve) => {
+    let stderr = '';
+    const child = spawnProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
+      windowsHide: true,
+    });
+    if (child.stderr) {
+      child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    }
+    child.on('error', (error) => {
+      resolve({ ok: false, action: 'failed', error: error.message });
+    });
+    child.on('close', (code) => {
+      const text = stderr.trim();
+      if (code === 0) return resolve({ ok: true, action: 'launched' });
+      if (/cancel/i.test(text)) return resolve({ ok: true, action: 'cancelled' });
+      resolve({ ok: false, action: 'failed', error: text || `exit code ${code}` });
+    });
+  });
+}
+
+function createSessionHandler({
+  sessionManager: localSessionManager = sessionManager,
+  sendToRenderer: localSendToRenderer = sendToRenderer,
+  launchAdminPowerShell: localLaunchAdminPowerShell = launchAdminPowerShell,
+  getDefaultWorkingDirectory: localGetDefaultWorkingDirectory = () => appConfig.getDefaultWorkingDirectory(),
+} = {}) {
+  return async (_e, arg) => {
+    let kind, opts;
+    if (typeof arg === 'string') { kind = arg; opts = {}; }
+    else if (arg && typeof arg === 'object') { kind = arg.kind; opts = arg.opts || {}; }
+    else { kind = 'powershell'; opts = {}; }
+
+    if (kind === 'powershell-admin') {
+      const cwd = localGetDefaultWorkingDirectory();
+      return await localLaunchAdminPowerShell({ cwd });
+    }
+
+    const session = localSessionManager.createSession(kind, opts);
+    localSendToRenderer('session-created', { session });
+    return session;
+  };
+}
+
 // NOTE: Don't call app.setAppUserModelId here. Setting an AUMID without also
 // registering an icon resource for that AUMID (or matching it on the launcher
 // .lnk) decouples the running process from the launching shortcut, and Windows
@@ -273,17 +332,7 @@ sessionManager.onSessionClosed = (sessionId) => {
   sendToRenderer('session-closed', { sessionId });
 };
 
-ipcMain.handle('create-session', (_e, arg) => {
-  // Back-compat: legacy callers pass just a `kind` string. New callers pass
-  // `{ kind, opts }` so they can request `resumeCCSessionId` / custom cwd / etc.
-  let kind, opts;
-  if (typeof arg === 'string') { kind = arg; opts = {}; }
-  else if (arg && typeof arg === 'object') { kind = arg.kind; opts = arg.opts || {}; }
-  else { kind = 'powershell'; opts = {}; }
-  const session = sessionManager.createSession(kind, opts);
-  sendToRenderer('session-created', { session });
-  return session;
-});
+ipcMain.handle('create-session', createSessionHandler());
 
 // Archive scanner: enumerate past Claude Code sessions for the Resume picker.
 const sessionArchive = require('./core/session-archive.js');
@@ -443,6 +492,11 @@ ipcMain.handle('get-hook-status', () => ({
   up: hookPort !== null,
   port: hookPort,
 }));
+
+// Debug-only IPC for local E2E. Exposes the current ephemeral hook token so
+// the test harness can exercise authenticated hook endpoints without hardcoding
+// internals into the test process.
+ipcMain.handle('debug:get-hook-token', () => HOOK_TOKEN);
 
 // Ctrl+click on a file path in the terminal routes here. shell.openPath
 // launches the OS default handler (.md → markdown viewer, .png → image
@@ -630,3 +684,12 @@ app.on('window-all-closed', () => {
   sessionManager.dispose();
   app.quit();
 });
+
+if (typeof module !== 'undefined') {
+  module.exports = {
+    launchAdminPowerShell,
+    escapePowerShellSingleQuoted,
+    normalizeAdminLaunchCwd,
+    createSessionHandler,
+  };
+}

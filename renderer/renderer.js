@@ -946,10 +946,32 @@ document.addEventListener('mousedown', (e) => {
   if (!wrapperEl.contains(e.target)) menuEl.style.display = 'none';
 });
 
+function showLaunchFeedback(message) {
+  let banner = document.getElementById('launch-feedback-banner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'launch-feedback-banner';
+    banner.className = 'hook-status-banner';
+    document.querySelector('.session-sidebar').prepend(banner);
+  }
+  banner.textContent = message;
+  clearTimeout(showLaunchFeedback._timer);
+  showLaunchFeedback._timer = setTimeout(() => {
+    const current = document.getElementById('launch-feedback-banner');
+    if (current) current.remove();
+  }, 2500);
+}
+
 for (const btn of document.querySelectorAll('.new-session-option')) {
   btn.addEventListener('click', async () => {
     menuEl.style.display = 'none';
-    await ipcRenderer.invoke('create-session', btn.dataset.kind);
+    const kind = btn.dataset.kind;
+    const result = await ipcRenderer.invoke('create-session', kind);
+    if (kind === 'powershell-admin') {
+      if (result && result.action === 'launched') showLaunchFeedback('管理员 PowerShell 启动中');
+      else if (result && result.action === 'cancelled') showLaunchFeedback('已取消管理员启动');
+      else if (result && result.action === 'failed') showLaunchFeedback(result.error || '管理员 PowerShell 启动失败');
+    }
   });
 }
 
