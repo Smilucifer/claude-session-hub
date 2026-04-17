@@ -4,6 +4,12 @@
 .session-title { flex: 1; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .terminal-host { flex: 1; min-height: 0; overflow: hidden; padding: 4px; }
 .terminal-host .xterm { height: 100%; }
+/* Fade out the last 4 rows of the terminal — these contain Claude TUI's
+   native prompt (❯), bypass-permissions indicator, and token counter,
+   which are redundant with the mobile input-bar + quick-bar below.
+   xterm DOM renderer creates one <div> per visible row inside .xterm-rows;
+   nth-last-child targets the viewport's bottom rows regardless of scroll. */
+.xterm-rows > div:nth-last-child(-n+4) { opacity: 0.05 !important; }
 .quick-bar { display: flex; gap: 4px; padding: 4px 6px; background: #1f2228; overflow-x: auto; }
 .quick-bar button { background: #2e323a; color: #e6e6e6; border: 1px solid #3a3f47; border-radius: 4px; padding: 6px 10px; font-size: 12px; white-space: nowrap; cursor: pointer; }
 .quick-bar button:active { background: #3a3f47; }
