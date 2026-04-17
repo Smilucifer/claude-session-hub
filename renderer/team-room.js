@@ -386,6 +386,11 @@ const TeamRoom = (() => {
       const t = evt.kind || '';
       if (t === 'message' || t === 'user_message') {
         appendMessage(threadEl, evt);
+      } else if (t === 'checkpoint') {
+        appendCheckpoint(threadEl, {
+          actor: evt.actor, name: charName(evt.actor),
+          content: evt.content || '', ts: evt.ts,
+        });
       } else if (t === 'converged' || t === 'pass') {
         const label = document.createElement('div');
         label.className = 'tr-round-label';
@@ -436,6 +441,33 @@ const TeamRoom = (() => {
       </div>
     `;
     container.appendChild(msgEl);
+  }
+
+  /** Render a single checkpoint card — muted "路过说一下" style, no round-counter impact. */
+  function appendCheckpoint(container, evt) {
+    const charId = evt.actor || 'system';
+    const ch = characters[charId];
+    const cli = ch ? (ch.backing_cli || charId) : charId;
+    const colorCls = avatarColor(cli);
+    const name = evt.name || charName(charId);
+    const av = initials(name, charId);
+    const content = evt.content || '';
+    const ts = formatTs(evt.ts);
+
+    const el = document.createElement('div');
+    el.className = `tr-checkpoint ${colorCls}`;
+    el.innerHTML = `
+      <div class="tr-checkpoint-avatar">${esc(av)}</div>
+      <div class="tr-checkpoint-body">
+        <div class="tr-checkpoint-meta">
+          <span class="tr-checkpoint-name">${esc(name)}</span>
+          <span class="tr-checkpoint-prefix">路过说一下</span>
+          <span class="tr-checkpoint-time">${esc(ts)}</span>
+        </div>
+        <div class="tr-checkpoint-bubble">${formatContent(content)}</div>
+      </div>
+    `;
+    container.appendChild(el);
   }
 
   // --- Inspector ---
@@ -577,6 +609,17 @@ const TeamRoom = (() => {
       `;
       threadEl.appendChild(el);
       thinkingMap[actorId] = el;
+      threadEl.scrollTop = threadEl.scrollHeight;
+    }
+
+    else if (evtType === 'checkpoint') {
+      // Do NOT remove the thinking indicator — the character is still working.
+      appendCheckpoint(threadEl, {
+        actor: actorId,
+        name,
+        content: evt.content || '',
+        ts: evt.ts,
+      });
       threadEl.scrollTop = threadEl.scrollHeight;
     }
 
