@@ -622,6 +622,10 @@ ipcMain.handle('team:ask', async (event, roomId, message) => {
   }
 });
 
+ipcMain.handle('team:createRoom', async (_, name, memberIds) => {
+  return teamBridge.createRoom(name, memberIds);
+});
+
 app.on('before-quit', async () => {
   // Flush final state with cleanShutdown=true so next boot won't flag as crash.
   stateStore.save({ version: 1, cleanShutdown: true, sessions: lastPersistedSessions }, { sync: true });

@@ -70,7 +70,17 @@ class TeamBridge {
       stdout += chunk;
       const lines = stdout.split('\n');
       for (let i = 0; i < lines.length - 1; i++) {
-        if (onEvent) onEvent('stdout', lines[i]);
+        const line = lines[i].trim();
+        if (line.startsWith('EVENT:')) {
+          try {
+            const evt = JSON.parse(line.slice(6));
+            if (onEvent) onEvent('event', evt);
+          } catch (e) {
+            if (onEvent) onEvent('stdout', line);
+          }
+        } else if (line) {
+          if (onEvent) onEvent('stdout', line);
+        }
       }
       stdout = lines[lines.length - 1];
     });
@@ -95,6 +105,31 @@ class TeamBridge {
         reject(err);
       });
     });
+  }
+
+  async createRoom(name, memberIds) {
+    const id = 'room-' + Date.now();
+    const roomDir = path.join(this.baseDir, 'rooms');
+    if (!fs.existsSync(roomDir)) fs.mkdirSync(roomDir, { recursive: true });
+
+    // Write YAML
+    const yaml = [
+      `id: "${id}"`,
+      `display_name: "${name.replace(/"/g, '\\"')}"`,
+      `members: [${memberIds.map(m => `"${m}"`).join(', ')}]`,
+      `speech_mode: "natural"`,
+      `task_mode: "divergent"`,
+      `memory_bias: "balanced"`,
+      `max_depth: 6`,
+      `timeout_seconds: 180`,
+    ].join('\n') + '\n';
+
+    fs.writeFileSync(path.join(roomDir, `${id}.yaml`), yaml, 'utf-8');
+
+    // Register in DB via Python bridge
+    await this._pyScript(['create-room', id, name, JSON.stringify(memberIds)]);
+
+    return { id, display_name: name };
   }
 
   cleanup() {
