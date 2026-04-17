@@ -355,3 +355,10 @@
   display: inline-block;
   margin-left: 4px;
 }
+
+/* Create room menu divider */
+.new-session-divider {
+  height: 1px;
+  background: var(--border, #2a2e37);
+  margin: 4px 8px;
+}

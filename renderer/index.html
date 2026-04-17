@@ -21,6 +21,8 @@
               <button class="new-session-option" data-kind="claude">Claude Code</button>
               <button class="new-session-option" data-kind="claude-resume">Claude Resume</button>
               <button class="new-session-option" data-kind="powershell">PowerShell</button>
+              <div class="new-session-divider"></div>
+              <button class="new-session-option" data-kind="team-room">🏠 创建房间</button>
             </div>
           </div>
           <button class="btn-resume-picker" id="btn-resume-picker" title="Resume a past session">↻</button>
@@ -67,6 +69,24 @@
         </div>
         <div class="modal-body" id="resume-list">
           <div class="modal-empty">Scanning…</div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-overlay" id="create-room-modal" style="display:none">
+      <div class="modal" style="max-width:400px">
+        <div class="modal-header">
+          <span class="modal-title">创建房间</span>
+          <button class="modal-close" id="create-room-close" title="Close (Esc)">✕</button>
+        </div>
+        <div class="modal-body" style="padding:16px">
+          <label style="display:block;margin-bottom:4px;color:var(--text-secondary);font-size:13px">房间名称</label>
+          <input type="text" id="create-room-name" class="modal-filter" placeholder="例：技术讨论、投研作战室" style="width:100%;margin-bottom:16px">
+          <label style="display:block;margin-bottom:8px;color:var(--text-secondary);font-size:13px">选择成员</label>
+          <div id="create-room-members" style="display:flex;flex-direction:column;gap:8px"></div>
+          <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:20px">
+            <button id="create-room-cancel" style="padding:6px 16px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer">取消</button>
+            <button id="create-room-confirm" style="padding:6px 16px;border-radius:6px;border:none;background:var(--accent, #6366f1);color:#fff;cursor:pointer" disabled>创建</button>
+          </div>
         </div>
       </div>
     </div>
