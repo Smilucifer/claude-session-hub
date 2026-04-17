@@ -3,6 +3,19 @@
 // Loaded by index.html after renderer.js
 const TeamRoom = (() => {
   const { ipcRenderer } = require('electron');
+  const { marked } = require('marked');
+  const DOMPurify = require('dompurify');
+
+  marked.setOptions({ breaks: true, gfm: true });
+  DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+    if (node.tagName === 'A') {
+      node.setAttribute('target', '_blank');
+      node.setAttribute('rel', 'noopener noreferrer');
+    }
+  });
+  const MD_ALLOWED_TAGS = ['p','br','strong','em','del','s','code','pre','ul','ol','li',
+    'blockquote','h1','h2','h3','h4','h5','h6','a','hr','table','thead','tbody','tr','th','td','span'];
+  const MD_ALLOWED_ATTR = ['href','title','target','rel','class'];
 
   // State
   let currentRoomId = null;
@@ -60,9 +73,16 @@ const TeamRoom = (() => {
     return `${hh}:${mm}:${ss}`;
   }
 
-  /** Replace newlines with <br> in escaped text */
+  /** Render markdown to sanitized HTML (bold/italic/code/list/link/table) */
   function formatContent(text) {
-    return esc(text).replace(/\n/g, '<br>');
+    const src = String(text == null ? '' : text);
+    try {
+      const html = marked.parse(src);
+      return DOMPurify.sanitize(html, { ALLOWED_TAGS: MD_ALLOWED_TAGS, ALLOWED_ATTR: MD_ALLOWED_ATTR });
+    } catch (e) {
+      console.warn('[TeamRoom] markdown parse failed, falling back to plain:', e && e.message);
+      return esc(src).replace(/\n/g, '<br>');
+    }
   }
 
   // --- Init ---
