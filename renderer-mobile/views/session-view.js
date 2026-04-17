@@ -40,6 +40,12 @@ export function renderSessionView(root, transport, sessionId, onBack) {
   });
   term.open(termHost);
 
+  // Mask over the bottom of the terminal to hide Claude TUI's native
+  // prompt (❯), bypass-permissions indicator, and token counter.
+  const mask = document.createElement('div');
+  mask.className = 'terminal-mask';
+  termHost.appendChild(mask);
+
   // Initial buffer fetch — starts before reconnect listener is attached, so the
   // 'connected' event (fired on WS reopen, NOT on first open) never races this.
   transport.fetchBuffer(sessionId).then(buf => { if (buf) term.write(buf); });

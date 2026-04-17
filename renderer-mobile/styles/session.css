@@ -4,17 +4,16 @@
 .session-title { flex: 1; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .terminal-host { flex: 1; min-height: 0; overflow: hidden; padding: 4px; position: relative; }
 .terminal-host .xterm { height: 100%; }
-/* Hide Claude TUI's native prompt/status bar at bottom — redundant
-   with the mobile input-bar + quick-bar we provide. Solid background
-   color mask, pointer-events:none so scroll still works underneath. */
-.terminal-host::after {
-  content: '';
+/* Mask hides Claude TUI's native prompt/status bar at terminal bottom.
+   Must be a real DOM element (not ::after) because xterm's Canvas
+   renders above CSS pseudo-elements. */
+.terminal-mask {
   position: absolute;
   bottom: 0; left: 0; right: 0;
-  height: 50px;
+  height: 54px;
   background: #1a1d23;
   pointer-events: none;
-  z-index: 10;
+  z-index: 100;
 }
 .quick-bar { display: flex; gap: 4px; padding: 4px 6px; background: #1f2228; overflow-x: auto; }
 .quick-bar button { background: #2e323a; color: #e6e6e6; border: 1px solid #3a3f47; border-radius: 4px; padding: 6px 10px; font-size: 12px; white-space: nowrap; cursor: pointer; }
