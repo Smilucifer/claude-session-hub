@@ -40,31 +40,22 @@ export function renderSessionView(root, transport, sessionId, onBack) {
   });
   term.open(termHost);
 
-  // Fit xterm to fill the container. Without this, xterm renders only
-  // its default 24 rows (~360px) inside a 680px host, leaving 300px of
-  // dead space below the terminal content. The TUI prompt sits mid-screen
-  // instead of at the bottom where the mask can cover it.
-  // Inline implementation avoids needing @xterm/addon-fit as a browser script.
-  const MASK_HEIGHT = 54;
+  // Fit xterm to fill the container (inline FitAddon equivalent).
+  // We intentionally add 3 extra rows so the TUI prompt/status bar
+  // renders below the visible clip area (see CSS clip-path on .terminal-host).
   function fitTerminal() {
     try {
       const core = term._core;
       const dims = core._renderService && core._renderService.dimensions;
       if (!dims || !dims.css || !dims.css.cell) return;
       const cols = Math.max(2, Math.floor(termHost.clientWidth / dims.css.cell.width));
-      const rows = Math.max(1, Math.floor((termHost.clientHeight - MASK_HEIGHT) / dims.css.cell.height));
+      const rows = Math.max(1, Math.floor(termHost.clientHeight / dims.css.cell.height) + 3);
       if (cols !== term.cols || rows !== term.rows) term.resize(cols, rows);
     } catch {}
   }
   setTimeout(fitTerminal, 50);
-  setTimeout(fitTerminal, 300); // second pass after fonts load
+  setTimeout(fitTerminal, 300);
   window.addEventListener('resize', fitTerminal);
-
-  // Mask over the bottom of the terminal to hide Claude TUI's native
-  // prompt (❯), bypass-permissions indicator, and token counter.
-  const mask = document.createElement('div');
-  mask.className = 'terminal-mask';
-  termHost.appendChild(mask);
 
   // Initial buffer fetch — starts before reconnect listener is attached, so the
   // 'connected' event (fired on WS reopen, NOT on first open) never races this.
