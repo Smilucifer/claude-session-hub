@@ -41,32 +41,35 @@ export function renderSessionView(root, transport, sessionId, onBack) {
   term.open(termHost);
 
   // Fit xterm to fill the container (inline FitAddon equivalent).
-  // We intentionally add 3 extra rows so the TUI prompt/status bar
-  // renders below the visible clip area (see CSS clip-path on .terminal-host).
+  const HIDE_ROWS = 3; // TUI prompt + bypass-permissions + token counter
   function fitTerminal() {
     try {
       const core = term._core;
       const dims = core._renderService && core._renderService.dimensions;
       if (!dims || !dims.css || !dims.css.cell) return;
       const cols = Math.max(2, Math.floor(termHost.clientWidth / dims.css.cell.width));
-      const rows = Math.max(1, Math.floor(termHost.clientHeight / dims.css.cell.height) + 3);
+      const rows = Math.max(1, Math.floor(termHost.clientHeight / dims.css.cell.height));
       if (cols !== term.cols || rows !== term.rows) term.resize(cols, rows);
     } catch {}
   }
+  // After every write, scroll up HIDE_ROWS to push TUI prompt/status
+  // below the visible viewport. xterm auto-scrolls to bottom on write;
+  // this nudge hides the last 3 lines (❯ prompt, bypass-permissions, tokens).
+  function hidePrompt() { try { term.scrollLines(-HIDE_ROWS); } catch {} }
   setTimeout(fitTerminal, 50);
   setTimeout(fitTerminal, 300);
   window.addEventListener('resize', fitTerminal);
 
   // Initial buffer fetch — starts before reconnect listener is attached, so the
   // 'connected' event (fired on WS reopen, NOT on first open) never races this.
-  transport.fetchBuffer(sessionId).then(buf => { if (buf) term.write(buf); });
+  transport.fetchBuffer(sessionId).then(buf => { if (buf) term.write(buf, hidePrompt); });
   transport.subscribe(sessionId);
   transport.markRead(sessionId);
 
   const onMsg = (e) => {
     const m = e.detail;
     if (m.type === 'output' && m.sessionId === sessionId) {
-      term.write(m.data);
+      term.write(m.data, hidePrompt);
     } else if (m.type === 'permission-prompt' && m.sessionId === sessionId) {
       mountPermissionCard(wrap.querySelector('#perm-slot'), m, (decision) => {
         transport.sendInput(sessionId, decision === 'allow' ? '1\r' : '2\r');
@@ -82,7 +85,7 @@ export function renderSessionView(root, transport, sessionId, onBack) {
     try {
       term.clear();
       const buf = await transport.fetchBuffer(sessionId);
-      if (buf) term.write(buf);
+      if (buf) term.write(buf, hidePrompt);
     } catch {}
   };
   transport.addEventListener('connected', onReconnected);
