@@ -38,6 +38,30 @@ class TeamBridge {
     return this._pyScript(['wiki', roomId]);
   }
 
+  async getRoomPreviews() {
+    return this._pyScript(['room-previews']);
+  }
+
+  async getWikiCandidates(roomId) {
+    if (typeof roomId !== 'string') throw new Error('roomId must be string');
+    return this._pyScript(['wiki-candidates', roomId]);
+  }
+
+  async approveWiki(factId) {
+    if (typeof factId !== 'string') throw new Error('factId must be string');
+    return this._pyScript(['wiki-approve', factId]);
+  }
+
+  async rejectWiki(factId) {
+    if (typeof factId !== 'string') throw new Error('factId must be string');
+    return this._pyScript(['wiki-reject', factId]);
+  }
+
+  async exportConversation(roomId) {
+    if (typeof roomId !== 'string') throw new Error('roomId must be string');
+    return this._pyScript(['export', roomId]);
+  }
+
   // Spawn the full Python orchestrator for a @team question
   askTeam(roomId, message, onEvent, timeout = 300000) {
     const env = Object.assign({}, process.env, {
@@ -140,7 +164,7 @@ class TeamBridge {
   }
 
   // Helper: run bridge_query.py with given args, parse JSON output
-  _pyScript(args) {
+  _pyScript(args, timeoutMs = 30000) {
     const scriptPath = path.join(this.baseDir, 'ai_team', 'bridge_query.py');
     return new Promise((resolve, reject) => {
       const proc = spawn('python', [scriptPath, ...args], {
@@ -148,12 +172,25 @@ class TeamBridge {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       let out = '', err = '';
+      let done = false;
+      const timer = setTimeout(() => {
+        if (!done) { done = true; proc.kill(); reject(new Error(`bridge_query timeout (${timeoutMs}ms): ${args[0]}`)); }
+      }, timeoutMs);
       proc.stdout.on('data', d => out += d.toString('utf-8'));
       proc.stderr.on('data', d => err += d.toString('utf-8'));
       proc.on('close', (code) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
         if (code !== 0) { reject(new Error(`bridge_query exit ${code}: ${err.substring(0, 300)}`)); return; }
         try { resolve(JSON.parse(out.trim())); }
         catch (e) { reject(new Error(`JSON parse: ${out.substring(0, 200)}`)); }
+      });
+      proc.on('error', (e) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        reject(e);
       });
     });
   }

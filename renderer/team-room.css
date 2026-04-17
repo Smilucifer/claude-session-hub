@@ -325,6 +325,39 @@
 .tr-send-btn:active { opacity: 0.7; }
 .tr-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
+/* --- Header actions --- */
+.tr-header-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.tr-header-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.tr-action-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  background: transparent;
+  border: 1px solid #262c3a;
+  color: #8a93a6;
+  font-size: 13px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.tr-action-btn:hover {
+  background: #1e2330;
+  border-color: #3d4a63;
+}
+
 /* Mention autocomplete popup */
 .tr-mention-popup {
   position: absolute;
@@ -381,52 +414,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-.tr-input-box {
-  flex: 1;
-  min-height: 36px;
-  max-height: 120px;
-  overflow-y: auto;
-  background: #0b0d12;
-  border: 1px solid #262c3a;
-  border-radius: 6px;
-  padding: 8px 10px;
-  line-height: 1.5;
-  color: #e8ecf4;
-  outline: none;
-  word-break: break-word;
-  white-space: pre-wrap;
-}
-
-.tr-input-box:focus {
-  border-color: #3d4a63;
-}
-
-.tr-input-box:empty::before {
-  content: attr(data-placeholder);
-  color: #8a93a6;
-  pointer-events: none;
-}
-
-.tr-send-btn {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  background: #e8c84a;
-  border: none;
-  color: #0b0d12;
-  font-size: 14px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  transition: opacity 0.15s;
-}
-
-.tr-send-btn:hover { opacity: 0.85; }
-.tr-send-btn:active { opacity: 0.7; }
-.tr-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* --- 8. Inspector sections --- */
 .tr-insp-section {
@@ -529,13 +516,21 @@
   font-style: italic;
 }
 
-.tr-thinking::after {
+.tr-thinking-text::after {
   content: '···';
   font-size: 16px;
   letter-spacing: 2px;
   animation: tr-pulse 1.2s ease-in-out infinite;
   display: inline-block;
   margin-left: 4px;
+}
+
+.tr-thinking-elapsed {
+  font-size: 10px;
+  color: #6f7a8f;
+  margin-left: 6px;
+  font-style: normal;
+  font-family: monospace;
 }
 
 /* Create room menu divider */
@@ -626,3 +621,64 @@
 .tr-checkpoint.tr-claude .tr-checkpoint-avatar { background: #d4804a; }
 .tr-checkpoint.tr-gemini .tr-checkpoint-avatar { background: #7cc4ff; }
 .tr-checkpoint.tr-codex  .tr-checkpoint-avatar { background: #a98cff; }
+
+/* --- Wiki candidate approval --- */
+.tr-insp-title-pending {
+  color: #e8c84a;
+  border-bottom-color: #e8c84a40;
+}
+
+.tr-wiki-candidate {
+  margin-bottom: 10px;
+  padding: 6px 8px;
+  background: #1a1f2b;
+  border: 1px solid #2e3546;
+  border-radius: 6px;
+  border-left: 3px solid #e8c84a;
+}
+
+.tr-wiki-candidate-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.tr-approve-btn, .tr-reject-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  border: 1px solid #2e3546;
+  background: transparent;
+  font-size: 13px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.tr-approve-btn {
+  color: #6bd697;
+}
+
+.tr-approve-btn:hover {
+  background: #6bd69720;
+  border-color: #6bd697;
+}
+
+.tr-reject-btn {
+  color: #f06060;
+}
+
+.tr-reject-btn:hover {
+  background: #f0606020;
+  border-color: #f06060;
+}
+
+.tr-wiki-item-imp {
+  font-size: 10px;
+  color: #6f7a8f;
+  margin-left: auto;
+  font-family: monospace;
+}

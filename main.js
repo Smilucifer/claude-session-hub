@@ -626,6 +626,12 @@ ipcMain.handle('team:createRoom', async (_, name, memberIds) => {
   return teamBridge.createRoom(name, memberIds);
 });
 
+ipcMain.handle('team:getRoomPreviews', () => teamBridge.getRoomPreviews());
+ipcMain.handle('team:getWikiCandidates', (_, roomId) => teamBridge.getWikiCandidates(roomId));
+ipcMain.handle('team:approveWiki', (_, factId) => teamBridge.approveWiki(factId));
+ipcMain.handle('team:rejectWiki', (_, factId) => teamBridge.rejectWiki(factId));
+ipcMain.handle('team:exportConversation', (_, roomId) => teamBridge.exportConversation(roomId));
+
 app.on('before-quit', async () => {
   // Flush final state with cleanShutdown=true so next boot won't flag as crash.
   stateStore.save({ version: 1, cleanShutdown: true, sessions: lastPersistedSessions }, { sync: true });

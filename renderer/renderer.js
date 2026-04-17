@@ -396,14 +396,30 @@ function renderSessionList() {
 
 // --- AI Team Room sidebar ---
 let teamRooms = [];
+let teamRoomPreviews = {};
 let activeTeamRoomId = null;
+
+function formatRelativeTime(ts) {
+  if (!ts) return '';
+  const now = Math.floor(Date.now() / 1000);
+  const diff = now - parseInt(ts);
+  if (diff < 60) return '刚刚';
+  if (diff < 3600) return Math.floor(diff / 60) + '分钟前';
+  if (diff < 86400) return Math.floor(diff / 3600) + '小时前';
+  if (diff < 604800) return Math.floor(diff / 86400) + '天前';
+  const d = new Date(parseInt(ts) * 1000);
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
 
 async function loadTeamRooms() {
   try {
     const initialized = await ipcRenderer.invoke('team:isInitialized');
     if (!initialized) { teamRooms = []; return; }
     teamRooms = await ipcRenderer.invoke('team:loadRooms');
-    renderTeamRooms(); // Re-render after async load completes
+    try {
+      teamRoomPreviews = await ipcRenderer.invoke('team:getRoomPreviews') || {};
+    } catch (e) { teamRoomPreviews = {}; }
+    renderTeamRooms();
   } catch (e) {
     console.warn('[team] loadRooms failed:', e.message);
     teamRooms = [];
@@ -425,16 +441,22 @@ function renderTeamRooms() {
   sessionListEl.appendChild(label);
 
   for (const room of teamRooms) {
+    const preview = teamRoomPreviews[room.id];
+    const previewText = preview
+      ? `${preview.actor === 'user' ? '你' : preview.actor}: ${preview.content}`
+      : (room.members || []).join(', ');
+    const timeText = preview ? formatRelativeTime(preview.ts) : (room.task_mode || 'natural');
+
     const div = document.createElement('div');
     div.className = 'session-item team-room' + (activeTeamRoomId === room.id ? ' selected' : '');
     div.innerHTML = `
       <div class="session-item-header">
         <span class="session-title"><span class="session-status running"></span>${escapeHtml(room.display_name || room.id)}</span>
         <span class="session-header-right">
-          <span class="session-time">${room.task_mode || 'natural'}</span>
+          <span class="session-time">${escapeHtml(timeText)}</span>
         </span>
       </div>
-      <div class="session-preview">${escapeHtml((room.members || []).join(', '))}</div>
+      <div class="session-preview">${escapeHtml(previewText)}</div>
     `;
     div.addEventListener('click', () => selectTeamRoom(room.id));
     sessionListEl.appendChild(div);

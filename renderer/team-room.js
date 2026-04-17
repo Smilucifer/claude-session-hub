@@ -332,7 +332,6 @@ const TeamRoom = (() => {
     const cfg = currentRoomConfig || {};
     const members = cfg.members || [];
 
-    // Build members bar HTML
     const membersHtml = members.map(mid => {
       const ch = characters[mid];
       const cli = ch ? (ch.backing_cli || mid) : mid;
@@ -346,10 +345,46 @@ const TeamRoom = (() => {
     }).join('');
 
     headerEl.innerHTML = `
-      <div class="tr-room-name">${esc(cfg.display_name || currentRoomId)}</div>
-      <div class="tr-room-meta">模式: ${esc(cfg.task_mode || 'natural')} &nbsp;·&nbsp; ${members.length} 成员</div>
+      <div class="tr-header-top">
+        <div>
+          <div class="tr-room-name">${esc(cfg.display_name || currentRoomId)}</div>
+          <div class="tr-room-meta">模式: ${esc(cfg.task_mode || 'natural')} · ${members.length} 成员</div>
+        </div>
+        <div class="tr-header-actions">
+          <button class="tr-action-btn" id="tr-export-btn" title="导出对话">📋</button>
+        </div>
+      </div>
       <div class="tr-members">${membersHtml}</div>
     `;
+
+    const exportBtn = $('tr-export-btn');
+    if (exportBtn) {
+      exportBtn.addEventListener('click', exportConversation);
+    }
+  }
+
+  async function exportConversation() {
+    if (!currentRoomId) return;
+    try {
+      const result = await ipcRenderer.invoke('team:exportConversation', currentRoomId);
+      if (result && result.markdown) {
+        const { clipboard } = require('electron');
+        clipboard.writeText(result.markdown);
+        const btn = $('tr-export-btn');
+        if (btn) {
+          const orig = btn.textContent;
+          btn.textContent = '✓';
+          setTimeout(() => { btn.textContent = orig; }, 1500);
+        }
+      }
+    } catch (e) {
+      console.error('[TeamRoom] export failed:', e.message);
+      const btn = $('tr-export-btn');
+      if (btn) {
+        btn.textContent = '✗';
+        setTimeout(() => { btn.textContent = '📋'; }, 2000);
+      }
+    }
   }
 
   // --- Thread ---
@@ -502,6 +537,7 @@ const TeamRoom = (() => {
     if (!inspEl || !currentRoomId) return;
 
     let wiki = null;
+    let candidates = [];
     let events = [];
     try {
       wiki = await ipcRenderer.invoke('team:getWiki', currentRoomId);
@@ -509,12 +545,60 @@ const TeamRoom = (() => {
       console.warn('[TeamRoom] getWiki failed:', e.message);
     }
     try {
+      candidates = await ipcRenderer.invoke('team:getWikiCandidates', currentRoomId) || [];
+    } catch (e) { /* ignore if command not available */ }
+    try {
       events = await ipcRenderer.invoke('team:getEvents', currentRoomId, 30);
     } catch (e) {
       console.warn('[TeamRoom] getEvents (inspector) failed:', e.message);
     }
 
     inspEl.innerHTML = '';
+
+    // Wiki candidates (pending approval) section
+    if (candidates.length > 0) {
+      const candSection = document.createElement('div');
+      candSection.className = 'tr-insp-section';
+      const candTitle = document.createElement('div');
+      candTitle.className = 'tr-insp-title tr-insp-title-pending';
+      candTitle.textContent = `待审批 (${candidates.length})`;
+      candSection.appendChild(candTitle);
+
+      for (const item of candidates) {
+        const el = document.createElement('div');
+        el.className = 'tr-wiki-candidate';
+        el.innerHTML = `
+          <div class="tr-wiki-item-title">${esc(item.what || '')}</div>
+          <div class="tr-wiki-item-body">${esc(item.why || '')}</div>
+          <div class="tr-wiki-candidate-actions">
+            <button class="tr-approve-btn" data-id="${esc(item.id)}" title="采纳">✓</button>
+            <button class="tr-reject-btn" data-id="${esc(item.id)}" title="拒绝">✗</button>
+            <span class="tr-wiki-item-imp">imp ${item.importance || '?'}</span>
+          </div>
+        `;
+        candSection.appendChild(el);
+      }
+
+      candSection.addEventListener('click', async (e) => {
+        const approveBtn = e.target.closest('.tr-approve-btn');
+        const rejectBtn = e.target.closest('.tr-reject-btn');
+        if (approveBtn) {
+          const fid = approveBtn.dataset.id;
+          try {
+            await ipcRenderer.invoke('team:approveWiki', fid);
+            await refreshInspector();
+          } catch (err) { console.error('approve failed:', err); }
+        } else if (rejectBtn) {
+          const fid = rejectBtn.dataset.id;
+          try {
+            await ipcRenderer.invoke('team:rejectWiki', fid);
+            await refreshInspector();
+          } catch (err) { console.error('reject failed:', err); }
+        }
+      });
+
+      inspEl.appendChild(candSection);
+    }
 
     // Wiki section
     const wikiSection = document.createElement('div');
@@ -575,7 +659,7 @@ const TeamRoom = (() => {
 
   // --- Streaming Event Handler ---
 
-  /** Map of char_id -> DOM element for per-character thinking indicators */
+  /** Map of char_id -> {el, timer, startTs} for per-character thinking indicators */
   const thinkingMap = {};
 
   function handleStreamEvent(payload) {
@@ -591,7 +675,6 @@ const TeamRoom = (() => {
     const name = evt.name || charName(actorId);
 
     if (evtType === 'thinking') {
-      // Show per-character thinking indicator
       const ch = characters[actorId];
       const cli = ch ? (ch.backing_cli || actorId) : actorId;
       const colorCls = avatarColor(cli);
@@ -604,11 +687,19 @@ const TeamRoom = (() => {
         <div class="tr-msg-avatar">${esc(av)}</div>
         <div class="tr-msg-body">
           <div class="tr-msg-meta"><span class="tr-msg-name">${esc(name)}</span></div>
-          <div class="tr-thinking">思考中...</div>
+          <div class="tr-thinking"><span class="tr-thinking-text">思考中</span><span class="tr-thinking-elapsed"></span></div>
         </div>
       `;
       threadEl.appendChild(el);
-      thinkingMap[actorId] = el;
+
+      const startTs = Date.now();
+      const elapsedSpan = el.querySelector('.tr-thinking-elapsed');
+      const timer = setInterval(() => {
+        const sec = Math.floor((Date.now() - startTs) / 1000);
+        if (elapsedSpan) elapsedSpan.textContent = ` ${sec}s`;
+      }, 1000);
+
+      thinkingMap[actorId] = { el, timer, startTs };
       threadEl.scrollTop = threadEl.scrollHeight;
     }
 
@@ -624,9 +715,9 @@ const TeamRoom = (() => {
     }
 
     else if (evtType === 'message') {
-      // Remove thinking indicator for this character
       if (thinkingMap[actorId]) {
-        thinkingMap[actorId].remove();
+        clearInterval(thinkingMap[actorId].timer);
+        thinkingMap[actorId].el.remove();
         delete thinkingMap[actorId];
       }
       // Append real message
@@ -639,7 +730,8 @@ const TeamRoom = (() => {
 
     else if (evtType === 'pass') {
       if (thinkingMap[actorId]) {
-        thinkingMap[actorId].remove();
+        clearInterval(thinkingMap[actorId].timer);
+        thinkingMap[actorId].el.remove();
         delete thinkingMap[actorId];
       }
       const label = document.createElement('div');
@@ -651,7 +743,8 @@ const TeamRoom = (() => {
 
     else if (evtType === 'error') {
       if (thinkingMap[actorId]) {
-        thinkingMap[actorId].remove();
+        clearInterval(thinkingMap[actorId].timer);
+        thinkingMap[actorId].el.remove();
         delete thinkingMap[actorId];
       }
       const note = document.createElement('div');
@@ -662,9 +755,9 @@ const TeamRoom = (() => {
     }
 
     else if (evtType === 'converged') {
-      // Clear any remaining thinking indicators
-      for (const [id, el] of Object.entries(thinkingMap)) {
-        el.remove();
+      for (const [id, entry] of Object.entries(thinkingMap)) {
+        clearInterval(entry.timer);
+        entry.el.remove();
         delete thinkingMap[id];
       }
       const label = document.createElement('div');
@@ -723,14 +816,14 @@ const TeamRoom = (() => {
       }
     } finally {
       sending = false;
-      // Clean up any leftover thinking indicators
-      for (const [id, el] of Object.entries(thinkingMap)) {
-        el.remove();
+      for (const [id, entry] of Object.entries(thinkingMap)) {
+        clearInterval(entry.timer);
+        entry.el.remove();
         delete thinkingMap[id];
       }
       if (sendBtn) sendBtn.disabled = false;
+      if (inputBox) inputBox.focus();
 
-      // Refresh inspector (wiki may have changed)
       await refreshInspector();
     }
   }
