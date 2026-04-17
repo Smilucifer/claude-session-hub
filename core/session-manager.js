@@ -121,7 +121,9 @@ class SessionManager extends EventEmitter {
       } else if (kind === 'claude-resume') {
         cmd = ' claude --resume\r\n';
       } else {
-        cmd = ' claude\r\n';
+        // Fresh Claude sessions default to Opus 4.6. Resume/continue inherit
+        // the transcript's model, so don't force --model there.
+        cmd = ' claude --model claude-opus-4-6\r\n';
       }
       let sent = false;
       let debounceTimer = null;

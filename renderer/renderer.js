@@ -588,7 +588,8 @@ function showTerminal(sessionId, opts = { focus: true }) {
     const modelSpan = document.createElement('span');
     modelSpan.className = 'terminal-model-badge ' + modelClass(session.currentModel.id);
     modelSpan.textContent = session.currentModel.displayName || modelShort(session.currentModel);
-    modelSpan.title = session.currentModel.id;
+    modelSpan.title = session.currentModel.id + ' — click to switch model';
+    attachModelPickerHandler(modelSpan, sessionId);
     titleSection.appendChild(modelSpan);
   }
 
@@ -1456,12 +1457,76 @@ function updateActiveModelBadge() {
   }
   if (!badge) {
     badge = document.createElement('span');
-    badge.className = 'terminal-model-badge';
     titleSection.appendChild(badge);
   }
   badge.className = 'terminal-model-badge ' + modelClass(session.currentModel.id);
   badge.textContent = session.currentModel.displayName || modelShort(session.currentModel);
-  badge.title = session.currentModel.id;
+  badge.title = session.currentModel.id + ' — click to switch model';
+  // attach after className is set — attach uses classList.add to preserve
+  attachModelPickerHandler(badge, activeSessionId);
+}
+
+// ---- Model picker dropdown ----
+// Hub surfaces a short curated list of models that map to Claude Code's `/model`
+// slash command. Keep this list in sync with Claude Code's supported IDs.
+const MODEL_OPTIONS = [
+  { id: 'claude-opus-4-7[1m]', label: 'Opus 4.7 (1M context)' },
+  { id: 'claude-opus-4-7',     label: 'Opus 4.7' },
+  { id: 'claude-opus-4-6',     label: 'Opus 4.6' },
+  { id: 'claude-sonnet-4-6',   label: 'Sonnet 4.6' },
+  { id: 'claude-haiku-4-5',    label: 'Haiku 4.5' },
+];
+
+let openModelPicker = null; // { el, badge, onDocClick } while a picker is open
+
+function attachModelPickerHandler(badgeEl, sessionId) {
+  if (!badgeEl || badgeEl._modelPickerBound) return;
+  badgeEl._modelPickerBound = true;
+  badgeEl.classList.add('clickable');
+  badgeEl.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (openModelPicker && openModelPicker.badge === badgeEl) {
+      closeModelPicker();
+      return;
+    }
+    showModelPicker(badgeEl, sessionId);
+  });
+}
+
+function showModelPicker(badgeEl, sessionId) {
+  closeModelPicker();
+  const session = sessions.get(sessionId);
+  const currentId = session && session.currentModel ? (session.currentModel.id || '') : '';
+  const menu = document.createElement('div');
+  menu.className = 'model-picker-menu';
+  MODEL_OPTIONS.forEach((opt) => {
+    const item = document.createElement('div');
+    item.className = 'model-picker-item';
+    item.dataset.modelId = opt.id;
+    if (opt.id === currentId) item.classList.add('current');
+    item.innerHTML = `<span class="model-picker-check">${opt.id === currentId ? '\u2713' : ''}</span><span class="model-picker-label">${escapeHtml(opt.label)}</span><span class="model-picker-id">${escapeHtml(opt.id)}</span>`;
+    item.addEventListener('click', (e) => {
+      e.stopPropagation();
+      ipcRenderer.send('terminal-input', { sessionId, data: `/model ${opt.id}\r` });
+      closeModelPicker();
+    });
+    menu.appendChild(item);
+  });
+  document.body.appendChild(menu);
+  const rect = badgeEl.getBoundingClientRect();
+  menu.style.top = (rect.bottom + 4) + 'px';
+  menu.style.left = rect.left + 'px';
+  const onDocClick = (e) => { if (!menu.contains(e.target)) closeModelPicker(); };
+  // defer so the triggering click doesn't immediately close the menu
+  setTimeout(() => document.addEventListener('click', onDocClick), 0);
+  openModelPicker = { el: menu, badge: badgeEl, onDocClick };
+}
+
+function closeModelPicker() {
+  if (!openModelPicker) return;
+  document.removeEventListener('click', openModelPicker.onDocClick);
+  openModelPicker.el.remove();
+  openModelPicker = null;
 }
 
 // Compact "3m20s" / "1h5m" — used for api duration in the header metrics row.

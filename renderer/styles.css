@@ -927,6 +927,35 @@ body.theme-light .session-time {
 .terminal-model-badge.sonnet  { background: rgba(88, 166, 255, 0.22);  color: #79c0ff; }
 .terminal-model-badge.haiku   { background: rgba(63, 185, 80, 0.22);   color: #56d364; }
 .terminal-model-badge:not(.opus):not(.sonnet):not(.haiku) { background: rgba(139, 148, 158, 0.22); color: #b1bac4; }
+.terminal-model-badge.clickable { cursor: pointer; user-select: none; transition: filter 0.12s ease; }
+.terminal-model-badge.clickable:hover { filter: brightness(1.25); }
+
+/* Model picker dropdown — absolute-positioned, anchored under the badge */
+.model-picker-menu {
+  position: fixed;
+  z-index: 10000;
+  min-width: 240px;
+  background: #1f2937;
+  border: 1px solid #374151;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  padding: 4px;
+  font-size: 12px;
+}
+.model-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #e5e7eb;
+}
+.model-picker-item:hover { background: #374151; }
+.model-picker-item.current { background: rgba(188, 140, 255, 0.12); }
+.model-picker-check { width: 12px; color: #d2a8ff; text-align: center; }
+.model-picker-label { flex: 1; font-weight: 500; }
+.model-picker-id { color: #9ca3af; font-size: 10px; font-family: var(--font-mono, ui-monospace, monospace); }
 
 /* Pinned session indicator */
 .session-item .pin-icon {
