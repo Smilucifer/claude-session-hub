@@ -85,6 +85,179 @@ const TeamRoom = (() => {
     }
   }
 
+  // --- Mention autocomplete state ---
+
+  const mentionState = {
+    active: false,
+    items: [],
+    filtered: [],
+    selectedIdx: 0,
+    query: '',
+    atIndex: -1,
+    textNode: null,
+  };
+
+  function resetMention() {
+    mentionState.active = false;
+    mentionState.items = [];
+    mentionState.filtered = [];
+    mentionState.selectedIdx = 0;
+    mentionState.query = '';
+    mentionState.atIndex = -1;
+    mentionState.textNode = null;
+    const popup = $('tr-mention-popup');
+    if (popup) {
+      popup.style.display = 'none';
+      popup.innerHTML = '';
+    }
+  }
+
+  function buildMentionItems() {
+    const cfg = currentRoomConfig || {};
+    const members = cfg.members || [];
+    const items = [{
+      id: 'team',
+      label: 'team',
+      subtitle: '全体成员',
+      avatarText: '👥',
+      avatarCls: 'tr-user',
+    }];
+    for (const mid of members) {
+      const ch = characters[mid];
+      const cli = ch ? (ch.backing_cli || mid) : mid;
+      const label = charName(mid);
+      items.push({
+        id: mid,
+        label,
+        subtitle: `@${mid}`,
+        avatarText: initials(label, mid),
+        avatarCls: avatarColor(cli),
+      });
+    }
+    return items;
+  }
+
+  function filterMention(query) {
+    const q = (query || '').toLowerCase();
+    if (!q) return mentionState.items.slice();
+    return mentionState.items.filter(it =>
+      it.label.toLowerCase().includes(q) || it.id.toLowerCase().includes(q)
+    );
+  }
+
+  function renderMentionPopup() {
+    const popup = $('tr-mention-popup');
+    if (!popup) return;
+    const items = mentionState.filtered;
+    if (items.length === 0) { resetMention(); return; }
+    if (mentionState.selectedIdx >= items.length) mentionState.selectedIdx = 0;
+    popup.innerHTML = items.map((it, i) => `
+      <div class="tr-mention-item ${i === mentionState.selectedIdx ? 'active' : ''}" data-idx="${i}">
+        <span class="tr-avatar ${it.avatarCls}">${esc(it.avatarText)}</span>
+        <span class="tr-mention-name">${esc(it.label)}</span>
+        <span class="tr-mention-sub">${esc(it.subtitle)}</span>
+      </div>
+    `).join('');
+    popup.style.display = 'block';
+    // Scroll active item into view
+    const activeEl = popup.querySelector('.tr-mention-item.active');
+    if (activeEl && activeEl.scrollIntoView) {
+      activeEl.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  function detectMention() {
+    const inputBox = $('tr-input-box');
+    if (!inputBox) { resetMention(); return; }
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) { resetMention(); return; }
+    const range = sel.getRangeAt(0);
+    if (!range.collapsed) { resetMention(); return; }
+    const node = range.startContainer;
+    if (!inputBox.contains(node) || node.nodeType !== Node.TEXT_NODE) {
+      resetMention();
+      return;
+    }
+    const offset = range.startOffset;
+    const text = node.nodeValue.slice(0, offset);
+    const m = text.match(/(^|\s)@([^\s@]*)$/);
+    if (!m) { resetMention(); return; }
+    const query = m[2];
+    const atIndex = offset - query.length - 1;
+
+    if (!mentionState.active) {
+      mentionState.items = buildMentionItems();
+      mentionState.selectedIdx = 0;
+      mentionState.active = true;
+    }
+    mentionState.query = query;
+    mentionState.atIndex = atIndex;
+    mentionState.textNode = node;
+    mentionState.filtered = filterMention(query);
+    renderMentionPopup();
+  }
+
+  function commitMention() {
+    const items = mentionState.filtered;
+    if (!items || items.length === 0) { resetMention(); return; }
+    const it = items[mentionState.selectedIdx] || items[0];
+    const node = mentionState.textNode;
+    const atIndex = mentionState.atIndex;
+    if (!node || atIndex < 0) { resetMention(); return; }
+    const text = node.nodeValue;
+    const sel = window.getSelection();
+    const caretOffset = (sel && sel.rangeCount && sel.getRangeAt(0).startContainer === node)
+      ? sel.getRangeAt(0).startOffset
+      : (atIndex + 1 + mentionState.query.length);
+    const before = text.slice(0, atIndex);
+    const after = text.slice(caretOffset);
+    const insertion = `@${it.label} `;
+    node.nodeValue = before + insertion + after;
+    const newOffset = before.length + insertion.length;
+    const range = document.createRange();
+    range.setStart(node, newOffset);
+    range.setEnd(node, newOffset);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    resetMention();
+  }
+
+  function onMentionKeydown(e) {
+    if (!mentionState.active) return;
+    const n = mentionState.filtered.length;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (n > 0) {
+        mentionState.selectedIdx = (mentionState.selectedIdx + 1) % n;
+        renderMentionPopup();
+      }
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (n > 0) {
+        mentionState.selectedIdx = (mentionState.selectedIdx - 1 + n) % n;
+        renderMentionPopup();
+      }
+      return;
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      if (n > 0) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        commitMention();
+      }
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      resetMention();
+    }
+  }
+
   // --- Init ---
 
   async function init() {

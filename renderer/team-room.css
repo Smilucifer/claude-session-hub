@@ -324,6 +324,109 @@
 .tr-send-btn:active { opacity: 0.7; }
 .tr-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
+/* Mention autocomplete popup */
+.tr-mention-popup {
+  position: absolute;
+  bottom: calc(100% - 2px);
+  left: 16px;
+  min-width: 200px;
+  max-width: 320px;
+  max-height: 220px;
+  overflow-y: auto;
+  background: #1a1f2b;
+  border: 1px solid #2e3546;
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  z-index: 100;
+  padding: 4px;
+}
+
+.tr-mention-popup::-webkit-scrollbar { width: 6px; }
+.tr-mention-popup::-webkit-scrollbar-track { background: transparent; }
+.tr-mention-popup::-webkit-scrollbar-thumb { background: #2e3546; border-radius: 3px; }
+
+.tr-mention-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  color: #e8ecf4;
+  user-select: none;
+}
+
+.tr-mention-item.active {
+  background: #2a3245;
+}
+
+.tr-mention-item .tr-avatar {
+  width: 20px;
+  height: 20px;
+  font-size: 10px;
+}
+
+.tr-mention-name {
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.tr-mention-sub {
+  font-size: 11px;
+  color: #8a93a6;
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tr-input-box {
+  flex: 1;
+  min-height: 36px;
+  max-height: 120px;
+  overflow-y: auto;
+  background: #0b0d12;
+  border: 1px solid #262c3a;
+  border-radius: 6px;
+  padding: 8px 10px;
+  line-height: 1.5;
+  color: #e8ecf4;
+  outline: none;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.tr-input-box:focus {
+  border-color: #3d4a63;
+}
+
+.tr-input-box:empty::before {
+  content: attr(data-placeholder);
+  color: #8a93a6;
+  pointer-events: none;
+}
+
+.tr-send-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: #e8c84a;
+  border: none;
+  color: #0b0d12;
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: opacity 0.15s;
+}
+
+.tr-send-btn:hover { opacity: 0.85; }
+.tr-send-btn:active { opacity: 0.7; }
+.tr-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
 /* --- 8. Inspector sections --- */
 .tr-insp-section {
   margin-bottom: 14px;
