@@ -6,15 +6,11 @@
 
 ![主界面](docs/images/demo-main.png)
 
-## v0.1.1 更新
+## v0.1.2 更新
 
-- 新增项目内 JSON 默认工作路径配置：`config/session-hub.json`
-- 顶部工作路径支持直接点击编辑
-- `PowerShell` session 修改路径后会立即切换目录
 - 新增 `PowerShell (Admin)` 快捷入口，可直接弹出 UAC 启动管理员 PowerShell
-- 右键菜单新增 `Rename session`
-- 支持双击 session 标题内联重命名
-- 重启 session 时保留原工作路径
+- `PowerShell (Admin)` 不会在 Hub 侧栏里创建假 session
+- 更新 E2E 基线，适配动态 hook 端口 / token 与当前标题行为
 
 ## 功能特性
 
@@ -149,15 +145,11 @@ MIT
 
 ![Main UI](docs/images/demo-main.png)
 
-## v0.1.1 Update
+## v0.1.2 Update
 
-- Added project-local JSON default working directory config: `config/session-hub.json`
-- Working directory in the header is now directly editable
-- `PowerShell` sessions switch directory immediately after cwd edit
 - Added a `PowerShell (Admin)` shortcut that opens an elevated PowerShell via UAC
-- Added `Rename session` to the context menu
-- Added double-click inline session renaming for session titles
-- Session restart now preserves the current working directory
+- `PowerShell (Admin)` no longer creates a fake in-app Hub session in the sidebar
+- Refreshed the E2E baseline for dynamic hook ports / tokens and current title behavior
 
 ## Features
 

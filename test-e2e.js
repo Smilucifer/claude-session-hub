@@ -1,9 +1,11 @@
 // E2E test via CDP - connects to Electron's remote debugging port
 const { spawn } = require('child_process');
+const path = require('path');
 const WebSocket = require('ws');
 const http = require('http');
 
-const APP_ROOT = 'D:\\ClaudeWorkspace\\Code\\claude-session-hub\\.worktrees\\powershell-admin';
+const APP_ROOT = __dirname;
+const ELECTRON_CLI = path.join(APP_ROOT, 'node_modules', 'electron', 'cli.js');
 
 let electronProcess = null;
 let msgId = 0;
@@ -41,10 +43,10 @@ async function ensureElectronRunning() {
   });
   if (ready) return;
 
-  electronProcess = spawn('npx', ['electron', APP_ROOT, '--remote-debugging-port=9222'], {
+  electronProcess = spawn(process.execPath, [ELECTRON_CLI, APP_ROOT, '--remote-debugging-port=9222'], {
     cwd: APP_ROOT,
     stdio: 'ignore',
-    shell: true,
+    shell: false,
     detached: false,
   });
 
@@ -136,6 +138,8 @@ function evaluateWithLog(label, expr) {
     });
 }
 
+let createdClaudeSessionId = null;
+
 async function run() {
   await connect();
   console.log('Connected to Electron');
@@ -225,10 +229,16 @@ async function run() {
   console.log('');
   console.log('=== Test 3: Create Claude Session ===');
   await test('Click Claude Code creates session', async () => {
+    const before = await evaluate('JSON.stringify(Array.from(sessions.keys()))');
     await evaluate('document.querySelector("[data-kind=claude]").click()');
     await sleep(1000);
     const count = await evaluate('sessions.size');
     if (count < 1) throw new Error('sessions.size=' + count);
+    const after = await evaluate('JSON.stringify(Array.from(sessions.keys()))');
+    const beforeIds = new Set(JSON.parse(before));
+    const afterIds = JSON.parse(after);
+    createdClaudeSessionId = afterIds.find(id => !beforeIds.has(id)) || null;
+    if (!createdClaudeSessionId) throw new Error('no new Claude session id');
   });
   await test('Claude session gets a non-empty title', async () => {
     const t = await evaluate('Array.from(sessions.values())[0].title');
@@ -282,10 +292,10 @@ async function run() {
   console.log('');
   console.log('=== Test 6: Inline Rename ===');
   await test('Rename active Claude session via IPC', async () => {
-    const id = await evaluate('Array.from(sessions.values()).find(s => s.kind === "claude").id');
-    await evaluate('ipcRenderer.invoke("rename-session", { sessionId: "' + id + '", title: "TestRename" })');
+    if (!createdClaudeSessionId) throw new Error('missing created Claude session id');
+    await evaluate('ipcRenderer.invoke("rename-session", { sessionId: "' + createdClaudeSessionId + '", title: "TestRename" })');
     await sleep(500);
-    const t = await evaluate('sessions.get("' + id + '").title');
+    const t = await evaluate('sessions.get("' + createdClaudeSessionId + '").title');
     if (t !== 'TestRename') throw new Error(t);
   });
   await test('Sidebar updated with new name', async () => {
