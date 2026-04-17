@@ -41,8 +41,10 @@ const TeamRoom = (() => {
     return 'tr-user';
   }
 
-  /** Initials for avatar from a name string */
-  function initials(name) {
+  /** Avatar text: emoji for known characters, initials for others */
+  const CHAR_EMOJI = { pikachu: '⚡', charmander: '🔥', squirtle: '🐢', user: '👤' };
+  function initials(name, charId) {
+    if (charId && CHAR_EMOJI[charId]) return CHAR_EMOJI[charId];
     const parts = String(name || '?').trim().split(/\s+/);
     if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
     return String(name || '?').slice(0, 2).toUpperCase();
@@ -94,7 +96,7 @@ const TeamRoom = (() => {
     // Stream events — register once, remove old handler if re-init
     if (streamHandler) ipcRenderer.removeListener('team:event', streamHandler);
     streamHandler = (_event, payload) => {
-      console.log('[TeamRoom] stream:', payload.type);
+      handleStreamEvent(payload);
     };
     ipcRenderer.on('team:event', streamHandler);
   }
@@ -121,7 +123,7 @@ const TeamRoom = (() => {
       const cli = ch ? (ch.backing_cli || mid) : mid;
       const colorCls = avatarColor(cli);
       const name = charName(mid);
-      const av = initials(name);
+      const av = initials(name, mid);
       return `<span class="tr-member">
         <span class="tr-avatar ${colorCls}">${esc(av)}</span>
         ${esc(name)}
@@ -202,7 +204,7 @@ const TeamRoom = (() => {
     const cli = ch ? (ch.backing_cli || charId) : (charId === 'user' ? 'user' : charId);
     const colorCls = avatarColor(cli);
     const name = charName(charId);
-    const av = initials(name);
+    const av = initials(name, charId);
     const content = evt.content || (evt.data ? JSON.stringify(evt.data) : '');
     const ts = formatTs(evt.ts);
 
@@ -222,6 +224,31 @@ const TeamRoom = (() => {
   }
 
   // --- Inspector ---
+
+  /** Append a single streaming event to the inspector's recent events list (live update). */
+  function appendInspectorEvent(evt) {
+    const inspEl = $('tr-inspector');
+    if (!inspEl) return;
+    // Find or create the events section container
+    let evtSection = inspEl.querySelector('.tr-insp-events');
+    if (!evtSection) return;
+
+    const el = document.createElement('div');
+    el.className = 'tr-event-item';
+    const typeStr = evt.type || '?';
+    const who = evt.name || evt.actor || '';
+    const bodyStr = evt.content ? String(evt.content).slice(0, 60) : who;
+    el.innerHTML = `
+      <span class="tr-event-item-type">${esc(typeStr)}</span>
+      <span class="tr-event-item-body">${esc(bodyStr)}</span>
+    `;
+    // Insert at top (most recent first)
+    if (evtSection.firstChild) {
+      evtSection.insertBefore(el, evtSection.firstChild);
+    } else {
+      evtSection.appendChild(el);
+    }
+  }
 
   async function refreshInspector() {
     const inspEl = $('tr-inspector');
@@ -270,7 +297,7 @@ const TeamRoom = (() => {
 
     // Event log section
     const evtSection = document.createElement('div');
-    evtSection.className = 'tr-insp-section';
+    evtSection.className = 'tr-insp-section tr-insp-events';
     const evtTitle = document.createElement('div');
     evtTitle.className = 'tr-insp-title';
     evtTitle.textContent = '最近事件';
@@ -299,6 +326,103 @@ const TeamRoom = (() => {
     inspEl.appendChild(evtSection);
   }
 
+  // --- Streaming Event Handler ---
+
+  /** Map of char_id -> DOM element for per-character thinking indicators */
+  const thinkingMap = {};
+
+  function handleStreamEvent(payload) {
+    // payload comes from main.js: { type: 'event', data: {...} } or { type: 'stdout', data: '...' }
+    const evt = payload.type === 'event' ? payload.data : null;
+    if (!evt) return;
+
+    const threadEl = $('tr-thread');
+    if (!threadEl) return;
+
+    const evtType = evt.type;
+    const actorId = evt.actor || 'system';
+    const name = evt.name || charName(actorId);
+
+    if (evtType === 'thinking') {
+      // Show per-character thinking indicator
+      const ch = characters[actorId];
+      const cli = ch ? (ch.backing_cli || actorId) : actorId;
+      const colorCls = avatarColor(cli);
+      const av = initials(name, actorId);
+
+      const el = document.createElement('div');
+      el.className = `tr-msg ${colorCls}`;
+      el.setAttribute('data-thinking', actorId);
+      el.innerHTML = `
+        <div class="tr-msg-avatar">${esc(av)}</div>
+        <div class="tr-msg-body">
+          <div class="tr-msg-meta"><span class="tr-msg-name">${esc(name)}</span></div>
+          <div class="tr-thinking">思考中...</div>
+        </div>
+      `;
+      threadEl.appendChild(el);
+      thinkingMap[actorId] = el;
+      threadEl.scrollTop = threadEl.scrollHeight;
+    }
+
+    else if (evtType === 'message') {
+      // Remove thinking indicator for this character
+      if (thinkingMap[actorId]) {
+        thinkingMap[actorId].remove();
+        delete thinkingMap[actorId];
+      }
+      // Append real message
+      appendMessage(threadEl, {
+        kind: 'message', actor: actorId,
+        content: evt.content || '', ts: evt.ts,
+      });
+      threadEl.scrollTop = threadEl.scrollHeight;
+    }
+
+    else if (evtType === 'pass') {
+      if (thinkingMap[actorId]) {
+        thinkingMap[actorId].remove();
+        delete thinkingMap[actorId];
+      }
+      const label = document.createElement('div');
+      label.className = 'tr-round-label';
+      label.textContent = `${name}: PASS`;
+      threadEl.appendChild(label);
+      threadEl.scrollTop = threadEl.scrollHeight;
+    }
+
+    else if (evtType === 'error') {
+      if (thinkingMap[actorId]) {
+        thinkingMap[actorId].remove();
+        delete thinkingMap[actorId];
+      }
+      const note = document.createElement('div');
+      note.className = 'tr-system-note';
+      note.textContent = evt.content || `${name} 错误`;
+      threadEl.appendChild(note);
+      threadEl.scrollTop = threadEl.scrollHeight;
+    }
+
+    else if (evtType === 'converged') {
+      // Clear any remaining thinking indicators
+      for (const [id, el] of Object.entries(thinkingMap)) {
+        el.remove();
+        delete thinkingMap[id];
+      }
+      const label = document.createElement('div');
+      label.className = 'tr-round-label';
+      label.textContent = `[收敛] depth=${evt.depth}/${evt.max_depth}`;
+      threadEl.appendChild(label);
+      threadEl.scrollTop = threadEl.scrollHeight;
+
+      // Refresh inspector after convergence (events are now in DB)
+      refreshInspector();
+    }
+
+    // Update recent events in inspector for every event
+    appendInspectorEvent(evt);
+  }
+
   // --- Send Message ---
 
   let sending = false;
@@ -311,7 +435,7 @@ const TeamRoom = (() => {
     if (!inputBox || !currentRoomId) { sending = false; return; }
 
     const text = inputBox.innerText.trim();
-    if (!text) return;
+    if (!text) { sending = false; return; }
 
     // Clear input
     inputBox.innerText = '';
@@ -319,26 +443,10 @@ const TeamRoom = (() => {
     // Show user message immediately
     const threadEl = $('tr-thread');
     if (threadEl) {
-      const fakeEvt = {
-        kind: 'message',
-        actor: 'user',
-        content: text,
-        ts: Math.floor(Date.now() / 1000),
-      };
-      appendMessage(threadEl, fakeEvt);
-      threadEl.scrollTop = threadEl.scrollHeight;
-
-      // Show thinking indicator
-      thinkingEl = document.createElement('div');
-      thinkingEl.className = 'tr-msg tr-claude';
-      thinkingEl.innerHTML = `
-        <div class="tr-msg-avatar">${esc('AI')}</div>
-        <div class="tr-msg-body">
-          <div class="tr-msg-meta"><span class="tr-msg-name">Team</span></div>
-          <div class="tr-thinking">思考中</div>
-        </div>
-      `;
-      threadEl.appendChild(thinkingEl);
+      appendMessage(threadEl, {
+        kind: 'message', actor: 'user',
+        content: text, ts: Math.floor(Date.now() / 1000),
+      });
       threadEl.scrollTop = threadEl.scrollHeight;
     }
 
@@ -349,7 +457,6 @@ const TeamRoom = (() => {
       await ipcRenderer.invoke('team:ask', currentRoomId, text);
     } catch (e) {
       console.error('[TeamRoom] askTeam failed:', e.message);
-      // Show error note
       if (threadEl) {
         const errNote = document.createElement('div');
         errNote.className = 'tr-system-note';
@@ -358,15 +465,14 @@ const TeamRoom = (() => {
       }
     } finally {
       sending = false;
-      // Remove thinking indicator
-      if (thinkingEl && thinkingEl.parentNode) {
-        thinkingEl.parentNode.removeChild(thinkingEl);
-        thinkingEl = null;
+      // Clean up any leftover thinking indicators
+      for (const [id, el] of Object.entries(thinkingMap)) {
+        el.remove();
+        delete thinkingMap[id];
       }
       if (sendBtn) sendBtn.disabled = false;
 
-      // Refresh UI
-      await refreshThread();
+      // Refresh inspector (wiki may have changed)
       await refreshInspector();
     }
   }
