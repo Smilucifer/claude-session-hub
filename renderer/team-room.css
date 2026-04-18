@@ -682,3 +682,106 @@
   margin-left: auto;
   font-family: monospace;
 }
+
+/* --- Tool Use — code-style card for MCP tool invocations --- */
+.tr-tool-use {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: 720px;
+  margin: 2px 0;
+}
+
+.tr-tool-use-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #3a3f4a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.tr-tool-use-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.tr-tool-use-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+  color: #8a93a6;
+}
+
+.tr-tool-use-name {
+  font-weight: 600;
+  color: #a7b0c2;
+}
+
+.tr-tool-use-tag {
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  color: #7c7;
+  background: #1a2a1a;
+  padding: 0 6px;
+  border-radius: 8px;
+}
+
+.tr-tool-use-time {
+  font-size: 10px;
+  color: #6f7a8f;
+  margin-left: auto;
+}
+
+.tr-tool-use-code {
+  background: #1e2630;
+  border-left: 2px solid #4a7a9a;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 12px;
+  color: #8ab;
+  word-break: break-all;
+  line-height: 1.4;
+}
+
+/* --- Evolution Summary — post-convergence learning stats --- */
+.tr-evolution-summary {
+  margin: 4px 24px 8px;
+  padding: 6px 12px;
+  background: #1a2520;
+  border: 1px solid #2a4a3a;
+  border-radius: 6px;
+  font-size: 11px;
+  color: #7a7;
+  text-align: center;
+}
+
+.tr-evolution-summary strong {
+  color: #8c8;
+}
+
+/* --- Collapsed Hint — click to load older messages --- */
+.tr-collapsed-hint {
+  text-align: center;
+  padding: 8px;
+  font-size: 12px;
+  color: #6f7a8f;
+  cursor: pointer;
+  border-bottom: 1px dashed #333;
+  margin-bottom: 8px;
+}
+
+.tr-collapsed-hint:hover {
+  color: #a7b0c2;
+  background: #1a1f2b;
+}

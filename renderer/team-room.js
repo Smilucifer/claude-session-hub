@@ -427,9 +427,11 @@ const TeamRoom = (() => {
           content: evt.content || '', ts: evt.ts,
         });
       } else if (t === 'tool_use') {
-        appendCheckpoint(threadEl, {
+        appendToolUse(threadEl, {
           actor: evt.actor, name: charName(evt.actor),
-          content: `\u{1F527} ${evt.tool || evt.content || 'tool'}`, ts: evt.ts,
+          tool: evt.tool || evt.content || 'tool',
+          input: evt.input || {},
+          ts: evt.ts,
         });
       } else if (t === 'converged' || t === 'pass') {
         const label = document.createElement('div');
@@ -505,6 +507,45 @@ const TeamRoom = (() => {
           <span class="tr-checkpoint-time">${esc(ts)}</span>
         </div>
         <div class="tr-checkpoint-bubble">${formatContent(content)}</div>
+      </div>
+    `;
+    container.appendChild(el);
+  }
+
+  /** Format tool call input as readable function-call string. */
+  function _formatToolCall(tool, input) {
+    const name = tool || 'unknown';
+    if (!input || typeof input !== 'object' || Object.keys(input).length === 0) {
+      return `${name}()`;
+    }
+    const args = Object.entries(input)
+      .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+      .join(', ');
+    const full = `${name}(${args})`;
+    return full.length > 120 ? full.slice(0, 117) + '...' : full;
+  }
+
+  /** Render a tool_use card — code-style, distinct from checkpoint. */
+  function appendToolUse(container, { actor, name, tool, input, ts }) {
+    const charId = actor || 'system';
+    const ch = characters[charId];
+    const cli = ch ? (ch.backing_cli || charId) : charId;
+    const colorCls = avatarColor(cli);
+    const displayName = name || charName(charId);
+    const timeStr = formatTs(ts);
+    const codeStr = _formatToolCall(tool, input);
+
+    const el = document.createElement('div');
+    el.className = `tr-tool-use ${colorCls}`;
+    el.innerHTML = `
+      <div class="tr-tool-use-avatar">\u{1F527}</div>
+      <div class="tr-tool-use-body">
+        <div class="tr-tool-use-meta">
+          <span class="tr-tool-use-name">${esc(displayName)}</span>
+          <span class="tr-tool-use-tag">\u8C03\u7528\u5DE5\u5177</span>
+          <span class="tr-tool-use-time">${esc(timeStr)}</span>
+        </div>
+        <div class="tr-tool-use-code">${esc(codeStr)}</div>
       </div>
     `;
     container.appendChild(el);
@@ -720,10 +761,97 @@ const TeamRoom = (() => {
     }
 
     else if (evtType === 'tool_use') {
+      appendToolUse(threadEl, {
+        actor: actorId,
+        name,
+        tool: evt.tool || '',
+        input: evt.input || {},
+        ts: evt.ts,
+      });
+      threadEl.scrollTop = threadEl.scrollHeight;
+    }
+
+    // text_delta：Claude --include-partial-messages 的字级增量，附到 thinking 卡片下做 live preview
+    else if (evtType === 'text_delta') {
+      const entry = thinkingMap[actorId];
+      if (entry && entry.el) {
+        let live = entry.el.querySelector('.tr-live-text');
+        if (!live) {
+          live = document.createElement('div');
+          live.className = 'tr-live-text';
+          live.style.cssText = 'color:var(--text-primary);margin-top:6px;white-space:pre-wrap;font-size:13px;opacity:0.85';
+          const body = entry.el.querySelector('.tr-msg-body');
+          if (body) body.appendChild(live);
+        }
+        live.textContent += (evt.text || '');
+        threadEl.scrollTop = threadEl.scrollHeight;
+      }
+    }
+
+    // thinking_delta：Claude extended thinking 的思考链增量，灰色 italic 显示
+    else if (evtType === 'thinking_delta') {
+      const entry = thinkingMap[actorId];
+      if (entry && entry.el) {
+        let live = entry.el.querySelector('.tr-live-thinking');
+        if (!live) {
+          live = document.createElement('div');
+          live.className = 'tr-live-thinking';
+          live.style.cssText = 'color:var(--text-secondary);font-style:italic;margin-top:6px;white-space:pre-wrap;font-size:12px';
+          const body = entry.el.querySelector('.tr-msg-body');
+          if (body) body.appendChild(live);
+        }
+        live.textContent += (evt.text || '');
+        threadEl.scrollTop = threadEl.scrollHeight;
+      }
+    }
+
+    // degraded：prompt 超预算自动降级（TRUNCATED / PATTERN_ONLY / ABORT）
+    else if (evtType === 'degraded') {
+      const note = document.createElement('div');
+      note.className = 'tr-system-note';
+      const level = evt.level || 'truncated';
+      const tokens = evt.estimated_tokens;
+      const label = level === 'abort' ? '中止' : level === 'pattern_only' ? '仅模式' : '裁剪';
+      const tokInfo = tokens ? ` (~${tokens}t)` : '';
+      note.textContent = `\u{1F4C9} ${name} 上下文降级: ${label}${tokInfo}`;
+      threadEl.appendChild(note);
+      threadEl.scrollTop = threadEl.scrollHeight;
+    }
+
+    // retry：自愈重试（session_invalid / timeout / transient_exit1）
+    else if (evtType === 'retry') {
+      const note = document.createElement('div');
+      note.className = 'tr-system-note';
+      const reason = evt.reason || 'unknown';
+      note.textContent = `\u{1F501} ${name} 自愈重试 (${reason})`;
+      threadEl.appendChild(note);
+      threadEl.scrollTop = threadEl.scrollHeight;
+    }
+
+    // rate_limit：Claude 限流事件（不中断对话）
+    else if (evtType === 'rate_limit') {
+      const note = document.createElement('div');
+      note.className = 'tr-system-note';
+      note.textContent = `\u26A0\uFE0F ${name} 触发限流`;
+      threadEl.appendChild(note);
+      threadEl.scrollTop = threadEl.scrollHeight;
+    }
+
+    // compact_boundary：Claude 自动上下文压缩
+    else if (evtType === 'compact_boundary') {
+      const note = document.createElement('div');
+      note.className = 'tr-system-note';
+      note.textContent = `\u267B\uFE0F ${name} 上下文已压缩`;
+      threadEl.appendChild(note);
+      threadEl.scrollTop = threadEl.scrollHeight;
+    }
+
+    // web_search：Codex web_search 事件
+    else if (evtType === 'web_search') {
       appendCheckpoint(threadEl, {
         actor: actorId,
         name,
-        content: `\u{1F527} ${evt.tool || 'tool'}(${JSON.stringify(evt.input || {}).slice(0, 120)})`,
+        content: `\u{1F50D} 搜索: ${(evt.query || '').slice(0, 120)}`,
         ts: evt.ts,
       });
       threadEl.scrollTop = threadEl.scrollHeight;
