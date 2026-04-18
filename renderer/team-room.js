@@ -23,6 +23,8 @@ const TeamRoom = (() => {
   let characters = {};    // id -> character object
   let thinkingEl = null;  // reference to thinking indicator DOM node
   let streamHandler = null; // registered team:event listener (for cleanup on re-init)
+  let streamRound = 0;
+  let streamRoundActors = new Set();
 
   // DOM refs (resolved once DOM is ready)
   const $ = id => document.getElementById(id);
@@ -83,6 +85,19 @@ const TeamRoom = (() => {
       console.warn('[TeamRoom] markdown parse failed, falling back to plain:', e && e.message);
       return esc(src).replace(/\n/g, '<br>');
     }
+  }
+
+  function _roundLabel(n) {
+    if (n === 1) return 'ROUND 1 \u00B7 \u72EC\u7ACB\u601D\u8003';
+    if (n === 2) return 'ROUND 2 \u00B7 \u4E92\u76F8\u8865\u5200';
+    return `ROUND ${n} \u00B7 \u6DF1\u5165\u8BA8\u8BBA`;
+  }
+
+  function _insertRoundSeparator(container, roundNum) {
+    const label = document.createElement('div');
+    label.className = 'tr-round-label';
+    label.textContent = _roundLabel(roundNum);
+    container.appendChild(label);
   }
 
   // --- Mention autocomplete state ---
@@ -721,6 +736,14 @@ const TeamRoom = (() => {
     const name = evt.name || charName(actorId);
 
     if (evtType === 'thinking') {
+      if (streamRound === 0) {
+        streamRound = 1;
+        _insertRoundSeparator(threadEl, 1);
+      } else if (streamRoundActors.has(actorId)) {
+        streamRound++;
+        streamRoundActors.clear();
+        _insertRoundSeparator(threadEl, streamRound);
+      }
       const ch = characters[actorId];
       const cli = ch ? (ch.backing_cli || actorId) : actorId;
       const colorCls = avatarColor(cli);
@@ -869,6 +892,7 @@ const TeamRoom = (() => {
         content: evt.content || '', ts: evt.ts,
       });
       threadEl.scrollTop = threadEl.scrollHeight;
+      streamRoundActors.add(actorId);
     }
 
     else if (evtType === 'pass') {
@@ -911,6 +935,8 @@ const TeamRoom = (() => {
 
       // Refresh inspector after convergence (events are now in DB)
       refreshInspector();
+      streamRound = 0;
+      streamRoundActors.clear();
     }
 
     // Update recent events in inspector for every event
