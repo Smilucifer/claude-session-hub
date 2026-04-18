@@ -426,6 +426,11 @@ const TeamRoom = (() => {
           actor: evt.actor, name: charName(evt.actor),
           content: evt.content || '', ts: evt.ts,
         });
+      } else if (t === 'tool_use') {
+        appendCheckpoint(threadEl, {
+          actor: evt.actor, name: charName(evt.actor),
+          content: `🔧 ${evt.tool || evt.content || 'tool'}`, ts: evt.ts,
+        });
       } else if (t === 'converged' || t === 'pass') {
         const label = document.createElement('div');
         label.className = 'tr-round-label';
@@ -709,6 +714,16 @@ const TeamRoom = (() => {
         actor: actorId,
         name,
         content: evt.content || '',
+        ts: evt.ts,
+      });
+      threadEl.scrollTop = threadEl.scrollHeight;
+    }
+
+    else if (evtType === 'tool_use') {
+      appendCheckpoint(threadEl, {
+        actor: actorId,
+        name,
+        content: `🔧 ${evt.tool || 'tool'}(${JSON.stringify(evt.input || {}).slice(0, 120)})`,
         ts: evt.ts,
       });
       threadEl.scrollTop = threadEl.scrollHeight;
