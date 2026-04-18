@@ -26,6 +26,7 @@ const TeamRoom = (() => {
   let streamRound = 0;
   let streamRoundActors = new Set();
   let pendingExtractionStats = null;
+  const MAX_VISIBLE_STREAM = 50;
 
   // DOM refs (resolved once DOM is ready)
   const $ = id => document.getElementById(id);
@@ -119,6 +120,29 @@ const TeamRoom = (() => {
     el.innerHTML = `\u{1F4DD} ${parts.join(' \u00B7 ')}`;
     container.appendChild(el);
     container.scrollTop = container.scrollHeight;
+  }
+
+  function _trimThread(threadEl) {
+    const hintCls = 'tr-collapsed-hint';
+    const children = threadEl.children;
+    const hasHint = children.length > 0 && children[0].classList.contains(hintCls);
+    const contentCount = hasHint ? children.length - 1 : children.length;
+
+    if (contentCount <= MAX_VISIBLE_STREAM) return;
+
+    const excess = contentCount - MAX_VISIBLE_STREAM;
+    const startIdx = hasHint ? 1 : 0;
+    for (let i = 0; i < excess; i++) {
+      threadEl.removeChild(threadEl.children[startIdx]);
+    }
+
+    if (!hasHint) {
+      const hint = document.createElement('div');
+      hint.className = hintCls;
+      hint.textContent = '\u22EF \u70B9\u51FB\u52A0\u8F7D\u66F4\u65E9\u7684\u6D88\u606F';
+      hint.onclick = () => refreshThread();
+      threadEl.insertBefore(hint, threadEl.firstChild);
+    }
   }
 
   // --- Mention autocomplete state ---
@@ -968,6 +992,8 @@ const TeamRoom = (() => {
       _appendEvolutionSummary(threadEl, pendingExtractionStats, evt.stats || {});
       pendingExtractionStats = null;
     }
+
+    _trimThread(threadEl);
 
     // Update recent events in inspector for every event
     appendInspectorEvent(evt);
