@@ -429,7 +429,7 @@ const TeamRoom = (() => {
       } else if (t === 'tool_use') {
         appendCheckpoint(threadEl, {
           actor: evt.actor, name: charName(evt.actor),
-          content: `🔧 ${evt.tool || evt.content || 'tool'}`, ts: evt.ts,
+          content: `\u{1F527} ${evt.tool || evt.content || 'tool'}`, ts: evt.ts,
         });
       } else if (t === 'converged' || t === 'pass') {
         const label = document.createElement('div');
@@ -723,7 +723,7 @@ const TeamRoom = (() => {
       appendCheckpoint(threadEl, {
         actor: actorId,
         name,
-        content: `🔧 ${evt.tool || 'tool'}(${JSON.stringify(evt.input || {}).slice(0, 120)})`,
+        content: `\u{1F527} ${evt.tool || 'tool'}(${JSON.stringify(evt.input || {}).slice(0, 120)})`,
         ts: evt.ts,
       });
       threadEl.scrollTop = threadEl.scrollHeight;
