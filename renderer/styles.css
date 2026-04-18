@@ -1060,3 +1060,9 @@ body.theme-light .session-time {
 #pair-devices .revoke-btn { background: #e24a4a; color: white; border: 0; padding: 6px 12px; border-radius: 4px; cursor: pointer; }
 .pair-modal-content hr { border: 0; border-top: 1px solid #3a3f47; margin: 20px 0 12px; }
 .pair-modal-content .hint { color: #888; font-size: 12px; }
+
+/* --- AI Team Room sidebar --- */
+.team-divider { height: 1px; background: var(--border-color, #333); margin: 8px 12px; }
+.team-section-label { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 1px; padding: 6px 14px 4px; user-select: none; }
+.session-item.team-room .session-status { background: #7cc4ff; }
+.session-item.team-room.selected .session-title { color: #7cc4ff; }

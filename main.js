@@ -599,9 +599,43 @@ app.whenReady().then(async () => {
   }
 });
 
+// --- AI Team Room IPC ---
+const { TeamBridge } = require('./core/team-bridge.js');
+const teamBridge = new TeamBridge();
+
+ipcMain.handle('team:isInitialized', () => teamBridge.isInitialized());
+ipcMain.handle('team:loadRooms', () => teamBridge.loadRooms());
+ipcMain.handle('team:loadCharacters', () => teamBridge.loadCharacters());
+ipcMain.handle('team:getEvents', (_, roomId, limit) => teamBridge.getEvents(roomId, limit));
+ipcMain.handle('team:getWiki', (_, roomId) => teamBridge.getWiki(roomId));
+ipcMain.handle('team:ask', async (event, roomId, message) => {
+  try {
+    const result = await teamBridge.askTeam(roomId, message, (type, data) => {
+      const sender = event.sender;
+      if (sender && !sender.isDestroyed()) {
+        sender.send('team:event', { type, data });
+      }
+    });
+    return result;
+  } catch (e) {
+    return { code: 1, stderr: e.message, error: true };
+  }
+});
+
+ipcMain.handle('team:createRoom', async (_, name, memberIds) => {
+  return teamBridge.createRoom(name, memberIds);
+});
+
+ipcMain.handle('team:getRoomPreviews', () => teamBridge.getRoomPreviews());
+ipcMain.handle('team:getWikiCandidates', (_, roomId) => teamBridge.getWikiCandidates(roomId));
+ipcMain.handle('team:approveWiki', (_, factId) => teamBridge.approveWiki(factId));
+ipcMain.handle('team:rejectWiki', (_, factId) => teamBridge.rejectWiki(factId));
+ipcMain.handle('team:exportConversation', (_, roomId) => teamBridge.exportConversation(roomId));
+
 app.on('before-quit', async () => {
   // Flush final state with cleanShutdown=true so next boot won't flag as crash.
   stateStore.save({ version: 1, cleanShutdown: true, sessions: lastPersistedSessions }, { sync: true });
+  try { teamBridge.cleanup(); } catch(e) {}
   if (mobileSrv) { try { await mobileSrv.close(); } catch {} }
 });
 
