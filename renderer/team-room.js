@@ -25,6 +25,7 @@ const TeamRoom = (() => {
   let streamHandler = null; // registered team:event listener (for cleanup on re-init)
   let streamRound = 0;
   let streamRoundActors = new Set();
+  let pendingExtractionStats = null;
 
   // DOM refs (resolved once DOM is ready)
   const $ = id => document.getElementById(id);
@@ -98,6 +99,26 @@ const TeamRoom = (() => {
     label.className = 'tr-round-label';
     label.textContent = _roundLabel(roundNum);
     container.appendChild(label);
+  }
+
+  function _appendEvolutionSummary(container, extraction, evolution) {
+    const parts = [];
+    if (extraction) {
+      const p = extraction.personal || 0;
+      if (p > 0) parts.push(`\u63D0\u53D6 <strong>${p}</strong> \u6761\u8BB0\u5FC6`);
+    }
+    if (evolution) {
+      const l = evolution.lessons_saved || 0;
+      const d = (evolution.wiki_distilled || 0) + (evolution.lessons_distilled || 0);
+      if (l > 0) parts.push(`\u5B66\u5230 <strong>${l}</strong> \u6761\u7ECF\u9A8C`);
+      if (d > 0) parts.push(`\u84B8\u998F <strong>${d}</strong> \u6761\u5171\u8BC6`);
+    }
+    if (parts.length === 0) return;
+    const el = document.createElement('div');
+    el.className = 'tr-evolution-summary';
+    el.innerHTML = `\u{1F4DD} ${parts.join(' \u00B7 ')}`;
+    container.appendChild(el);
+    container.scrollTop = container.scrollHeight;
   }
 
   // --- Mention autocomplete state ---
@@ -937,6 +958,15 @@ const TeamRoom = (() => {
       refreshInspector();
       streamRound = 0;
       streamRoundActors.clear();
+    }
+
+    else if (evtType === 'extraction_done') {
+      pendingExtractionStats = evt.stats || null;
+    }
+
+    else if (evtType === 'evolution_done') {
+      _appendEvolutionSummary(threadEl, pendingExtractionStats, evt.stats || {});
+      pendingExtractionStats = null;
     }
 
     // Update recent events in inspector for every event
