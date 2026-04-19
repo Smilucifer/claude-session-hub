@@ -138,6 +138,7 @@
 }
 
 .tr-msg-meta {
+  position: relative;
   display: flex;
   align-items: baseline;
   gap: 6px;
@@ -495,7 +496,8 @@
 
 .tr-event-item {
   display: flex;
-  gap: 6px;
+  align-items: baseline;
+  gap: 4px;
   font-size: 11px;
   color: #8a93a6;
   padding: 3px 0;
@@ -514,6 +516,13 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.tr-event-item-time {
+  font-size: 9px;
+  color: #555;
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 /* --- 9. CLI colors --- */
@@ -640,7 +649,7 @@
 
 .tr-checkpoint-time {
   font-size: 10px;
-  color: #6f7a8f;
+  color: #8090a8;
   margin-left: auto;
 }
 
@@ -781,7 +790,7 @@
 
 .tr-tool-use-time {
   font-size: 10px;
-  color: #6f7a8f;
+  color: #8090a8;
   margin-left: auto;
 }
 

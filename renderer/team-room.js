@@ -630,9 +630,11 @@ const TeamRoom = (() => {
     const typeStr = evt.type || '?';
     const who = evt.name || evt.actor || '';
     const bodyStr = evt.content ? String(evt.content).slice(0, 60) : who;
+    const tsStr = evt.ts ? formatTs(evt.ts) : '';
     el.innerHTML = `
       <span class="tr-event-item-type">${esc(typeStr)}</span>
       <span class="tr-event-item-body">${esc(bodyStr)}</span>
+      ${tsStr ? `<span class="tr-event-item-time">${esc(tsStr)}</span>` : ''}
     `;
     // Insert at top (most recent first)
     if (evtSection.firstChild) {
@@ -752,9 +754,11 @@ const TeamRoom = (() => {
       const bodyStr = evt.content
         ? String(evt.content).slice(0, 60)
         : (evt.data ? JSON.stringify(evt.data).slice(0, 60) : '');
+      const tsStr = evt.ts ? formatTs(evt.ts) : '';
       el.innerHTML = `
         <span class="tr-event-item-type">${esc(typeStr)}</span>
         <span class="tr-event-item-body">${esc(bodyStr)}</span>
+        ${tsStr ? `<span class="tr-event-item-time">${esc(tsStr)}</span>` : ''}
       `;
       evtSection.appendChild(el);
     }
