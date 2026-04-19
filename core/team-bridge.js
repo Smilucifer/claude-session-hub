@@ -62,13 +62,23 @@ class TeamBridge {
     return this._pyScript(['export', roomId]);
   }
 
-  // Spawn the full Python orchestrator for a @team question
   askTeam(roomId, message, onEvent, timeout = 300000) {
+    if (this._runningProc) {
+      return Promise.reject(new Error('Another orchestrator is already running'));
+    }
+    if (typeof message !== 'string' || !message.trim()) {
+      return Promise.reject(new Error('message must be non-empty string'));
+    }
+    if (message.length > 8192) {
+      return Promise.reject(new Error('message too long (max 8192)'));
+    }
+
     const env = Object.assign({}, process.env, {
       PYTHONUTF8: '1',
       CLAUDE_CODE_SKIP_HOOKS: '1',
       HTTP_PROXY: 'http://127.0.0.1:7890',
       HTTPS_PROXY: 'http://127.0.0.1:7890',
+      AI_TEAM_ROOM_ID: roomId || '',
     });
     delete env.CLAUDE_CODE_ENTRY_POINT;
     delete env.CLAUDE_CODE_DISPLAY_NAME;
@@ -81,10 +91,13 @@ class TeamBridge {
     ], { cwd: this.baseDir, env, stdio: ['pipe', 'pipe', 'pipe'] });
 
     this._runningProc = proc;
+    let done = false;
 
-    // Timeout guard
     const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
       proc.kill();
+      this._runningProc = null;
       if (onEvent) onEvent('error', { message: 'Timeout after ' + timeout + 'ms' });
     }, timeout);
 
@@ -113,17 +126,28 @@ class TeamBridge {
     proc.stderr.on('data', (data) => { stderr += data.toString('utf-8'); });
 
     return new Promise((resolve, reject) => {
-      proc.on('close', (code) => {
+      const finish = (code) => {
+        if (done) return;
+        done = true;
         clearTimeout(timer);
         this._runningProc = null;
+        if (stdout.trim()) {
+          const remaining = stdout.trim();
+          if (remaining.startsWith('EVENT:')) {
+            try { if (onEvent) onEvent('event', JSON.parse(remaining.slice(6))); } catch {}
+          } else if (onEvent) { onEvent('stdout', remaining); }
+        }
         if (onEvent) onEvent('done', { code });
         if (code !== 0) {
           reject(new Error(`Orchestrator exit ${code}: ${stderr.substring(0, 300)}`));
         } else {
           resolve({ code, stderr });
         }
-      });
+      };
+      proc.on('close', finish);
       proc.on('error', (err) => {
+        if (done) return;
+        done = true;
         clearTimeout(timer);
         this._runningProc = null;
         reject(err);
@@ -139,8 +163,8 @@ class TeamBridge {
     // Write YAML
     const yaml = [
       `id: "${id}"`,
-      `display_name: "${name.replace(/"/g, '\\"')}"`,
-      `members: [${memberIds.map(m => `"${m}"`).join(', ')}]`,
+      `display_name: "${name.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\n\r]/g, ' ')}"`,
+      `members: [${memberIds.map(m => `"${m.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\n\r\]]/g, '')}"`).join(', ')}]`,
       `speech_mode: "natural"`,
       `task_mode: "divergent"`,
       `memory_bias: "balanced"`,
@@ -167,8 +191,19 @@ class TeamBridge {
   _pyScript(args, timeoutMs = 30000) {
     const scriptPath = path.join(this.baseDir, 'ai_team', 'bridge_query.py');
     return new Promise((resolve, reject) => {
+      const minEnv = {
+        PATH: process.env.PATH,
+        PYTHONUTF8: '1',
+        SYSTEMROOT: process.env.SYSTEMROOT,
+        TEMP: process.env.TEMP,
+        TMP: process.env.TMP,
+        HOME: process.env.HOME || process.env.USERPROFILE,
+        USERPROFILE: process.env.USERPROFILE,
+        HTTP_PROXY: process.env.HTTP_PROXY || 'http://127.0.0.1:7890',
+        HTTPS_PROXY: process.env.HTTPS_PROXY || 'http://127.0.0.1:7890',
+      };
       const proc = spawn('python', [scriptPath, ...args], {
-        env: Object.assign({}, process.env, { PYTHONUTF8: '1' }),
+        env: minEnv,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       let out = '', err = '';
