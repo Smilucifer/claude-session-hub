@@ -62,6 +62,11 @@ class SessionManager extends EventEmitter {
       if (this.hookPort) sessionEnv.CLAUDE_HUB_PORT = String(this.hookPort);
       if (this.hookToken) sessionEnv.CLAUDE_HUB_TOKEN = this.hookToken;
       sessionEnv.CLAUDE_HUB_MOBILE_PORT = String((global.__mobileSrv && global.__mobileSrv.port) || 3470);
+      // Propagate data-dir override so the statusline script writes its cache
+      // into the isolated test dir instead of the production ~/.claude-session-hub.
+      if (process.env.CLAUDE_HUB_DATA_DIR) {
+        sessionEnv.CLAUDE_HUB_DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR;
+      }
     }
 
     const shellArgs = isClaude ? ['-NoProfile', '-NoLogo'] : [];
@@ -121,9 +126,9 @@ class SessionManager extends EventEmitter {
       } else if (kind === 'claude-resume') {
         cmd = ' claude --resume\r\n';
       } else {
-        // Fresh Claude sessions default to Opus 4.6. Resume/continue inherit
-        // the transcript's model, so don't force --model there.
-        cmd = ' claude --model claude-opus-4-6\r\n';
+        // Fresh Claude sessions default to Opus 4.6 1M (extended thinking).
+        // Resume/continue inherit the transcript's model, so don't force --model there.
+        cmd = ' claude --model claude-opus-4-6[1m]\r\n';
       }
       let sent = false;
       let debounceTimer = null;

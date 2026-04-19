@@ -6,13 +6,15 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const os = require('os');
 
 const THROTTLE_MS = 60 * 1000;
-const CACHE_FILE = path.join(
-  process.env.USERPROFILE || process.env.HOME || '.',
-  '.claude-session-hub',
-  'statusline-cache.json'
-);
+// Honor CLAUDE_HUB_DATA_DIR so isolated test Hubs don't collide with the
+// production cache. Hub (session-manager.js) forwards this env var when set.
+// Default fallback uses os.homedir() to stay consistent with core/data-dir.js.
+const DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR
+  || path.join(os.homedir(), '.claude-session-hub');
+const CACHE_FILE = path.join(DATA_DIR, 'statusline-cache.json');
 
 let stdin = '';
 process.stdin.setEncoding('utf8');

@@ -9,6 +9,14 @@ const { SessionManager } = require('./core/session-manager.js');
 const stateStore = require('./core/state-store.js');
 const { createMobileServer } = require('./core/mobile-server.js');
 const mobileAuth = require('./core/mobile-auth.js');
+const { getHubDataDir } = require('./core/data-dir.js');
+
+// Isolate Chromium userData when CLAUDE_HUB_DATA_DIR is set (parallel test
+// instances). Must run before app.whenReady(). Production Hub unaffected
+// because the env var is only set by test harnesses.
+if (process.env.CLAUDE_HUB_DATA_DIR) {
+  app.setPath('userData', path.join(process.env.CLAUDE_HUB_DATA_DIR, 'electron-userdata'));
+}
 
 // Auto-deploy hook scripts + settings.json config on first launch.
 // Idempotent — skips if already present, never overwrites user's existing hooks.
@@ -395,7 +403,7 @@ ipcMain.handle('is-window-focused', () => {
 });
 
 // --- Clipboard image paste support ---
-const imageDir = path.join(process.env.USERPROFILE || process.env.HOME, '.claude-session-hub', 'images');
+const imageDir = path.join(getHubDataDir(), 'images');
 
 ipcMain.handle('save-clipboard-image', () => {
   try {

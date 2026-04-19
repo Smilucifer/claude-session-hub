@@ -1,10 +1,10 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const bcrypt = require('bcryptjs');
+const { getHubDataDir } = require('./data-dir');
 
-const DEFAULT_STORE = path.join(os.homedir(), '.claude-session-hub', 'mobile-devices.json');
+const DEFAULT_STORE = path.join(getHubDataDir(), 'mobile-devices.json');
 let STORE_PATH = DEFAULT_STORE;
 const BCRYPT_ROUNDS = 10;
 function _setStorePath(p) { STORE_PATH = p; }

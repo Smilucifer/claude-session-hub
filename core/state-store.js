@@ -1,8 +1,8 @@
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
+const { getHubDataDir } = require('./data-dir');
 
-const STATE_DIR = path.join(os.homedir(), '.claude-session-hub');
+const STATE_DIR = getHubDataDir();
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
 const CURRENT_VERSION = 1;
 
