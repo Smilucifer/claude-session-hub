@@ -466,10 +466,8 @@ function renderTeamRooms() {
 function selectTeamRoom(roomId) {
   activeSessionId = null;
   activeTeamRoomId = roomId;
-  const termPanel = document.getElementById('terminal-panel');
-  if (termPanel) termPanel.style.display = 'none';
-  const emptyState = document.getElementById('empty-state');
-  if (emptyState) emptyState.style.display = 'none';
+  if (terminalPanelEl) terminalPanelEl.style.display = 'none';
+  if (emptyStateEl) emptyStateEl.style.display = 'none';
   const trPanel = document.getElementById('team-room-panel');
   if (trPanel) trPanel.style.display = 'flex';
   if (typeof TeamRoom !== 'undefined' && TeamRoom.openRoom) {
@@ -2236,6 +2234,10 @@ ipcRenderer.on('session-created', (_e, { session }) => {
     sessions.set(session.id, session);
   }
   activeSessionId = session.id;
+  activeTeamRoomId = null;
+  const trp = document.getElementById('team-room-panel');
+  if (trp) trp.style.display = 'none';
+  if (terminalPanelEl) terminalPanelEl.style.display = '';
   ipcRenderer.send('focus-session', { sessionId: session.id });
   renderSessionList();
   showTerminal(session.id);

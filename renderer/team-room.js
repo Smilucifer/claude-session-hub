@@ -16,7 +16,7 @@ const TeamRoom = (() => {
   const MD_ALLOWED_TAGS = ['p','br','strong','em','del','s','code','pre','ul','ol','li',
     'blockquote','h1','h2','h3','h4','h5','h6','a','hr','table','thead','tbody','tr','th','td','span',
     'div','button'];
-  const MD_ALLOWED_ATTR = ['href','title','target','rel','class','onclick'];
+  const MD_ALLOWED_ATTR = ['href','title','target','rel','class'];
 
   // State
   let currentRoomId = null;
@@ -83,14 +83,33 @@ const TeamRoom = (() => {
     const src = String(text == null ? '' : text);
     try {
       const html = marked.parse(src);
-      let sanitized = DOMPurify.sanitize(html, { ALLOWED_TAGS: MD_ALLOWED_TAGS, ALLOWED_ATTR: MD_ALLOWED_ATTR });
-      sanitized = sanitized.replace(/<pre>/g, '<div class="tr-code-wrapper"><button class="tr-code-copy" onclick="this.parentElement.querySelector(\'code\')&&navigator.clipboard.writeText(this.parentElement.querySelector(\'code\').textContent).then(()=>{this.textContent=\'\u2713\';this.classList.add(\'copied\');setTimeout(()=>{this.textContent=\'Copy\';this.classList.remove(\'copied\')},1500)})">Copy</button><pre>');
-      sanitized = sanitized.replace(/<\/pre>/g, '</pre></div>');
-      return sanitized;
+      return DOMPurify.sanitize(html, { ALLOWED_TAGS: MD_ALLOWED_TAGS, ALLOWED_ATTR: MD_ALLOWED_ATTR });
     } catch (e) {
       console.warn('[TeamRoom] markdown parse failed, falling back to plain:', e && e.message);
       return esc(src).replace(/\n/g, '<br>');
     }
+  }
+
+  function _addCopyButtons(container) {
+    container.querySelectorAll('pre').forEach(pre => {
+      if (pre.parentNode && pre.parentNode.classList.contains('tr-code-wrapper')) return;
+      const wrapper = document.createElement('div');
+      wrapper.className = 'tr-code-wrapper';
+      const btn = document.createElement('button');
+      btn.className = 'tr-code-copy';
+      btn.textContent = 'Copy';
+      btn.addEventListener('click', () => {
+        const code = pre.querySelector('code');
+        if (code) navigator.clipboard.writeText(code.textContent).then(() => {
+          btn.textContent = '\u2713';
+          btn.classList.add('copied');
+          setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
+        });
+      });
+      pre.parentNode.insertBefore(wrapper, pre);
+      wrapper.appendChild(btn);
+      wrapper.appendChild(pre);
+    });
   }
 
   function _roundLabel(n) {
@@ -110,13 +129,13 @@ const TeamRoom = (() => {
     const parts = [];
     if (extraction) {
       const p = extraction.personal || 0;
-      if (p > 0) parts.push(`\u63D0\u53D6 <strong>${p}</strong> \u6761\u8BB0\u5FC6`);
+      if (p > 0) parts.push(`\u63D0\u53D6 <strong>${esc(p)}</strong> \u6761\u8BB0\u5FC6`);
     }
     if (evolution) {
       const l = evolution.lessons_saved || 0;
       const d = (evolution.wiki_distilled || 0) + (evolution.lessons_distilled || 0);
-      if (l > 0) parts.push(`\u5B66\u5230 <strong>${l}</strong> \u6761\u7ECF\u9A8C`);
-      if (d > 0) parts.push(`\u84B8\u998F <strong>${d}</strong> \u6761\u5171\u8BC6`);
+      if (l > 0) parts.push(`\u5B66\u5230 <strong>${esc(l)}</strong> \u6761\u7ECF\u9A8C`);
+      if (d > 0) parts.push(`\u84B8\u998F <strong>${esc(d)}</strong> \u6761\u5171\u8BC6`);
     }
     if (parts.length === 0) return;
     const el = document.createElement('div');
@@ -383,6 +402,12 @@ const TeamRoom = (() => {
   // --- Open Room ---
 
   async function openRoom(roomId, roomConfig) {
+    for (const [id, entry] of Object.entries(thinkingMap)) {
+      clearInterval(entry.timer);
+      delete thinkingMap[id];
+    }
+    streamRound = 0;
+    streamRoundActors.clear();
     currentRoomId = roomId;
     currentRoomConfig = roomConfig || {};
     renderHeader();
@@ -547,6 +572,7 @@ const TeamRoom = (() => {
       </div>
     `;
     container.appendChild(msgEl);
+    _addCopyButtons(msgEl);
   }
 
   /** Render a single checkpoint card — muted "路过说一下" style, no round-counter impact. */
@@ -574,6 +600,7 @@ const TeamRoom = (() => {
       </div>
     `;
     container.appendChild(el);
+    _addCopyButtons(el);
   }
 
   /** Format tool call input as readable function-call string. */
@@ -1048,7 +1075,6 @@ const TeamRoom = (() => {
         threadEl.appendChild(errNote);
       }
     } finally {
-      sending = false;
       for (const [id, entry] of Object.entries(thinkingMap)) {
         clearInterval(entry.timer);
         entry.el.remove();
@@ -1058,6 +1084,7 @@ const TeamRoom = (() => {
       if (inputBox) inputBox.focus();
 
       await refreshInspector();
+      sending = false;
     }
   }
 
