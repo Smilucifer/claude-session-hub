@@ -14,8 +14,9 @@ const TeamRoom = (() => {
     }
   });
   const MD_ALLOWED_TAGS = ['p','br','strong','em','del','s','code','pre','ul','ol','li',
-    'blockquote','h1','h2','h3','h4','h5','h6','a','hr','table','thead','tbody','tr','th','td','span'];
-  const MD_ALLOWED_ATTR = ['href','title','target','rel','class'];
+    'blockquote','h1','h2','h3','h4','h5','h6','a','hr','table','thead','tbody','tr','th','td','span',
+    'div','button'];
+  const MD_ALLOWED_ATTR = ['href','title','target','rel','class','onclick'];
 
   // State
   let currentRoomId = null;
@@ -82,7 +83,10 @@ const TeamRoom = (() => {
     const src = String(text == null ? '' : text);
     try {
       const html = marked.parse(src);
-      return DOMPurify.sanitize(html, { ALLOWED_TAGS: MD_ALLOWED_TAGS, ALLOWED_ATTR: MD_ALLOWED_ATTR });
+      let sanitized = DOMPurify.sanitize(html, { ALLOWED_TAGS: MD_ALLOWED_TAGS, ALLOWED_ATTR: MD_ALLOWED_ATTR });
+      sanitized = sanitized.replace(/<pre>/g, '<div class="tr-code-wrapper"><button class="tr-code-copy" onclick="this.parentElement.querySelector(\'code\')&&navigator.clipboard.writeText(this.parentElement.querySelector(\'code\').textContent).then(()=>{this.textContent=\'\u2713\';this.classList.add(\'copied\');setTimeout(()=>{this.textContent=\'Copy\';this.classList.remove(\'copied\')},1500)})">Copy</button><pre>');
+      sanitized = sanitized.replace(/<\/pre>/g, '</pre></div>');
+      return sanitized;
     } catch (e) {
       console.warn('[TeamRoom] markdown parse failed, falling back to plain:', e && e.message);
       return esc(src).replace(/\n/g, '<br>');
@@ -626,9 +630,11 @@ const TeamRoom = (() => {
     const typeStr = evt.type || '?';
     const who = evt.name || evt.actor || '';
     const bodyStr = evt.content ? String(evt.content).slice(0, 60) : who;
+    const tsStr = evt.ts ? formatTs(evt.ts) : '';
     el.innerHTML = `
       <span class="tr-event-item-type">${esc(typeStr)}</span>
       <span class="tr-event-item-body">${esc(bodyStr)}</span>
+      ${tsStr ? `<span class="tr-event-item-time">${esc(tsStr)}</span>` : ''}
     `;
     // Insert at top (most recent first)
     if (evtSection.firstChild) {
@@ -748,9 +754,11 @@ const TeamRoom = (() => {
       const bodyStr = evt.content
         ? String(evt.content).slice(0, 60)
         : (evt.data ? JSON.stringify(evt.data).slice(0, 60) : '');
+      const tsStr = evt.ts ? formatTs(evt.ts) : '';
       el.innerHTML = `
         <span class="tr-event-item-type">${esc(typeStr)}</span>
         <span class="tr-event-item-body">${esc(bodyStr)}</span>
+        ${tsStr ? `<span class="tr-event-item-time">${esc(tsStr)}</span>` : ''}
       `;
       evtSection.appendChild(el);
     }

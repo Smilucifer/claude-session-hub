@@ -138,6 +138,7 @@
 }
 
 .tr-msg-meta {
+  position: relative;
   display: flex;
   align-items: baseline;
   gap: 6px;
@@ -177,6 +178,11 @@
 .tr-msg-bubble ul, .tr-msg-bubble ol { margin: 4px 0 6px; padding-left: 22px; }
 .tr-msg-bubble li { margin: 2px 0; }
 .tr-msg-bubble li > p { margin: 0; }
+.tr-msg-bubble li > ul,
+.tr-msg-bubble li > ol {
+  margin-left: 0;
+  padding-left: 14px;
+}
 .tr-msg-bubble h1, .tr-msg-bubble h2, .tr-msg-bubble h3,
 .tr-msg-bubble h4, .tr-msg-bubble h5, .tr-msg-bubble h6 {
   margin: 8px 0 4px;
@@ -188,13 +194,11 @@
 .tr-msg-bubble h3 { font-size: 14px; }
 .tr-msg-bubble h4, .tr-msg-bubble h5, .tr-msg-bubble h6 { font-size: 13px; }
 .tr-msg-bubble code {
-  background: #0d1018;
-  border: 1px solid #262c3a;
+  color: #ffd966;
+  background: #1a2337;
+  padding: 1px 4px;
   border-radius: 3px;
-  padding: 1px 5px;
-  font-family: 'Consolas', 'Courier New', monospace;
-  font-size: 12.5px;
-  color: #ffcc88;
+  font-size: 0.9em;
 }
 .tr-msg-bubble pre {
   background: #0d1018;
@@ -215,7 +219,7 @@
 }
 .tr-msg-bubble blockquote {
   margin: 4px 0;
-  padding: 2px 10px;
+  padding: 4px 12px;
   border-left: 3px solid #3b4151;
   color: #b7c0d1;
   background: #0f131b;
@@ -239,7 +243,47 @@
   border: 1px solid #2a3042;
   padding: 3px 8px;
 }
-.tr-msg-bubble th { background: #0f131b; }
+.tr-msg-bubble table tbody tr:nth-child(even) {
+  background: #0f131b;
+}
+.tr-msg-bubble table tbody tr:hover {
+  background: #1a2337;
+}
+.tr-msg-bubble table th {
+  font-weight: 700;
+  color: #e2e8f4;
+  background: #141a28;
+}
+
+/* --- Code block copy button --- */
+.tr-code-wrapper {
+  position: relative;
+}
+.tr-code-copy {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: #2a3042;
+  border: 1px solid #3a4258;
+  color: #8a93a6;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.tr-code-wrapper:hover .tr-code-copy {
+  opacity: 1;
+}
+.tr-code-copy:hover {
+  background: #3a4a62;
+  color: #c8d0e0;
+}
+.tr-code-copy.copied {
+  color: #7c7;
+  border-color: #4a7a4a;
+}
 
 /* --- 5. Round labels --- */
 .tr-round-label {
@@ -452,7 +496,8 @@
 
 .tr-event-item {
   display: flex;
-  gap: 6px;
+  align-items: baseline;
+  gap: 4px;
   font-size: 11px;
   color: #8a93a6;
   padding: 3px 0;
@@ -471,6 +516,13 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.tr-event-item-time {
+  font-size: 9px;
+  color: #555;
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 /* --- 9. CLI colors --- */
@@ -597,7 +649,7 @@
 
 .tr-checkpoint-time {
   font-size: 10px;
-  color: #6f7a8f;
+  color: #8090a8;
   margin-left: auto;
 }
 
@@ -738,7 +790,7 @@
 
 .tr-tool-use-time {
   font-size: 10px;
-  color: #6f7a8f;
+  color: #8090a8;
   margin-left: auto;
 }
 
