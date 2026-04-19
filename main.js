@@ -34,8 +34,17 @@ function ensureHooksDeployed() {
   for (const file of scriptFiles) {
     const dest = path.join(scriptsDir, file);
     const src = path.join(srcDir, file);
-    if (!fs.existsSync(dest) && fs.existsSync(src)) {
-      fs.mkdirSync(scriptsDir, { recursive: true });
+    if (!fs.existsSync(src)) continue;
+    fs.mkdirSync(scriptsDir, { recursive: true });
+    // Repo-generated scripts (not user-authored): keep deployed copy in sync
+    // with the repo. Otherwise an old deployed statusline/hook keeps running
+    // and silently ignores new logic shipped in later Hub releases.
+    let needsCopy = !fs.existsSync(dest);
+    if (!needsCopy) {
+      try { needsCopy = !fs.readFileSync(src).equals(fs.readFileSync(dest)); }
+      catch { needsCopy = true; }
+    }
+    if (needsCopy) {
       fs.copyFileSync(src, dest);
       console.log(`[hub] deployed ${file} -> ${dest}`);
     }
