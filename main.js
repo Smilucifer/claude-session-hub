@@ -343,6 +343,11 @@ ipcMain.handle('get-sessions', () => {
   return sessionManager.getAllSessions();
 });
 
+// Diagnostic: read the PTY ring buffer for a session (used by E2E smoke tests).
+ipcMain.handle('debug:get-session-buffer', (_e, sessionId) => {
+  return sessionManager.getSessionBuffer(sessionId);
+});
+
 // --- Dormant session persistence ---
 // On boot we read state.json; those entries become dormant (sidebar entries
 // with no live PTY). User clicks dormant session → resume-session IPC spawns

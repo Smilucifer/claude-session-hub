@@ -66,25 +66,31 @@ class TeamSessionManager {
       this._sessions.delete(key);
     }
 
-    // Write MCP config and prompt files
-    const mcpConfigFile = this._writeMcpConfig(roomId, character);
+    // Write MCP config (format depends on CLI) and system prompt
+    const mcpConfigPath = this._writeMcpConfig(roomId, character);
     const promptFile = this._writePromptFile(roomId, character);
     const cliKind = this._cliKind(character.backing_cli);
 
-    // Create session via sessionManager with MCP config
-    const session = this._sessionManager.createSession(cliKind, {
+    // Gemini reads .gemini/settings.json from cwd, so we launch the shell in
+    // the per-character workdir. Claude/Codex read a file path flag.
+    const sessionCwd = cliKind === 'gemini' ? mcpConfigPath : AI_TEAM_DIR;
+    const createOpts = {
       title: `Team: ${character.display_name}`,
-      cwd: AI_TEAM_DIR,
+      cwd: sessionCwd,
       noInheritCursor: true,
       appendSystemPromptFile: promptFile,
-      mcpConfigFile: mcpConfigFile,
       extraEnv: {
         AI_TEAM_ROOM_ID: roomId,
         AI_TEAM_CHARACTER_ID: character.id,
         AI_TEAM_HUB_CALLBACK_URL: `http://127.0.0.1:${this._hookPort}`,
         CLAUDE_CODE_SKIP_HOOKS: '1',
       },
-    });
+    };
+    if (cliKind === 'claude' || cliKind === 'claude-resume') {
+      createOpts.mcpConfigFile = mcpConfigPath;
+    }
+
+    const session = this._sessionManager.createSession(cliKind, createOpts);
 
     this._sessions.set(key, session.id);
 
@@ -217,30 +223,51 @@ class TeamSessionManager {
   }
 
   /**
-   * Write MCP config JSON for Claude's --mcp-config flag.
-   * @returns {string} path to config file
+   * Write MCP config for a character. Format depends on backing CLI:
+   *   - Claude: JSON file → passed via --mcp-config <path>
+   *   - Gemini: .gemini/settings.json in session cwd (read by Gemini CLI)
+   *   - Codex: not implemented yet (uses --config flags; future)
+   * @returns {string} path (Claude: config file; Gemini: session cwd)
    */
   _writeMcpConfig(roomId, character) {
-    fs.mkdirSync(MCP_CONFIG_DIR, { recursive: true });
-    const filePath = path.join(MCP_CONFIG_DIR, `${roomId}-${character.id}.json`);
-
-    const config = {
-      mcpServers: {
-        'ai-team': {
-          command: 'python',
-          args: ['-m', 'ai_team.mcp_server'],
-          cwd: AI_TEAM_DIR,
-          env: {
-            AI_TEAM_ROOM_ID: roomId,
-            AI_TEAM_CHARACTER_ID: character.id,
-            AI_TEAM_HUB_CALLBACK_URL: `http://127.0.0.1:${this._hookPort}`,
-            PYTHONUTF8: '1',
-          },
-        },
+    const cliKind = this._cliKind(character.backing_cli);
+    const mcpServerSpec = {
+      command: 'python',
+      args: ['-m', 'ai_team.mcp_server'],
+      cwd: AI_TEAM_DIR,
+      env: {
+        AI_TEAM_ROOM_ID: roomId,
+        AI_TEAM_CHARACTER_ID: character.id,
+        AI_TEAM_HUB_CALLBACK_URL: `http://127.0.0.1:${this._hookPort}`,
+        PYTHONUTF8: '1',
       },
     };
 
-    fs.writeFileSync(filePath, JSON.stringify(config, null, 2), 'utf-8');
+    if (cliKind === 'gemini') {
+      // Gemini reads .gemini/settings.json from its cwd (no --mcp-config flag).
+      // Create a per-character workdir under MCP_CONFIG_DIR so each session
+      // has its own .gemini dir.
+      const workdir = path.join(MCP_CONFIG_DIR, `gemini-${roomId}-${character.id}`);
+      const geminiDir = path.join(workdir, '.gemini');
+      fs.mkdirSync(geminiDir, { recursive: true });
+      const settings = {
+        mcpServers: {
+          'ai-team': {
+            ...mcpServerSpec,
+            timeout: 600000,
+            trust: true,
+          },
+        },
+      };
+      fs.writeFileSync(path.join(geminiDir, 'settings.json'),
+        JSON.stringify(settings, null, 2), 'utf-8');
+      return workdir;
+    }
+
+    // Default (Claude): standalone JSON config file
+    fs.mkdirSync(MCP_CONFIG_DIR, { recursive: true });
+    const filePath = path.join(MCP_CONFIG_DIR, `${roomId}-${character.id}.json`);
+    fs.writeFileSync(filePath, JSON.stringify({ mcpServers: { 'ai-team': mcpServerSpec } }, null, 2), 'utf-8');
     return filePath;
   }
 
