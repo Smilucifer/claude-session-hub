@@ -69,6 +69,11 @@ class SessionManager extends EventEmitter {
       }
     }
 
+    // Merge extra env vars (used by TeamSessionManager for MCP config etc.)
+    if (opts.extraEnv) {
+      Object.assign(sessionEnv, opts.extraEnv);
+    }
+
     const shellArgs = isClaude ? ['-NoProfile', '-NoLogo'] : [];
     // cwd fallback order: opts.cwd (if exists) -> user home. We stat-check to
     // avoid node-pty failing if the stored cwd was later deleted/moved.
@@ -120,16 +125,25 @@ class SessionManager extends EventEmitter {
     if (isClaude) {
       let cmd;
       if (opts.resumeCCSessionId) {
-        cmd = ` claude --resume ${opts.resumeCCSessionId}\r\n`;
+        cmd = ` claude --resume ${opts.resumeCCSessionId}`;
       } else if (opts.useContinue) {
-        cmd = ' claude --continue\r\n';
+        cmd = ' claude --continue';
       } else if (kind === 'claude-resume') {
-        cmd = ' claude --resume\r\n';
+        cmd = ' claude --resume';
       } else {
         // Fresh Claude sessions default to Opus 4.6 1M (extended thinking).
         // Resume/continue inherit the transcript's model, so don't force --model there.
-        cmd = ' claude --model claude-opus-4-6[1m]\r\n';
+        cmd = ' claude --model claude-opus-4-6[1m]';
       }
+      // Append system prompt file if provided (TeamSessionManager injects character prompt)
+      if (opts.appendSystemPromptFile) {
+        cmd += ` --append-system-prompt-file "${opts.appendSystemPromptFile.replace(/\\/g, '\\\\')}"`;
+      }
+      // Append MCP config file if provided (TeamSessionManager injects MCP server config)
+      if (opts.mcpConfigFile) {
+        cmd += ` --mcp-config "${opts.mcpConfigFile.replace(/\\/g, '\\\\')}"`;
+      }
+      cmd += '\r\n';
       let sent = false;
       let debounceTimer = null;
       const watcher = ptyProcess.onData(() => {
