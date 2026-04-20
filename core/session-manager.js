@@ -90,7 +90,11 @@ class SessionManager extends EventEmitter {
       cwd: spawnCwd,
       env: sessionEnv,
       useConpty: true,
-      conptyInheritCursor: true,
+      // conptyInheritCursor=true kills PTY output for headless sessions (no
+      // renderer xterm attached). TeamSessionManager sets noInheritCursor for
+      // background character sessions. Normal user sessions don't set it, so
+      // the default stays true for backward compatibility.
+      conptyInheritCursor: !opts.noInheritCursor,
     });
 
     const now = Date.now();

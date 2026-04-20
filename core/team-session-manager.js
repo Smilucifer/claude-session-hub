@@ -75,6 +75,7 @@ class TeamSessionManager {
     const session = this._sessionManager.createSession(cliKind, {
       title: `Team: ${character.display_name}`,
       cwd: AI_TEAM_DIR,
+      noInheritCursor: true,
       appendSystemPromptFile: promptFile,
       mcpConfigFile: mcpConfigFile,
       extraEnv: {
@@ -124,8 +125,15 @@ class TeamSessionManager {
 
       this._pending.set(key, { resolve, reject, timer });
 
-      // Write to PTY stdin — the CLI will process and call team_respond MCP tool
-      this._sessionManager.writeToSession(hubSessionId, text + '\r\n');
+      // Write to PTY stdin using bracketed-paste mode. Without paste markers,
+      // Claude Code TUI silently ignores programmatic bulk writes. With them,
+      // the TUI treats the content as a pasted block and then \r submits it.
+      const pasteStart = '\x1b[200~';
+      const pasteEnd = '\x1b[201~';
+      this._sessionManager.writeToSession(hubSessionId, pasteStart + text + pasteEnd);
+      setTimeout(() => {
+        this._sessionManager.writeToSession(hubSessionId, '\r');
+      }, 200);
     });
   }
 
@@ -266,7 +274,10 @@ class TeamSessionManager {
         buffer += data;
         // Claude: look for prompt marker or tips box
         if (cliKind === 'claude' || cliKind === 'claude-resume') {
-          if (/[❯>]\s*$/.test(buffer) || buffer.includes('Tips:')) {
+          // Claude CLI prompt marker ❯ may be followed by ANSI escapes, cursor
+          // save/restore codes, etc. Just check presence + some bulk output so
+          // we don't match a stray early byte.
+          if (buffer.length > 200 && (buffer.includes('❯') || buffer.includes('bypass permissions') || buffer.includes('Tips:'))) {
             return true;
           }
         }
