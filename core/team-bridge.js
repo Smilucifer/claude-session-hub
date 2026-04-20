@@ -188,15 +188,15 @@ class TeamBridge {
         // Send and wait for MCP callback
         const result = await this._teamSessionManager.sendMessage(roomId, charId, injectedText, timeout);
 
-        // Update read pointer to latest event
+        // Update read pointer to latest event's rowid (cursor used by
+        // events-since is rowid, not ts — keep types consistent).
         if (history.length > 0) {
-          const lastTs = Math.max(...history.map(e => Number(e.ts) || 0));
-          this._setReadPointer(roomId, charId, lastTs);
+          const lastRowid = Math.max(...history.map(e => Number(e.rowid) || 0));
+          if (lastRowid > 0) this._setReadPointer(roomId, charId, lastRowid);
         }
 
-        // Persist AI response to DB
-        await this._pyScript(['insert-event', roomId, charId, 'message', result.content]);
-
+        // AI response is already persisted to DB by the team_respond MCP tool
+        // itself — do NOT insert again here (previously caused duplicate events).
         if (onEvent) onEvent('event', {
           type: 'message',
           actor: charId,
