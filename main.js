@@ -6,6 +6,7 @@ const http = require('http');
 const os = require('os');
 const QRCode = require('qrcode');
 const { SessionManager } = require('./core/session-manager.js');
+const { TeamSessionManager } = require('./core/team-session-manager.js');
 const stateStore = require('./core/state-store.js');
 const { createMobileServer } = require('./core/mobile-server.js');
 const mobileAuth = require('./core/mobile-auth.js');
@@ -228,6 +229,7 @@ const HOOK_TOKEN = crypto.randomBytes(16).toString('hex');
 
 let hookPort = null;  // set after listen() succeeds
 let mobileSrv = null; // set after app.whenReady startup
+let teamSessionManager = null; // set after hookPort is known
 
 let mainWindow;
 const sessionManager = new SessionManager();
@@ -499,7 +501,8 @@ const hookServer = http.createServer((req, res) => {
 
   const isHook = req.method === 'POST' && req.url.startsWith('/api/hook/');
   const isStatus = req.method === 'POST' && req.url === '/api/status';
-  if (!isHook && !isStatus) {
+  const isTeamResponse = req.method === 'POST' && req.url === '/api/team/response';
+  if (!isHook && !isStatus && !isTeamResponse) {
     res.writeHead(404); res.end('{}'); return;
   }
 
@@ -515,6 +518,20 @@ const hookServer = http.createServer((req, res) => {
     if (tooBig) { res.writeHead(413); res.end('{}'); return; }
     let parsed;
     try { parsed = JSON.parse(body || '{}'); } catch { parsed = {}; }
+    // Team MCP callback — no hook token required (loopback only)
+    if (isTeamResponse) {
+      if (teamSessionManager && parsed.room_id && parsed.character_id && parsed.content) {
+        teamSessionManager.onResponse(parsed.room_id, parsed.character_id, parsed.content, parsed.event_id);
+        sendToRenderer('team-response', {
+          roomId: parsed.room_id,
+          characterId: parsed.character_id,
+          content: parsed.content,
+          eventId: parsed.event_id,
+        });
+      }
+      res.writeHead(200); res.end('{"ok":true}');
+      return;
+    }
     if (parsed.token !== HOOK_TOKEN) {
       res.writeHead(403); res.end('{}'); return;
     }
@@ -588,6 +605,8 @@ app.whenReady().then(async () => {
   if (hookPort) {
     console.log(`[hub] hook server listening on 127.0.0.1:${hookPort}`);
     sessionManager.hookPort = hookPort;
+    teamSessionManager = new TeamSessionManager(sessionManager, hookPort);
+    teamBridge.setTeamSessionManager(teamSessionManager);
   } else {
     console.warn('[hub] hook server failed to bind — falling back to silence detection');
   }
@@ -619,6 +638,8 @@ app.whenReady().then(async () => {
 // --- AI Team Room IPC ---
 const { TeamBridge } = require('./core/team-bridge.js');
 const teamBridge = new TeamBridge();
+// TeamSessionManager is wired to teamBridge lazily after hookPort is known
+// (see app.whenReady). teamBridge._teamSessionManager is set there too.
 
 ipcMain.handle('team:isInitialized', () => teamBridge.isInitialized());
 ipcMain.handle('team:loadRooms', () => teamBridge.loadRooms());
@@ -653,6 +674,7 @@ app.on('before-quit', async () => {
   // Flush final state with cleanShutdown=true so next boot won't flag as crash.
   stateStore.save({ version: 1, cleanShutdown: true, sessions: lastPersistedSessions }, { sync: true });
   try { teamBridge.cleanup(); } catch(e) {}
+  if (teamSessionManager) { try { teamSessionManager.closeAll(); } catch(e) {} }
   if (mobileSrv) { try { await mobileSrv.close(); } catch {} }
 });
 
