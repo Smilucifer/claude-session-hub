@@ -222,7 +222,12 @@ async function readLastUserMessage(transcriptPath) {
 }
 
 // Hook server picks the first free port in this range.
-const HOOK_PORT_CANDIDATES = [3456, 3457, 3458, 3459, 3460];
+const HOOK_PORT_CANDIDATES = [
+  3456, 3457, 3458, 3459, 3460,
+  3461, 3462, 3463, 3464, 3465,
+  3466, 3467, 3468, 3469, 3470,
+  3471, 3472, 3473, 3474, 3475,
+];
 // Random per-launch token; hook POSTs must carry it. Stops any other local
 // process from forging unread bumps.
 const HOOK_TOKEN = crypto.randomBytes(16).toString('hex');
