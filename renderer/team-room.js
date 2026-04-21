@@ -24,8 +24,6 @@ const TeamRoom = (() => {
   let characters = {};    // id -> character object
   let thinkingEl = null;  // reference to thinking indicator DOM node
   let streamHandler = null; // registered team:event listener (for cleanup on re-init)
-  let streamRound = 0;
-  let streamRoundActors = new Set();
   let pendingExtractionStats = null;
   const MAX_VISIBLE_STREAM = 50;
 
@@ -110,19 +108,6 @@ const TeamRoom = (() => {
       wrapper.appendChild(btn);
       wrapper.appendChild(pre);
     });
-  }
-
-  function _roundLabel(n) {
-    if (n === 1) return 'ROUND 1 \u00B7 \u72EC\u7ACB\u601D\u8003';
-    if (n === 2) return 'ROUND 2 \u00B7 \u4E92\u76F8\u8865\u5200';
-    return `ROUND ${n} \u00B7 \u6DF1\u5165\u8BA8\u8BBA`;
-  }
-
-  function _insertRoundSeparator(container, roundNum) {
-    const label = document.createElement('div');
-    label.className = 'tr-round-label';
-    label.textContent = _roundLabel(roundNum);
-    container.appendChild(label);
   }
 
   function _appendEvolutionSummary(container, extraction, evolution) {
@@ -406,8 +391,6 @@ const TeamRoom = (() => {
       clearInterval(entry.timer);
       delete thinkingMap[id];
     }
-    streamRound = 0;
-    streamRoundActors.clear();
     currentRoomId = roomId;
     currentRoomConfig = roomConfig || {};
     renderHeader();
@@ -496,17 +479,7 @@ const TeamRoom = (() => {
       return;
     }
 
-    let lastRound = null;
     for (const evt of events) {
-      // Round label
-      if (evt.round_id != null && evt.round_id !== lastRound) {
-        lastRound = evt.round_id;
-        const label = document.createElement('div');
-        label.className = 'tr-round-label';
-        label.textContent = `Round ${evt.round_id}`;
-        threadEl.appendChild(label);
-      }
-
       const t = evt.kind || '';
       if (t === 'message' || t === 'user_message') {
         appendMessage(threadEl, evt);
@@ -524,7 +497,7 @@ const TeamRoom = (() => {
         });
       } else if (t === 'converged' || t === 'pass') {
         const label = document.createElement('div');
-        label.className = 'tr-round-label';
+        label.className = 'tr-system-note';
         const txt = t === 'converged'
           ? `[收敛] ${evt.data ? JSON.stringify(evt.data).slice(0, 80) : ''}`
           : `[Pass] ${evt.actor || ''}: ${(evt.data && evt.data.decision) || ''}`;
@@ -827,14 +800,6 @@ const TeamRoom = (() => {
     const name = evt.name || charName(actorId);
 
     if (evtType === 'thinking') {
-      if (streamRound === 0) {
-        streamRound = 1;
-        _insertRoundSeparator(threadEl, 1);
-      } else if (streamRoundActors.has(actorId)) {
-        streamRound++;
-        streamRoundActors.clear();
-        _insertRoundSeparator(threadEl, streamRound);
-      }
       const ch = characters[actorId];
       const cli = ch ? (ch.backing_cli || actorId) : actorId;
       const colorCls = avatarColor(cli);
@@ -984,7 +949,6 @@ const TeamRoom = (() => {
         tokenCount: evt.tokenCount || null,
       });
       threadEl.scrollTop = threadEl.scrollHeight;
-      streamRoundActors.add(actorId);
     }
 
     else if (evtType === 'pass') {
@@ -994,7 +958,7 @@ const TeamRoom = (() => {
         delete thinkingMap[actorId];
       }
       const label = document.createElement('div');
-      label.className = 'tr-round-label';
+      label.className = 'tr-system-note';
       label.textContent = `${name}: PASS`;
       threadEl.appendChild(label);
       threadEl.scrollTop = threadEl.scrollHeight;
@@ -1020,15 +984,13 @@ const TeamRoom = (() => {
         delete thinkingMap[id];
       }
       const label = document.createElement('div');
-      label.className = 'tr-round-label';
+      label.className = 'tr-system-note';
       label.textContent = `[收敛] depth=${evt.depth}/${evt.max_depth}`;
       threadEl.appendChild(label);
       threadEl.scrollTop = threadEl.scrollHeight;
 
       // Refresh inspector after convergence (events are now in DB)
       refreshInspector();
-      streamRound = 0;
-      streamRoundActors.clear();
     }
 
     else if (evtType === 'extraction_done') {

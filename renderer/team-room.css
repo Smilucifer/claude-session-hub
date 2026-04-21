@@ -285,20 +285,7 @@
   border-color: #4a7a4a;
 }
 
-/* --- 5. Round labels --- */
-.tr-round-label {
-  text-align: center;
-  font-family: 'Courier New', monospace;
-  font-size: 10px;
-  color: #8a93a6;
-  letter-spacing: 2px;
-  text-transform: uppercase;
-  padding: 8px 0 4px;
-  border-top: 1px dashed #262c3a;
-  margin-top: 6px;
-}
-
-/* --- 6. System notes --- */
+/* --- 5. System notes --- */
 .tr-system-note {
   border: 1px dashed #333;
   border-radius: 4px;
