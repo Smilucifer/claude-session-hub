@@ -774,6 +774,11 @@ function showTerminal(sessionId, opts = { focus: true }) {
   if (cached._ro) cached._ro.disconnect();
   if (cached._resizeHandler) window.removeEventListener('resize', cached._resizeHandler);
   const handleResize = () => {
+    // Guard: ResizeObserver/resize can fire while the terminal's parent panel
+    // is display:none (e.g. team room is active). Fitting against a zero-width
+    // container collapses xterm to the minimum 1 col and the canvas stays
+    // squeezed even after the panel re-opens.
+    if (!cached.container.offsetWidth) return;
     cached.fitAddon.fit();
     ipcRenderer.send('terminal-resize', { sessionId, cols: cached.terminal.cols, rows: cached.terminal.rows });
     if (cached._minimap) cached._minimap.invalidate();
@@ -950,7 +955,12 @@ function startRename(sessionId, titleSpan) {
 
 // --- Session selection ---
 function selectSession(id) {
-  // Hide team room if showing
+  // Hide team room if showing. Capture whether we're coming *from* a team room
+  // so we can force a re-fit after layout settles — the cached terminal's
+  // xterm canvas stayed with stale dimensions while terminal-panel was
+  // display:none, and the single rAF inside showTerminal is sometimes too
+  // early to see the real width.
+  const wasTeamRoom = activeTeamRoomId != null;
   activeTeamRoomId = null;
   const trp = document.getElementById('team-room-panel');
   if (trp) trp.style.display = 'none';
@@ -975,6 +985,22 @@ function selectSession(id) {
   ipcRenderer.send('focus-session', { sessionId: id });
   renderSessionList();
   showTerminal(id, { focus: switching });
+  // Terminal squeeze fix (ref commit e07ba0b on feature/lite-pty-rooms, never
+  // made it to master before): when coming back from a team room, the first
+  // fit inside showTerminal may run before the flex layout has propagated the
+  // real width to the terminal container, leaving xterm with a shrunken
+  // canvas. Keep rAF-ing until offsetWidth is non-zero, then re-fit + notify
+  // the PTY.
+  if (wasTeamRoom) {
+    const _refit = () => {
+      const c = terminalCache.get(id);
+      if (!c || !c.fitAddon) return;
+      if (!c.container.offsetWidth) { requestAnimationFrame(_refit); return; }
+      try { c.fitAddon.fit(); } catch (_) {}
+      ipcRenderer.send('terminal-resize', { sessionId: id, cols: c.terminal.cols, rows: c.terminal.rows });
+    };
+    requestAnimationFrame(_refit);
+  }
   // Snapshot the current question signature as "read" AFTER showTerminal —
   // on first selection that's when cached.opened flips to true, and
   // getQuestionsSignature needs an opened buffer to read. Calling before
