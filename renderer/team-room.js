@@ -559,6 +559,16 @@ const TeamRoom = (() => {
     const content = evt.content || (evt.data ? JSON.stringify(evt.data) : '');
     const ts = formatTs(evt.ts);
 
+    // Optional token usage (Gemini ACP provides this; Claude/Codex do not).
+    // Force numeric coercion so hostile/malformed values can't escape the
+    // innerHTML context (Number('</span><script>') === NaN → 0).
+    const tc = evt.tokenCount;
+    const tcIn = tc && tc.input != null ? (Number(tc.input) || 0) : null;
+    const tcOut = tc && tc.output != null ? (Number(tc.output) || 0) : null;
+    const tokenHtml = (tcIn !== null || tcOut !== null)
+      ? `<span class="tr-msg-tokens" style="margin-left:8px;color:var(--text-secondary);font-size:11px;opacity:0.75" title="input / output tokens">↓${tcIn ?? 0} ↑${tcOut ?? 0}</span>`
+      : '';
+
     const msgEl = document.createElement('div');
     msgEl.className = `tr-msg ${colorCls}`;
     msgEl.innerHTML = `
@@ -567,6 +577,7 @@ const TeamRoom = (() => {
         <div class="tr-msg-meta">
           <span class="tr-msg-name">${esc(name)}</span>
           <span class="tr-msg-time">${esc(ts)}</span>
+          ${tokenHtml}
         </div>
         <div class="tr-msg-bubble">${formatContent(content)}</div>
       </div>
@@ -970,6 +981,7 @@ const TeamRoom = (() => {
       appendMessage(threadEl, {
         kind: 'message', actor: actorId,
         content: evt.content || '', ts: evt.ts,
+        tokenCount: evt.tokenCount || null,
       });
       threadEl.scrollTop = threadEl.scrollHeight;
       streamRoundActors.add(actorId);

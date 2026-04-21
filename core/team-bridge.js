@@ -185,8 +185,10 @@ class TeamBridge {
         injectedText += `[用户消息]: ${message}\n\n`;
         injectedText += '请认真思考后给出你的回复。回复完成后，务必调用 team_respond 工具分享给队友。';
 
-        // Send and wait for MCP callback
-        const result = await this._teamSessionManager.sendMessage(roomId, charId, injectedText, timeout);
+        // Send and wait for MCP callback. onEvent is passed through so
+        // Gemini ACP can stream thinking_delta events live (Claude/Codex
+        // path simply ignores it).
+        const result = await this._teamSessionManager.sendMessage(roomId, charId, injectedText, timeout, onEvent);
 
         // Update read pointer to latest event's rowid (cursor used by
         // events-since is rowid, not ts — keep types consistent).
@@ -202,10 +204,11 @@ class TeamBridge {
           actor: charId,
           name: character.display_name || charId,
           content: result.content,
+          tokenCount: result.tokenCount || null,
           ts: Math.floor(Date.now() / 1000),
         });
 
-        results.push({ characterId: charId, content: result.content });
+        results.push({ characterId: charId, content: result.content, tokenCount: result.tokenCount || null });
 
       } catch (e) {
         console.error(`[team-bridge] error for ${charId}: ${e.message}`);
