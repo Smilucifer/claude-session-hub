@@ -661,7 +661,10 @@ ipcMain.handle('team:ask', async (event, roomId, message) => {
     const result = await teamBridge.askTeam(roomId, message, (type, data) => {
       const sender = event.sender;
       if (sender && !sender.isDestroyed()) {
-        sender.send('team:event', { type, data });
+        // Include roomId so sidebar can track per-room unread badge + preview
+        // for rooms the user isn't currently viewing (parallels how the
+        // regular Claude session unread flow uses Stop hook + sessionId).
+        sender.send('team:event', { type, data, roomId });
       }
     });
     return result;

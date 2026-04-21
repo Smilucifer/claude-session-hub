@@ -332,8 +332,34 @@ function escapeHtml(text) {
 // --- Session list rendering ---
 // Sort: pinned sessions first (by their own time), then unpinned by lastMessageTime.
 // Filter: search query matches title or preview (case-insensitive).
+// Mixed list: regular sessions + AI Team Rooms share the same sort + rendering.
 function renderSessionList() {
-  const all = Array.from(sessions.values());
+  const regularSessions = Array.from(sessions.values());
+
+  // Fold team rooms into the unified list. Preview is "actor: content" format,
+  // time sort uses the latest message's ts; both parallel how regular sessions
+  // work so a team room with a recent reply bubbles up to the top.
+  const teamItems = teamRooms.map(room => {
+    const preview = teamRoomPreviews[room.id];
+    const previewText = preview
+      ? `${teamActorDisplay(preview.actor, preview.actorName)}: ${preview.content}`
+      : (room.members || []).join(', ');
+    const tsSec = preview ? parseInt(preview.ts) : 0;
+    const tsMs = tsSec ? tsSec * 1000 : 0;
+    return {
+      id: room.id,
+      title: room.display_name || room.id,
+      lastMessageTime: tsMs,
+      createdAt: tsMs,
+      lastOutputPreview: previewText,
+      status: 'running',
+      unreadCount: teamRoomUnread[room.id] || 0,
+      _isTeamRoom: true,
+      _room: room,
+    };
+  });
+
+  const all = regularSessions.concat(teamItems);
 
   const filtered = searchQuery
     ? all.filter(s => {
@@ -347,16 +373,42 @@ function renderSessionList() {
     return b.lastMessageTime - a.lastMessageTime || b.createdAt - a.createdAt;
   });
 
+  // Hide any leftover [Team] PTY sessions from legacy code path — those are
+  // never user-visible entry points; team rooms come in via teamItems above.
+  const visible = sorted.filter(s => !s.title || !s.title.startsWith('[Team] '));
+  const totalCount = regularSessions.length + teamItems.length;
+
   sessionCountEl.textContent = searchQuery
-    ? `${sorted.length}/${all.length}`
-    : `${all.length} open`;
+    ? `${visible.length}/${totalCount}`
+    : `${totalCount} open`;
+
   // Preserve scroll position across rebuilds — without this, any re-render
   // (every status-event, silence-timer, or session-updated) snaps the list
   // back to the top, which feels like the sidebar is "fighting" the user.
   const savedScrollTop = sessionListEl.scrollTop;
   sessionListEl.innerHTML = '';
 
-  for (const s of sorted) {
+  for (const s of visible) {
+    if (s._isTeamRoom) {
+      const isActive = activeTeamRoomId === s.id;
+      const div = document.createElement('div');
+      div.className = 'session-item team-room' + (isActive ? ' selected' : '') + (!isActive && s.unreadCount > 0 ? ' has-unread' : '');
+      div.innerHTML = `
+        <div class="session-item-header">
+          <span class="session-title"><span class="session-status running"></span>${escapeHtml(s.title)}</span>
+          <span class="session-header-right">
+            ${s.unreadCount > 0 && !isActive ? `<span class="unread-badge">${s.unreadCount}</span>` : ''}
+            <span class="session-time">${s.lastMessageTime ? formatTime(s.lastMessageTime) : escapeHtml(s._room.task_mode || 'natural')}</span>
+          </span>
+        </div>
+        <div class="session-preview">${escapeHtml(s.lastOutputPreview)}</div>
+      `;
+      div.addEventListener('click', () => selectTeamRoom(s.id));
+      div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY, true); });
+      sessionListEl.appendChild(div);
+      continue;
+    }
+
     const isActive = s.id === activeSessionId;
     const div = document.createElement('div');
     const dormantCls = s.status === 'dormant' ? ' dormant' : '';
@@ -391,13 +443,24 @@ function renderSessionList() {
     sessionListEl.appendChild(div);
   }
   sessionListEl.scrollTop = savedScrollTop;
-  renderTeamRooms();
 }
 
 // --- AI Team Room sidebar ---
 let teamRooms = [];
 let teamRoomPreviews = {};
+let teamRoomUnread = {}; // { roomId: unreadCount } — parallels session.unreadCount
+let teamCharacters = {}; // { id: {display_name, ...} } — cached once per boot
 let activeTeamRoomId = null;
+
+// Resolve actor id → display name. Team event payloads already include `name`,
+// but historical previews loaded from DB only have actor id, so we fall back
+// to the characters cache.
+function teamActorDisplay(actorId, actorName) {
+  if (actorId === 'user') return '你';
+  if (actorName) return actorName;
+  const ch = teamCharacters[actorId];
+  return (ch && ch.display_name) || actorId;
+}
 
 function formatRelativeTime(ts) {
   if (!ts) return '';
@@ -419,6 +482,9 @@ async function loadTeamRooms() {
     try {
       teamRoomPreviews = await ipcRenderer.invoke('team:getRoomPreviews') || {};
     } catch (e) { teamRoomPreviews = {}; }
+    try {
+      teamCharacters = await ipcRenderer.invoke('team:loadCharacters') || {};
+    } catch (e) { teamCharacters = {}; }
     renderTeamRooms();
   } catch (e) {
     console.warn('[team] loadRooms failed:', e.message);
@@ -426,46 +492,19 @@ async function loadTeamRooms() {
   }
 }
 
+// Team rooms are now rendered inside renderSessionList with unified sort
+// order. Kept as a thin alias so existing callers (loadTeamRooms etc) just
+// trigger a full re-render without caring about the mixed-list detail.
 function renderTeamRooms() {
-  const old = sessionListEl.querySelectorAll('.team-divider, .team-section-label, .session-item.team-room');
-  old.forEach(el => el.remove());
-  if (teamRooms.length === 0) return;
-
-  const divider = document.createElement('div');
-  divider.className = 'team-divider';
-  sessionListEl.appendChild(divider);
-
-  const label = document.createElement('div');
-  label.className = 'team-section-label';
-  label.textContent = 'AI Team Rooms';
-  sessionListEl.appendChild(label);
-
-  for (const room of teamRooms) {
-    const preview = teamRoomPreviews[room.id];
-    const previewText = preview
-      ? `${preview.actor === 'user' ? '你' : preview.actor}: ${preview.content}`
-      : (room.members || []).join(', ');
-    const timeText = preview ? formatRelativeTime(preview.ts) : (room.task_mode || 'natural');
-
-    const div = document.createElement('div');
-    div.className = 'session-item team-room' + (activeTeamRoomId === room.id ? ' selected' : '');
-    div.innerHTML = `
-      <div class="session-item-header">
-        <span class="session-title"><span class="session-status running"></span>${escapeHtml(room.display_name || room.id)}</span>
-        <span class="session-header-right">
-          <span class="session-time">${escapeHtml(timeText)}</span>
-        </span>
-      </div>
-      <div class="session-preview">${escapeHtml(previewText)}</div>
-    `;
-    div.addEventListener('click', () => selectTeamRoom(room.id));
-    sessionListEl.appendChild(div);
-  }
+  renderSessionList();
 }
 
 function selectTeamRoom(roomId) {
   activeSessionId = null;
   activeTeamRoomId = roomId;
+  // Opening the room counts as "reading" any queued messages — parallels how
+  // selectSession resets session.unreadCount = 0.
+  if (teamRoomUnread[roomId]) teamRoomUnread[roomId] = 0;
   if (terminalPanelEl) terminalPanelEl.style.display = 'none';
   if (emptyStateEl) emptyStateEl.style.display = 'none';
   const trPanel = document.getElementById('team-room-panel');
@@ -476,6 +515,30 @@ function selectTeamRoom(roomId) {
   }
   renderSessionList();
 }
+
+// Global team:event listener — tracks per-room preview + unread badge so the
+// sidebar updates live when messages arrive for rooms the user isn't viewing.
+// team-room.js has its own listener scoped to the open-room thread; this one
+// is independent and only touches sidebar state.
+ipcRenderer.on('team:event', (_e, payload) => {
+  if (!payload || payload.type !== 'event') return;
+  const rid = payload.roomId;
+  const evt = payload.data;
+  if (!rid || !evt || evt.type !== 'message') return;
+  const content = (evt.content || '').trim();
+  if (!content) return;
+
+  teamRoomPreviews[rid] = {
+    actor: evt.actor || 'system',
+    actorName: evt.name || null,
+    content: content.slice(0, 200),
+    ts: evt.ts || Math.floor(Date.now() / 1000),
+  };
+  if (activeTeamRoomId !== rid) {
+    teamRoomUnread[rid] = (teamRoomUnread[rid] || 0) + 1;
+  }
+  renderSessionList();
+});
 
 // --- Terminal management ---
 // Load GPU renderer. Default is Canvas (stable + GPU-accelerated 2D). WebGL
