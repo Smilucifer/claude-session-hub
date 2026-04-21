@@ -396,6 +396,28 @@ const TeamRoom = (() => {
     renderHeader();
     await refreshThread();
     await refreshInspector();
+    ensureInspectorToggle();
+  }
+
+  function ensureInspectorToggle() {
+    const body = document.querySelector('.tr-body');
+    const inspEl = $('tr-inspector');
+    if (!body || !inspEl) return;
+    if (body.querySelector('.tr-inspector-toggle')) return;
+
+    const collapsed = localStorage.getItem('hub.tr-inspector-collapsed') !== 'false';
+    if (collapsed) inspEl.classList.add('collapsed');
+
+    const btn = document.createElement('button');
+    btn.className = 'tr-inspector-toggle';
+    btn.title = 'Toggle inspector panel';
+    btn.textContent = collapsed ? '◀' : '▶';
+    btn.addEventListener('click', () => {
+      const isCollapsed = inspEl.classList.toggle('collapsed');
+      btn.textContent = isCollapsed ? '◀' : '▶';
+      localStorage.setItem('hub.tr-inspector-collapsed', isCollapsed ? 'true' : 'false');
+    });
+    body.appendChild(btn);
   }
 
   function renderHeader() {
