@@ -678,6 +678,7 @@ ipcMain.handle('team:createRoom', async (_, name, memberIds) => {
 });
 
 ipcMain.handle('team:getRoomPreviews', () => teamBridge.getRoomPreviews());
+ipcMain.handle('team:deleteRoom', (_, roomId) => teamBridge.deleteRoom(roomId));
 ipcMain.handle('team:getWikiCandidates', (_, roomId) => teamBridge.getWikiCandidates(roomId));
 ipcMain.handle('team:approveWiki', (_, factId) => teamBridge.approveWiki(factId));
 ipcMain.handle('team:rejectWiki', (_, factId) => teamBridge.rejectWiki(factId));

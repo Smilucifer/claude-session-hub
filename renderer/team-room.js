@@ -424,14 +424,33 @@ const TeamRoom = (() => {
         </div>
         <div class="tr-header-actions">
           <button class="tr-action-btn" id="tr-export-btn" title="导出对话">📋</button>
+          <button class="tr-action-btn btn-zoom" id="tr-zoom-out-btn" title="Shrink UI">A−</button>
+          <button class="tr-action-btn btn-zoom" id="tr-zoom-in-btn" title="Enlarge UI">A+</button>
+          <button class="tr-action-btn btn-close-session" id="tr-close-btn" title="关闭房间" aria-label="Close room"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg></button>
         </div>
       </div>
       <div class="tr-members">${membersHtml}</div>
     `;
 
     const exportBtn = $('tr-export-btn');
-    if (exportBtn) {
-      exportBtn.addEventListener('click', exportConversation);
+    if (exportBtn) exportBtn.addEventListener('click', exportConversation);
+
+    const zoomOutBtn = $('tr-zoom-out-btn');
+    const zoomInBtn = $('tr-zoom-in-btn');
+    if (zoomOutBtn && typeof applyZoom === 'function') {
+      zoomOutBtn.addEventListener('click', () => applyZoom(currentZoom - 1));
+    }
+    if (zoomInBtn && typeof applyZoom === 'function') {
+      zoomInBtn.addEventListener('click', () => applyZoom(currentZoom + 1));
+    }
+
+    const closeBtn = $('tr-close-btn');
+    if (closeBtn) {
+      closeBtn.addEventListener('click', () => {
+        currentRoomId = null;
+        currentRoomConfig = null;
+        if (typeof closeTeamRoomView === 'function') closeTeamRoomView();
+      });
     }
   }
 

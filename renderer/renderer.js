@@ -266,6 +266,7 @@ const btnExpandEl = document.getElementById('btn-expand-sidebar');
 
 let searchQuery = '';
 let contextMenuSessionId = null;
+let contextMenuIsTeamRoom = false;
 
 // Font size — shared across all terminals, persisted
 const FONT_SIZE_KEY = 'claude-hub-font-size';
@@ -496,6 +497,16 @@ async function loadTeamRooms() {
 // order. Kept as a thin alias so existing callers (loadTeamRooms etc) just
 // trigger a full re-render without caring about the mixed-list detail.
 function renderTeamRooms() {
+  renderSessionList();
+}
+
+// Called from team-room.js header X button to leave the room view without
+// deleting the room. Hides panel, clears active state, shows empty-state.
+function closeTeamRoomView() {
+  activeTeamRoomId = null;
+  const trPanel = document.getElementById('team-room-panel');
+  if (trPanel) trPanel.style.display = 'none';
+  if (emptyStateEl) emptyStateEl.style.display = '';
   renderSessionList();
 }
 
@@ -2166,26 +2177,34 @@ searchInputEl.addEventListener('keydown', (e) => {
 });
 
 // --- Context menu (right-click session) ---
-function openContextMenu(sessionId, x, y) {
+function openContextMenu(sessionId, x, y, isTeamRoom = false) {
   contextMenuSessionId = sessionId;
+  contextMenuIsTeamRoom = isTeamRoom;
   contextMenuEl.style.display = 'block';
   contextMenuEl.style.left = `${x}px`;
   contextMenuEl.style.top = `${y}px`;
-  // Keep in viewport
   requestAnimationFrame(() => {
     const rect = contextMenuEl.getBoundingClientRect();
     if (rect.right > window.innerWidth) contextMenuEl.style.left = `${x - rect.width}px`;
     if (rect.bottom > window.innerHeight) contextMenuEl.style.top = `${y - rect.height}px`;
   });
-  // Update pin label to reflect current state
-  const session = sessions.get(sessionId);
   const pinBtn = contextMenuEl.querySelector('[data-action="pin"]');
-  if (pinBtn && session) pinBtn.textContent = session.pinned ? 'Unpin' : 'Pin to top';
+  const restartBtn = contextMenuEl.querySelector('[data-action="restart"]');
+  if (isTeamRoom) {
+    if (pinBtn) pinBtn.style.display = 'none';
+    if (restartBtn) restartBtn.style.display = 'none';
+  } else {
+    if (pinBtn) pinBtn.style.display = '';
+    if (restartBtn) restartBtn.style.display = '';
+    const session = sessions.get(sessionId);
+    if (pinBtn && session) pinBtn.textContent = session.pinned ? 'Unpin' : 'Pin to top';
+  }
 }
 
 function closeContextMenu() {
   contextMenuEl.style.display = 'none';
   contextMenuSessionId = null;
+  contextMenuIsTeamRoom = false;
 }
 
 document.addEventListener('mousedown', (e) => {
@@ -2198,8 +2217,27 @@ for (const btn of contextMenuEl.querySelectorAll('.context-menu-item')) {
   btn.addEventListener('click', async () => {
     const action = btn.dataset.action;
     const sid = contextMenuSessionId;
+    const isTeamRoom = contextMenuIsTeamRoom;
     closeContextMenu();
     if (!sid) return;
+
+    if (isTeamRoom) {
+      if (action === 'close') {
+        try { await ipcRenderer.invoke('team:deleteRoom', sid); } catch (_) {}
+        teamRooms = teamRooms.filter(r => r.id !== sid);
+        delete teamRoomPreviews[sid];
+        delete teamRoomUnread[sid];
+        if (activeTeamRoomId === sid) {
+          activeTeamRoomId = null;
+          const trPanel = document.getElementById('team-room-panel');
+          if (trPanel) trPanel.style.display = 'none';
+          if (emptyStateEl) emptyStateEl.style.display = '';
+        }
+        renderSessionList();
+      }
+      return;
+    }
+
     const session = sessions.get(sid);
     if (!session) return;
 
@@ -2211,7 +2249,6 @@ for (const btn of contextMenuEl.querySelectorAll('.context-menu-item')) {
       await ipcRenderer.invoke('restart-session', sid);
     } else if (action === 'close') {
       if (session.status === 'dormant') {
-        // No PTY to kill; just forget the dormant entry and persist.
         sessions.delete(sid);
         if (activeSessionId === sid) activeSessionId = null;
         renderSessionList();

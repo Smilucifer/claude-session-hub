@@ -70,6 +70,19 @@ class TeamBridge {
     return this._pyScript(['export', roomId]);
   }
 
+  deleteRoom(roomId) {
+    if (typeof roomId !== 'string') throw new Error('roomId must be string');
+    const dbPath = require('path').join(require('os').homedir(), '.ai-team', 'team.db');
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(dbPath);
+    try {
+      db.prepare('DELETE FROM events WHERE room_id = ?').run(roomId);
+      db.prepare('DELETE FROM rooms WHERE id = ?').run(roomId);
+    } finally {
+      db.close();
+    }
+  }
+
   async askTeam(roomId, message, onEvent, timeout = 300000) {
     if (typeof message !== 'string' || !message.trim()) {
       throw new Error('message must be non-empty string');
