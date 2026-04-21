@@ -36,10 +36,13 @@ class SessionManager extends EventEmitter {
   createSession(kind = 'powershell', opts = {}) {
     const id = opts.id || uuid();
     const isClaude = kind === 'claude' || kind === 'claude-resume';
+    const isGemini = kind === 'gemini';
+    const isAgent = isClaude || isGemini;
     let title;
     if (opts.title) title = opts.title;
     else if (kind === 'claude') title = `Claude ${++this.claudeCounter}`;
     else if (kind === 'claude-resume') title = `Claude Resume ${++this.resumeCounter}`;
+    else if (kind === 'gemini') { this.geminiCounter = (this.geminiCounter || 0) + 1; title = `Gemini ${this.geminiCounter}`; }
     else title = `PowerShell ${++this.psCounter}`;
 
     const sessionEnv = { ...process.env };
@@ -67,9 +70,19 @@ class SessionManager extends EventEmitter {
       if (process.env.CLAUDE_HUB_DATA_DIR) {
         sessionEnv.CLAUDE_HUB_DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR;
       }
+    } else if (isGemini) {
+      // Same proxy rule as Claude (hard user requirement).
+      sessionEnv.HTTP_PROXY = CLAUDE_PROXY;
+      sessionEnv.HTTPS_PROXY = CLAUDE_PROXY;
+      sessionEnv.NO_PROXY = 'localhost,127.0.0.1';
     }
 
-    const shellArgs = isClaude ? ['-NoProfile', '-NoLogo'] : [];
+    // Merge extra env vars (used by TeamSessionManager for MCP config etc.)
+    if (opts.extraEnv) {
+      Object.assign(sessionEnv, opts.extraEnv);
+    }
+
+    const shellArgs = isAgent ? ['-NoProfile', '-NoLogo'] : [];
     // cwd fallback order: opts.cwd (if exists) -> user home. We stat-check to
     // avoid node-pty failing if the stored cwd was later deleted/moved.
     let spawnCwd = opts.cwd;
@@ -85,7 +98,11 @@ class SessionManager extends EventEmitter {
       cwd: spawnCwd,
       env: sessionEnv,
       useConpty: true,
-      conptyInheritCursor: true,
+      // conptyInheritCursor=true kills PTY output for headless sessions (no
+      // renderer xterm attached). TeamSessionManager sets noInheritCursor for
+      // background character sessions. Normal user sessions don't set it, so
+      // the default stays true for backward compatibility.
+      conptyInheritCursor: !opts.noInheritCursor,
     });
 
     const now = Date.now();
@@ -120,16 +137,55 @@ class SessionManager extends EventEmitter {
     if (isClaude) {
       let cmd;
       if (opts.resumeCCSessionId) {
-        cmd = ` claude --resume ${opts.resumeCCSessionId}\r\n`;
+        cmd = ` claude --resume ${opts.resumeCCSessionId}`;
       } else if (opts.useContinue) {
-        cmd = ' claude --continue\r\n';
+        cmd = ' claude --continue';
       } else if (kind === 'claude-resume') {
-        cmd = ' claude --resume\r\n';
+        cmd = ' claude --resume';
       } else {
         // Fresh Claude sessions default to Opus 4.6 1M (extended thinking).
         // Resume/continue inherit the transcript's model, so don't force --model there.
-        cmd = ' claude --model claude-opus-4-6[1m]\r\n';
+        cmd = ' claude --model claude-opus-4-6[1m]';
       }
+      // Append system prompt file if provided (TeamSessionManager injects character prompt)
+      if (opts.appendSystemPromptFile) {
+        cmd += ` --append-system-prompt-file "${opts.appendSystemPromptFile.replace(/\\/g, '\\\\')}"`;
+      }
+      // Append MCP config file if provided (TeamSessionManager injects MCP server config)
+      if (opts.mcpConfigFile) {
+        cmd += ` --mcp-config "${opts.mcpConfigFile.replace(/\\/g, '\\\\')}"`;
+      }
+      cmd += '\r\n';
+      let sent = false;
+      let debounceTimer = null;
+      const watcher = ptyProcess.onData(() => {
+        if (sent) return;
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          if (sent) return;
+          sent = true;
+          watcher.dispose();
+          const s = this.sessions.get(id);
+          if (s) s.pty.write(cmd);
+        }, 200);
+      });
+      const safetyTimer = setTimeout(() => {
+        if (sent) return;
+        sent = true;
+        watcher.dispose();
+        if (debounceTimer) clearTimeout(debounceTimer);
+        const s = this.sessions.get(id);
+        if (s) s.pty.write(cmd);
+      }, 3000);
+      pendingTimers.push(safetyTimer);
+    }
+
+    if (isGemini) {
+      // Gemini reads .gemini/settings.json from cwd (set by TeamSessionManager).
+      // --approval-mode yolo ≈ Claude's bypassPermissions.
+      let cmd = ' gemini --approval-mode yolo';
+      if (opts.model) cmd += ` --model ${opts.model}`;
+      cmd += '\r\n';
       let sent = false;
       let debounceTimer = null;
       const watcher = ptyProcess.onData(() => {

@@ -1,0 +1,26 @@
+[
+  {
+    "label": "ROUND 1",
+    "msg": "@皮卡丘 R1 测试: 我说个数字 42",
+    "gotReply": false,
+    "replyContent": "",
+    "before": 13,
+    "after": 15
+  },
+  {
+    "label": "ROUND 2",
+    "msg": "@皮卡丘 R2 测试: 上一轮我说的数字是什么？",
+    "gotReply": false,
+    "replyContent": "",
+    "before": 15,
+    "after": 14
+  },
+  {
+    "label": "ROUND 3",
+    "msg": "@皮卡丘 R3 测试: 简短总结一下我们刚才聊了什么",
+    "gotReply": true,
+    "replyContent": "⚡\n皮卡丘\n03:18:33\n\n好，简单总结一下：\n\n你在做房间通信的轮次测试。R1 你跟我说了一个数字 42，现在 R3 你让我总结刚才聊的内容。中间 R2 我这边没收到（可能发给了别的队友或者跳过了）。\n\n本质上就是在验证消息收发和上下文连续性是否正常。目前从我这边看，上下文是通的，42 我记得住。",
+    "before": 14,
+    "after": 16
+  }
+]

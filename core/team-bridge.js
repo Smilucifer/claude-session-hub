@@ -11,6 +11,14 @@ class TeamBridge {
   constructor() {
     this.baseDir = AI_TEAM_DIR;
     this._runningProc = null;
+    this._teamSessionManager = null;
+    // Per-character read pointer: Map<"roomId:charId", number> (event cursor)
+    this._readPointers = new Map();
+  }
+
+  /** Injected by main.js after hookPort is known. */
+  setTeamSessionManager(tsm) {
+    this._teamSessionManager = tsm;
   }
 
   isInitialized() {
@@ -62,15 +70,168 @@ class TeamBridge {
     return this._pyScript(['export', roomId]);
   }
 
-  askTeam(roomId, message, onEvent, timeout = 300000) {
-    if (this._runningProc) {
-      return Promise.reject(new Error('Another orchestrator is already running'));
-    }
+  async askTeam(roomId, message, onEvent, timeout = 300000) {
     if (typeof message !== 'string' || !message.trim()) {
-      return Promise.reject(new Error('message must be non-empty string'));
+      throw new Error('message must be non-empty string');
     }
     if (message.length > 8192) {
-      return Promise.reject(new Error('message too long (max 8192)'));
+      throw new Error('message too long (max 8192)');
+    }
+
+    // If TeamSessionManager is available, use MCP callback flow
+    if (this._teamSessionManager) {
+      return this._askTeamPTY(roomId, message, onEvent, timeout);
+    }
+
+    // Fallback: legacy subprocess orchestrator
+    return this._askTeamLegacy(roomId, message, onEvent, timeout);
+  }
+
+  /**
+   * MCP callback flow: parse @mentions, send to each target via persistent PTY,
+   * wait for team_respond callback.
+   */
+  async _askTeamPTY(roomId, message, onEvent, timeout = 300000) {
+    // Load characters for the room
+    const allCharacters = await this._pyScript(['characters']);
+    const rooms = await this._pyScript(['rooms']);
+    const room = rooms.find(r => r.id === roomId);
+    if (!room) throw new Error(`Room not found: ${roomId}`);
+
+    const memberIds = room.members || [];
+
+    // Parse @mentions: @team/@全体 → all members, @name → specific character
+    let targets = [];
+    const mentionRegex = /@(\S+)/g;
+    let match;
+    let hasExplicitMention = false;
+
+    while ((match = mentionRegex.exec(message)) !== null) {
+      const name = match[1];
+      if (name === 'team' || name === '全体') {
+        targets = memberIds.slice();
+        hasExplicitMention = true;
+        break;
+      }
+      // Match by id or display_name
+      for (const [charId, char] of Object.entries(allCharacters)) {
+        if (charId === name || char.display_name === name || char.id === name) {
+          if (!targets.includes(charId)) targets.push(charId);
+          hasExplicitMention = true;
+          break;
+        }
+      }
+    }
+
+    // Default: mention all members if no explicit mention
+    if (!hasExplicitMention) {
+      targets = memberIds.slice();
+    }
+
+    if (targets.length === 0) {
+      throw new Error('No valid targets found in room');
+    }
+
+    // Persist user message to DB
+    await this._pyScript(['insert-event', roomId, 'user', 'message', message]);
+
+    const results = [];
+
+    for (const charId of targets) {
+      const character = allCharacters[charId];
+      if (!character) {
+        console.warn(`[team-bridge] character not found: ${charId}`);
+        continue;
+      }
+
+      try {
+        if (onEvent) onEvent('event', {
+          type: 'thinking',
+          actor: charId,
+          name: character.display_name || charId,
+        });
+
+        // Ensure session exists
+        await this._teamSessionManager.ensureSession(roomId, character);
+
+        // Get incremental history since last read
+        const cursor = this._getReadPointer(roomId, charId);
+        let history = [];
+        try {
+          history = await this._pyScript(['events-since', roomId, String(cursor)]);
+        } catch (e) {
+          console.warn(`[team-bridge] events-since failed: ${e.message}`);
+        }
+
+        // Cap at 30 most recent events
+        if (history.length > 30) {
+          history = history.slice(history.length - 30);
+        }
+
+        // Build injected text with history + new message + team_respond instruction
+        let injectedText = '';
+
+        if (history.length > 0) {
+          injectedText += '--- 最近的对话记录 ---\n';
+          for (const evt of history) {
+            if (evt.kind === 'message') {
+              const actorName = (allCharacters[evt.actor] && allCharacters[evt.actor].display_name) || evt.actor;
+              injectedText += `[${actorName}]: ${evt.content}\n`;
+            }
+          }
+          injectedText += '--- 记录结束 ---\n\n';
+        }
+
+        injectedText += `[用户消息]: ${message}\n\n`;
+        injectedText += '请认真思考后给出你的回复。回复完成后，务必调用 team_respond 工具分享给队友。';
+
+        // Send and wait for MCP callback. onEvent is passed through so
+        // Gemini ACP can stream thinking_delta events live (Claude/Codex
+        // path simply ignores it).
+        const result = await this._teamSessionManager.sendMessage(roomId, charId, injectedText, timeout, onEvent);
+
+        // Update read pointer to latest event's rowid (cursor used by
+        // events-since is rowid, not ts — keep types consistent).
+        if (history.length > 0) {
+          const lastRowid = Math.max(...history.map(e => Number(e.rowid) || 0));
+          if (lastRowid > 0) this._setReadPointer(roomId, charId, lastRowid);
+        }
+
+        // AI response is already persisted to DB by the team_respond MCP tool
+        // itself — do NOT insert again here (previously caused duplicate events).
+        if (onEvent) onEvent('event', {
+          type: 'message',
+          actor: charId,
+          name: character.display_name || charId,
+          content: result.content,
+          tokenCount: result.tokenCount || null,
+          ts: Math.floor(Date.now() / 1000),
+        });
+
+        results.push({ characterId: charId, content: result.content, tokenCount: result.tokenCount || null });
+
+      } catch (e) {
+        console.error(`[team-bridge] error for ${charId}: ${e.message}`);
+        if (onEvent) onEvent('event', {
+          type: 'error',
+          actor: charId,
+          name: character.display_name || charId,
+          content: e.message,
+          ts: Math.floor(Date.now() / 1000),
+        });
+      }
+    }
+
+    if (onEvent) onEvent('done', { code: 0 });
+    return { code: 0, results };
+  }
+
+  /**
+   * Legacy subprocess orchestrator (fallback when TeamSessionManager unavailable).
+   */
+  _askTeamLegacy(roomId, message, onEvent, timeout = 300000) {
+    if (this._runningProc) {
+      return Promise.reject(new Error('Another orchestrator is already running'));
     }
 
     const env = Object.assign({}, process.env, {
@@ -155,6 +316,14 @@ class TeamBridge {
     });
   }
 
+  _getReadPointer(roomId, charId) {
+    return this._readPointers.get(`${roomId}:${charId}`) || 0;
+  }
+
+  _setReadPointer(roomId, charId, cursor) {
+    this._readPointers.set(`${roomId}:${charId}`, cursor);
+  }
+
   async createRoom(name, memberIds) {
     const id = 'room-' + Date.now();
     const roomDir = path.join(this.baseDir, 'rooms');
@@ -184,6 +353,9 @@ class TeamBridge {
     if (this._runningProc) {
       this._runningProc.kill();
       this._runningProc = null;
+    }
+    if (this._teamSessionManager) {
+      this._teamSessionManager.closeAll();
     }
   }
 

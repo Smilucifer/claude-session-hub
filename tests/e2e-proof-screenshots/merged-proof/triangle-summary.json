@@ -1,0 +1,25 @@
+{
+  "roomId": "room-1776760103603",
+  "roomName": "triangle-1776760100024",
+  "summary": {
+    "pikachu": {
+      "dur": "18.4",
+      "content": "我是皮卡丘，团队里的实干派——你说\"这很难\"，我说\"我来搞定\"。",
+      "tokenCount": null
+    },
+    "charmander": {
+      "dur": "32.7",
+      "content": "总结：我是脑子里永远有新想法在冒泡、哪怕是“不可能”也要大胆点燃它，为团队照亮未来无限可能的灵感捕手——小火龙！🔥✨",
+      "tokenCount": {
+        "input": 5280,
+        "output": 97,
+        "model": "gemini-3-flash-preview"
+      }
+    },
+    "squirtle": {
+      "dur": "14.8",
+      "content": "我是杰尼龟，扎实可靠、客观稳健的全能型队友，愿意默默补位、把每个细节做到让大家放心。",
+      "tokenCount": null
+    }
+  }
+}
