@@ -189,7 +189,7 @@ class TeamSessionManager {
 
     // Codex: fresh `codex exec` per message, chained via `exec resume <sid>`.
     if (hubSessionId === 'codex-deferred') {
-      return this._sendMessageCodex(roomId, characterId, text, timeout);
+      return this._sendMessageCodex(roomId, characterId, text, timeout, onEvent);
     }
 
     // Reject if there's already a pending request for this key
@@ -314,7 +314,7 @@ class TeamSessionManager {
    *
    * @returns {Promise<{ content: string, eventId?: string }>}
    */
-  _sendMessageCodex(roomId, characterId, text, timeout) {
+  _sendMessageCodex(roomId, characterId, text, timeout, onEvent = null) {
     const key = `${roomId}:${characterId}`;
     const character = this._characters.get(key);
     if (!character) return Promise.reject(new Error(`No cached character for ${key}`));
@@ -366,6 +366,7 @@ class TeamSessionManager {
       let stderrBuf = '';
       let finalText = '';
       let capturedSid = null;
+      let tokenCount = null;
 
       const timer = setTimeout(() => {
         try { proc.kill('SIGKILL'); } catch {}
@@ -394,9 +395,15 @@ class TeamSessionManager {
           if (ev.type === 'thread.started' && typeof ev.thread_id === 'string') {
             capturedSid = ev.thread_id;
           }
-          // final agent reply: `item.completed` where item.type === 'agent_message'
           if (ev.type === 'item.completed' && ev.item && ev.item.type === 'agent_message' && typeof ev.item.text === 'string') {
-            finalText = ev.item.text; // take last one if Codex emits multiple
+            finalText = ev.item.text;
+          }
+          if (ev.type === 'turn.completed' && ev.usage) {
+            tokenCount = {
+              input: ev.usage.input_tokens ?? 0,
+              output: ev.usage.output_tokens ?? 0,
+              cached: ev.usage.cached_input_tokens ?? 0,
+            };
           }
         }
       });
@@ -451,7 +458,7 @@ class TeamSessionManager {
         catch (e) { console.warn(`[team-tsm] codex team.db write failed key=${key}: ${e.message}`); }
         this._postHubCallback(roomId, characterId, finalText);
 
-        resolve({ content: finalText });
+        resolve({ content: finalText, tokenCount });
       });
 
       proc.on('error', (err) => {
@@ -484,7 +491,7 @@ class TeamSessionManager {
       `- 收到队友或用户的消息后，认真思考并直接以文本回答。`,
       `- 保持你的角色特征和说话风格一致。`,
       '',
-      `[重要] 直接输出答案即可，不需要调用任何 MCP 工具（除非确实需要查团队历史用 team_list_rooms / team_read_room）。系统会从你的 stdout 提取回答。`,
+      `[重要] 你可以调用 MCP 工具来查阅团队记忆（recall_facts / search_facts）、记录发现（write_fact）、反思（reflect）等。回复时直接输出文本即可，系统会自动从你的输出提取回答——不需要调用 team_respond 工具。`,
     ].join('\n');
     fs.writeFileSync(filePath, content, 'utf-8');
     return filePath;
@@ -604,7 +611,7 @@ class TeamSessionManager {
    * Write MCP config for a character. Format depends on backing CLI:
    *   - Claude: JSON file → passed via --mcp-config <path>
    *   - Gemini: .gemini/settings.json in session cwd (read by Gemini CLI)
-   *   - Codex: not implemented yet (uses --config flags; future)
+   *   - Codex: global ~/.codex/config.toml [mcp_servers.ai-team] — env passthrough verified 2026-04-21
    * @returns {string} path (Claude: config file; Gemini: session cwd)
    */
   _writeMcpConfig(roomId, character) {
@@ -919,6 +926,14 @@ class TeamSessionManager {
       const tokenCount = tc && (tc.input_tokens != null || tc.output_tokens != null)
         ? { input: tc.input_tokens ?? 0, output: tc.output_tokens ?? 0, model: mu?.model || null }
         : null;
+      // Persist to team.db when Gemini replied via agent_message_chunk (not
+      // team_respond MCP tool). If teamRespondContent was used, the Python MCP
+      // server already inserted the row — writing again would duplicate.
+      if (content && content !== teamRespondContent) {
+        const roomId = key.split(':')[0];
+        try { this._writeTeamDbEvent(roomId, characterId, content); }
+        catch (e) { console.warn(`[team-tsm] gemini team.db write failed: ${e.message}`); }
+      }
       return { content, eventId: null, tokenCount };
     } finally {
       if (thoughtListener) {

@@ -150,24 +150,22 @@ class TeamBridge {
 
     const results = [];
 
-    for (const charId of targets) {
+    // Parallel dispatch — each character runs independently (different _pending
+    // keys, separate CLI processes). Wall time ≈ max(single) instead of sum(all).
+    const dispatches = targets.map(charId => {
       const character = allCharacters[charId];
       if (!character) {
         console.warn(`[team-bridge] character not found: ${charId}`);
-        continue;
+        return null;
       }
-
-      try {
-        if (onEvent) onEvent('event', {
-          type: 'thinking',
-          actor: charId,
-          name: character.display_name || charId,
-        });
-
-        // Ensure session exists
+      if (onEvent) onEvent('event', {
+        type: 'thinking',
+        actor: charId,
+        name: character.display_name || charId,
+      });
+      return (async () => {
         await this._teamSessionManager.ensureSession(roomId, character);
 
-        // Get incremental history since last read
         const cursor = this._getReadPointer(roomId, charId);
         let history = [];
         try {
@@ -175,15 +173,11 @@ class TeamBridge {
         } catch (e) {
           console.warn(`[team-bridge] events-since failed: ${e.message}`);
         }
-
-        // Cap at 30 most recent events
         if (history.length > 30) {
           history = history.slice(history.length - 30);
         }
 
-        // Build injected text with history + new message + team_respond instruction
         let injectedText = '';
-
         if (history.length > 0) {
           injectedText += '--- 最近的对话记录 ---\n';
           for (const evt of history) {
@@ -194,24 +188,16 @@ class TeamBridge {
           }
           injectedText += '--- 记录结束 ---\n\n';
         }
-
         injectedText += `[用户消息]: ${message}\n\n`;
         injectedText += '请认真思考后给出你的回复。回复完成后，务必调用 team_respond 工具分享给队友。';
 
-        // Send and wait for MCP callback. onEvent is passed through so
-        // Gemini ACP can stream thinking_delta events live (Claude/Codex
-        // path simply ignores it).
         const result = await this._teamSessionManager.sendMessage(roomId, charId, injectedText, timeout, onEvent);
 
-        // Update read pointer to latest event's rowid (cursor used by
-        // events-since is rowid, not ts — keep types consistent).
         if (history.length > 0) {
           const lastRowid = Math.max(...history.map(e => Number(e.rowid) || 0));
           if (lastRowid > 0) this._setReadPointer(roomId, charId, lastRowid);
         }
 
-        // AI response is already persisted to DB by the team_respond MCP tool
-        // itself — do NOT insert again here (previously caused duplicate events).
         if (onEvent) onEvent('event', {
           type: 'message',
           actor: charId,
@@ -221,9 +207,8 @@ class TeamBridge {
           ts: Math.floor(Date.now() / 1000),
         });
 
-        results.push({ characterId: charId, content: result.content, tokenCount: result.tokenCount || null });
-
-      } catch (e) {
+        return { characterId: charId, content: result.content, tokenCount: result.tokenCount || null };
+      })().catch(e => {
         console.error(`[team-bridge] error for ${charId}: ${e.message}`);
         if (onEvent) onEvent('event', {
           type: 'error',
@@ -232,8 +217,12 @@ class TeamBridge {
           content: e.message,
           ts: Math.floor(Date.now() / 1000),
         });
-      }
-    }
+        return null;
+      });
+    }).filter(Boolean);
+
+    const settled = await Promise.all(dispatches);
+    for (const r of settled) { if (r) results.push(r); }
 
     if (onEvent) onEvent('done', { code: 0 });
     return { code: 0, results };
