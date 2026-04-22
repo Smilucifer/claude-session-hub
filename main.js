@@ -450,6 +450,7 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
 ipcMain.handle('resume-session', (_e, meta) => {
   if (!meta || !meta.hubId) return null;
   const isClaude = (meta.kind === 'claude' || meta.kind === 'claude-resume');
+  const isGeminiOrCodex = (meta.kind === 'gemini' || meta.kind === 'codex');
   const session = sessionManager.createSession(meta.kind || 'claude', {
     id: meta.hubId,
     title: meta.title,
@@ -457,6 +458,7 @@ ipcMain.handle('resume-session', (_e, meta) => {
     meetingId: meta.meetingId || null,
     resumeCCSessionId: isClaude ? (meta.ccSessionId || undefined) : undefined,
     useContinue: isClaude && !meta.ccSessionId,
+    useResume: isGeminiOrCodex,
     lastMessageTime: meta.lastMessageTime,
     lastOutputPreview: meta.lastOutputPreview,
   });

@@ -183,10 +183,9 @@ class SessionManager extends EventEmitter {
     }
 
     if (isGemini) {
-      // Gemini reads .gemini/settings.json from cwd (set by TeamSessionManager).
-      // --approval-mode yolo ≈ Claude's bypassPermissions.
       let cmd = ' gemini --approval-mode yolo';
-      if (opts.model) cmd += ` --model ${opts.model}`;
+      cmd += ` --model ${opts.model || 'gemini-2.5-pro'}`;
+      if (opts.useResume) cmd += ' --resume latest';
       cmd += '\r\n';
       let sent = false;
       let debounceTimer = null;
@@ -213,7 +212,7 @@ class SessionManager extends EventEmitter {
     }
 
     if (isCodex) {
-      let cmd = ' codex --full-auto';
+      let cmd = opts.useResume ? ' codex resume --last --full-auto' : ' codex --full-auto';
       cmd += '\r\n';
       let sent = false;
       let debounceTimer = null;
