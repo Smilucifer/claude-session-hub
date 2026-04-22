@@ -2466,10 +2466,23 @@ ipcRenderer.on('session-created', (_e, { session }) => {
   } else {
     sessions.set(session.id, session);
   }
+  // Sub-sessions belonging to a meeting: don't switch panels or show terminal.
+  // The meeting room panel handles rendering them in its own sub-slots.
+  if (session.meetingId && activeMeetingId === session.meetingId) {
+    renderSessionList();
+    if (typeof MeetingRoom !== 'undefined') {
+      const m = meetings[session.meetingId];
+      if (m) MeetingRoom.openMeeting(session.meetingId, m);
+    }
+    return;
+  }
   activeSessionId = session.id;
   activeTeamRoomId = null;
+  activeMeetingId = null;
   const trp = document.getElementById('team-room-panel');
   if (trp) trp.style.display = 'none';
+  const mrp = document.getElementById('meeting-room-panel');
+  if (mrp) mrp.style.display = 'none';
   if (terminalPanelEl) terminalPanelEl.style.display = '';
   ipcRenderer.send('focus-session', { sessionId: session.id });
   renderSessionList();
