@@ -842,18 +842,12 @@ class TeamSessionManager {
     const acpWorkdir = projectDir || path.join(MCP_CONFIG_DIR, `acp-${roomId}-${character.id}`);
     const acpGeminiDir = path.join(acpWorkdir, '.gemini');
     fs.mkdirSync(acpGeminiDir, { recursive: true });
-    // run_shell_command is intentionally off: its bundled node-pty crashes
-    // with AttachConsole failed inside piped stdio.
-    // write_file / replace kept off — read-only access is safer for team rooms.
+    // All default tools enabled EXCEPT shell: run_shell_command's bundled
+    // node-pty crashes with AttachConsole failed inside piped stdio.
     fs.writeFileSync(
       path.join(acpGeminiDir, 'settings.json'),
       JSON.stringify({
         tools: {
-          core: [
-            'google_web_search',
-            'read_file', 'read_many_files',
-            'list_directory', 'glob', 'grep_search',
-          ],
           shell: { enableInteractiveShell: false },
         },
       }, null, 2),
