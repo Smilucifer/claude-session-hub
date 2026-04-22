@@ -1141,10 +1141,26 @@ const createRoomNameEl = document.getElementById('create-room-name');
 const createRoomMembersEl = document.getElementById('create-room-members');
 const createRoomConfirmEl = document.getElementById('create-room-confirm');
 
+const ROOM_NAME_POOL = [
+  '赤焰','碧风','苍雷','紫潮','银光','金翼','翠岩','玄冰','朱云','墨虹',
+  '烈阳','幽泉','霜月','岚峰','铁壁','惊涛','飞霜','裂空','奔雷','破晓',
+  '星河','龙吟','凤鸣','虎啸','鹤唳','鹰击','狼烟','豹变','麟角','鲲鹏',
+];
+
+function generateRoomName() {
+  const taken = new Set(teamRooms.map(r => r.display_name || ''));
+  for (const name of ROOM_NAME_POOL) {
+    if (!taken.has(name)) return name;
+  }
+  let n = teamRooms.length + 1;
+  while (taken.has(`作战室 ${n}`)) n++;
+  return `作战室 ${n}`;
+}
+
 async function openCreateRoomModal() {
   createRoomModalEl.style.display = 'flex';
-  createRoomNameEl.value = '';
-  createRoomConfirmEl.disabled = true;
+  createRoomNameEl.value = generateRoomName();
+  createRoomConfirmEl.disabled = false;
   createRoomConfirmEl.textContent = '创建';
   createRoomMembersEl.innerHTML = '';
 
