@@ -921,6 +921,7 @@ class TeamSessionManager {
       if (character.model) {
         try {
           await client.setModel(sessionId, character.model);
+          console.log(`[team-tsm][acp:${character.id}] setModel OK: ${character.model}`);
         } catch (e) {
           console.warn(`[team-tsm][acp:${character.id}] setModel(${character.model}) failed: ${e.message}`);
         }
