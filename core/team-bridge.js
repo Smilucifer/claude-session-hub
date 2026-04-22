@@ -182,19 +182,18 @@ class TeamBridge {
           history = history.slice(history.length - 30);
         }
 
-        let injectedText = buildBootstrap(roomId, charId);
-        if (history.length > 0) {
-          injectedText += '--- 最近的对话记录 ---\n';
-          for (const evt of history) {
-            if (evt.kind === 'message') {
-              const actorName = (allCharacters[evt.actor] && allCharacters[evt.actor].display_name) || evt.actor;
-              injectedText += `[${actorName}]: ${evt.content}\n`;
-            }
+        const isFirstMsg = cursor === 0;
+        let injectedText = isFirstMsg ? buildBootstrap(roomId, charId) : '';
+        const otherMsgs = history.filter(e => e.kind === 'message' && e.actor !== charId);
+        if (otherMsgs.length > 0) {
+          injectedText += '--- 队友和用户的近期发言 ---\n';
+          for (const evt of otherMsgs) {
+            const actorName = (allCharacters[evt.actor] && allCharacters[evt.actor].display_name) || evt.actor;
+            injectedText += `[${actorName}]: ${evt.content}\n`;
           }
-          injectedText += '--- 记录结束 ---\n\n';
+          injectedText += '--- 发言结束 ---\n\n';
         }
-        injectedText += `[用户消息]: ${message}\n\n`;
-        injectedText += '请认真思考后给出你的回复。回复完成后，务必调用 team_respond 工具分享给队友。';
+        injectedText += `[用户消息]: ${message}`;
 
         const result = await this._teamSessionManager.sendMessage(roomId, charId, injectedText, timeout, onEvent);
 
