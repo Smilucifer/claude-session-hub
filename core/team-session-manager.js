@@ -529,22 +529,8 @@ class TeamSessionManager {
   _writeCodexPersona(roomId, character) {
     fs.mkdirSync(CODEX_PERSONAS_DIR, { recursive: true });
     const filePath = path.join(CODEX_PERSONAS_DIR, `${roomId}-${character.id}.md`);
-    const personality = character.personality || '';
     const displayName = character.display_name || character.id;
-    const content = [
-      `# ${displayName} — AI Team Room`,
-      '',
-      `你是 ${displayName}，一个 AI 团队成员。`,
-      '',
-      personality ? `## 性格\n${personality.trim()}\n` : '',
-      `## 团队协作规则`,
-      '',
-      `- 你在房间 ${roomId} 中与其他 AI 角色协作讨论。`,
-      `- 收到队友或用户的消息后，认真思考并直接以文本回答。`,
-      `- 保持你的角色特征和说话风格一致。`,
-      '',
-      `[重要] 你可以调用 MCP 工具来查阅团队记忆（recall_facts / search_facts）、记录发现（write_fact）、反思（reflect）等。回复时直接输出文本即可，系统会自动从你的输出提取回答——不需要调用 team_respond 工具。`,
-    ].join('\n');
+    const content = `你是${displayName}，团队中的Codex。可用 MCP 工具查阅记忆（recall_facts）、记录发现（write_fact）。直接输出文本回复，不需要调用 team_respond。`;
     fs.writeFileSync(filePath, content, 'utf-8');
     return filePath;
   }
@@ -634,26 +620,12 @@ class TeamSessionManager {
     const suffix = cliKind === 'gemini' ? '-gemini' : '';
     const filePath = path.join(PROMPT_DIR, `${roomId}-${character.id}${suffix}.md`);
 
-    const personality = character.personality || '';
     const displayName = character.display_name || character.id;
-
-    const baseLines = [
-      `# ${displayName} — AI Team Room`,
-      '',
-      `你是 ${displayName}，一个 AI 团队成员。`,
-      '',
-      personality ? `## 性格\n${personality.trim()}\n` : '',
-      `## 团队协作规则`,
-      '',
-      `- 你在房间 ${roomId} 中与其他 AI 角色协作讨论。`,
-      `- 收到队友或用户的消息后，认真思考并给出你的观点。`,
-      `- 保持你的角色特征和说话风格一致。`,
-      '',
-    ];
+    const cliLabel = { claude: 'Claude', gemini: 'Gemini', codex: 'Codex' }[cliKind] || cliKind;
     const tailLine = cliKind === 'gemini'
-      ? '直接用自然语言回复即可，你的回复会被系统自动转发给队友。'
-      : '[重要] 回复完成后，你必须调用 team_respond 工具将你的完整回复分享给队友。这是必须的步骤，不要跳过。';
-    const content = [...baseLines, tailLine].join('\n');
+      ? '回复会被系统自动转发给队友。'
+      : '回复完成后调用 team_respond 工具分享给队友。';
+    const content = `你是${displayName}，团队中的${cliLabel}。${tailLine}`;
 
     fs.writeFileSync(filePath, content, 'utf-8');
     return filePath;
