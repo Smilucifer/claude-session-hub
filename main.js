@@ -659,14 +659,25 @@ ipcMain.handle('team:loadRooms', () => teamBridge.loadRooms());
 ipcMain.handle('team:loadCharacters', () => teamBridge.loadCharacters());
 ipcMain.handle('team:getEvents', (_, roomId, limit) => teamBridge.getEvents(roomId, limit));
 ipcMain.handle('team:getWiki', (_, roomId) => teamBridge.getWiki(roomId));
-ipcMain.handle('team:ask', async (event, roomId, message) => {
+ipcMain.handle('team:ask', async (event, roomId, message, mode) => {
   try {
     const result = await teamBridge.askTeam(roomId, message, (type, data) => {
       const sender = event.sender;
       if (sender && !sender.isDestroyed()) {
-        // Include roomId so sidebar can track per-room unread badge + preview
-        // for rooms the user isn't currently viewing (parallels how the
-        // regular Claude session unread flow uses Stop hook + sessionId).
+        sender.send('team:event', { type, data, roomId });
+      }
+    }, 300000, mode || null);
+    return result;
+  } catch (e) {
+    return { code: 1, stderr: e.message, error: true };
+  }
+});
+
+ipcMain.handle('team:huddle', async (event, roomId) => {
+  try {
+    const result = await teamBridge.huddle(roomId, (type, data) => {
+      const sender = event.sender;
+      if (sender && !sender.isDestroyed()) {
         sender.send('team:event', { type, data, roomId });
       }
     });
@@ -674,6 +685,27 @@ ipcMain.handle('team:ask', async (event, roomId, message) => {
   } catch (e) {
     return { code: 1, stderr: e.message, error: true };
   }
+});
+
+ipcMain.handle('team:synthesize', async (event, roomId) => {
+  try {
+    const result = await teamBridge.synthesize(roomId, (type, data) => {
+      const sender = event.sender;
+      if (sender && !sender.isDestroyed()) {
+        sender.send('team:event', { type, data, roomId });
+      }
+    });
+    return result;
+  } catch (e) {
+    return { code: 1, stderr: e.message, error: true };
+  }
+});
+
+ipcMain.handle('team:readFile', async (_, filePath) => {
+  const resolved = path.resolve(filePath);
+  const content = fs.readFileSync(resolved, 'utf-8');
+  if (content.length > 8192) return content.slice(0, 8192) + '\n... (截断，原文件 ' + content.length + ' 字符)';
+  return content;
 });
 
 ipcMain.handle('team:createRoom', async (_, name, memberIds) => {

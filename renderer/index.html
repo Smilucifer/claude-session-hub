@@ -56,9 +56,21 @@
         <div class="tr-inspector" id="tr-inspector"></div>
       </div>
       <div class="tr-input" id="tr-input">
+        <div class="tr-toolbar" id="tr-toolbar">
+          <div class="tr-toolbar-modes">
+            <button class="tr-mode-btn" data-mode="brainstorm" title="方案共创：agents 独立发散思考">方案共创</button>
+            <button class="tr-mode-btn" data-mode="review" title="多方评审：agents 以表格输出发现">多方评审</button>
+          </div>
+          <div class="tr-toolbar-actions">
+            <button class="tr-action-toolbar-btn" id="tr-huddle-btn" title="碰头：让 agents 互评上方对话">碰头</button>
+            <button class="tr-action-toolbar-btn" id="tr-synthesize-btn" title="总结：生成讨论结构化总结">总结</button>
+          </div>
+        </div>
         <div class="tr-mention-popup" id="tr-mention-popup" style="display:none"></div>
-        <div class="tr-input-box" id="tr-input-box" contenteditable="true" data-placeholder="输入消息... @team 或 @角色名"></div>
-        <button class="tr-send-btn" id="tr-send-btn" title="发送">▶</button>
+        <div class="tr-input-row">
+          <div class="tr-input-box" id="tr-input-box" contenteditable="true" data-placeholder="输入消息... @team 或 @角色名"></div>
+          <button class="tr-send-btn" id="tr-send-btn" title="发送">▶</button>
+        </div>
       </div>
     </div>
     <div class="modal-overlay" id="resume-modal" style="display:none">

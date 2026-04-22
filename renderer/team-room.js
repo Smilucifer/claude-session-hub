@@ -30,6 +30,7 @@ const TeamRoom = (() => {
   let lastRenderedMsg = { actor: null, content: null };
   let pendingExtractionStats = null;
   const MAX_VISIBLE_STREAM = 50;
+  let currentMode = null; // null | 'brainstorm' | 'review'
 
   // DOM refs (resolved once DOM is ready)
   const $ = id => document.getElementById(id);
@@ -362,7 +363,7 @@ const TeamRoom = (() => {
         }
         if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault();
-          if (!sending) sendMessage();
+          sendMessage();
         }
       });
 
@@ -379,6 +380,53 @@ const TeamRoom = (() => {
         });
       }
     }
+
+    // Toolbar: mode buttons (toggle on/off)
+    document.querySelectorAll('.tr-mode-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const mode = btn.dataset.mode;
+        if (currentMode === mode) {
+          currentMode = null;
+          btn.classList.remove('active');
+        } else {
+          document.querySelectorAll('.tr-mode-btn').forEach(b => b.classList.remove('active'));
+          currentMode = mode;
+          btn.classList.add('active');
+        }
+      });
+    });
+
+    // Toolbar: huddle button
+    const huddleBtn = $('tr-huddle-btn');
+    if (huddleBtn) huddleBtn.addEventListener('click', () => {
+      if (!currentRoomId) return;
+      huddleBtn.disabled = true;
+      const threadEl = $('tr-thread');
+      if (threadEl) {
+        const div = document.createElement('div');
+        div.className = 'tr-huddle-divider';
+        div.textContent = '--- 碰头 ---';
+        threadEl.appendChild(div);
+        threadEl.scrollTop = threadEl.scrollHeight;
+      }
+      ipcRenderer.invoke('team:huddle', currentRoomId).catch(e => {
+        console.error('[TeamRoom] huddle failed:', e.message);
+      }).finally(() => {
+        huddleBtn.disabled = false;
+      });
+    });
+
+    // Toolbar: synthesize button
+    const synthBtn = $('tr-synthesize-btn');
+    if (synthBtn) synthBtn.addEventListener('click', () => {
+      if (!currentRoomId) return;
+      synthBtn.disabled = true;
+      ipcRenderer.invoke('team:synthesize', currentRoomId).catch(e => {
+        console.error('[TeamRoom] synthesize failed:', e.message);
+      }).finally(() => {
+        synthBtn.disabled = false;
+      });
+    });
 
     // Stream events — register once, remove old handler if re-init
     if (streamHandler) ipcRenderer.removeListener('team:event', streamHandler);
@@ -578,6 +626,18 @@ const TeamRoom = (() => {
           : `[Pass] ${evt.actor || ''}: ${(evt.data && evt.data.decision) || ''}`;
         label.textContent = txt;
         threadEl.appendChild(label);
+      } else if (t === 'synthesis') {
+        const card = document.createElement('div');
+        card.className = 'tr-synthesis';
+        const title = document.createElement('div');
+        title.className = 'tr-synthesis-title';
+        title.textContent = '讨论总结';
+        card.appendChild(title);
+        const body = document.createElement('div');
+        body.className = 'tr-synthesis-body';
+        body.innerHTML = DOMPurify.sanitize(marked.parse(evt.content || ''), { ALLOWED_TAGS: MD_ALLOWED_TAGS, ALLOWED_ATTR: MD_ALLOWED_ATTR });
+        card.appendChild(body);
+        threadEl.appendChild(card);
       } else if (t === 'system_note' || t === 'error') {
         const note = document.createElement('div');
         note.className = 'tr-system-note';
@@ -1070,6 +1130,21 @@ const TeamRoom = (() => {
       refreshInspector();
     }
 
+    else if (evtType === 'synthesis') {
+      const card = document.createElement('div');
+      card.className = 'tr-synthesis';
+      const title = document.createElement('div');
+      title.className = 'tr-synthesis-title';
+      title.textContent = '讨论总结';
+      card.appendChild(title);
+      const body = document.createElement('div');
+      body.className = 'tr-synthesis-body';
+      body.innerHTML = DOMPurify.sanitize(marked.parse(evt.content || ''), { ALLOWED_TAGS: MD_ALLOWED_TAGS, ALLOWED_ATTR: MD_ALLOWED_ATTR });
+      card.appendChild(body);
+      threadEl.appendChild(card);
+      threadEl.scrollTop = threadEl.scrollHeight;
+    }
+
     else if (evtType === 'extraction_done') {
       pendingExtractionStats = evt.stats || null;
     }
@@ -1096,6 +1171,32 @@ const TeamRoom = (() => {
 
     inputBox.innerText = '';
 
+    // /file <path> — inject file content as shared context
+    const fileMatch = text.match(/^\/file\s+(.+)$/);
+    if (fileMatch) {
+      const threadEl = $('tr-thread');
+      try {
+        const content = await ipcRenderer.invoke('team:readFile', fileMatch[1].trim());
+        const contextMsg = `[文件上下文: ${fileMatch[1].trim()}]\n\`\`\`\n${content}\n\`\`\``;
+        if (threadEl) {
+          const note = document.createElement('div');
+          note.className = 'tr-system-note';
+          note.textContent = `已注入文件: ${fileMatch[1].trim()} (${content.length} 字符)`;
+          threadEl.appendChild(note);
+        }
+        ipcRenderer.invoke('team:ask', currentRoomId, contextMsg, currentMode).catch(() => {});
+      } catch (e) {
+        if (threadEl) {
+          const note = document.createElement('div');
+          note.className = 'tr-system-note';
+          note.textContent = `文件读取失败: ${e.message}`;
+          threadEl.appendChild(note);
+        }
+      }
+      inputBox.focus();
+      return;
+    }
+
     const threadEl = $('tr-thread');
     if (threadEl) {
       appendMessage(threadEl, {
@@ -1108,7 +1209,7 @@ const TeamRoom = (() => {
     // Fire and forget — don't block the UI waiting for AI responses.
     // Events stream in via team:event listener; errors show inline.
     const roomId = currentRoomId;
-    ipcRenderer.invoke('team:ask', roomId, text).catch(e => {
+    ipcRenderer.invoke('team:ask', roomId, text, currentMode).catch(e => {
       console.error('[TeamRoom] askTeam failed:', e.message);
       const t = $('tr-thread');
       if (t) {
@@ -1119,11 +1220,6 @@ const TeamRoom = (() => {
         t.scrollTop = t.scrollHeight;
       }
     }).finally(() => {
-      for (const [id, entry] of Object.entries(thinkingMap)) {
-        clearInterval(entry.timer);
-        entry.el.remove();
-        delete thinkingMap[id];
-      }
       refreshInspector();
     });
 

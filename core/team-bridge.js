@@ -133,7 +133,7 @@ class TeamBridge {
     this._invalidateCache();
   }
 
-  async askTeam(roomId, message, onEvent, timeout = 300000) {
+  async askTeam(roomId, message, onEvent, timeout = 300000, mode = null) {
     if (typeof message !== 'string' || !message.trim()) {
       throw new Error('message must be non-empty string');
     }
@@ -143,7 +143,7 @@ class TeamBridge {
 
     // If TeamSessionManager is available, use MCP callback flow
     if (this._teamSessionManager) {
-      return this._askTeamPTY(roomId, message, onEvent, timeout);
+      return this._askTeamPTY(roomId, message, onEvent, timeout, mode);
     }
 
     // Fallback: legacy subprocess orchestrator
@@ -154,7 +154,12 @@ class TeamBridge {
    * MCP callback flow: parse @mentions, send to each target via persistent PTY,
    * wait for team_respond callback.
    */
-  async _askTeamPTY(roomId, message, onEvent, timeout = 300000) {
+  static MODE_PROMPTS = {
+    brainstorm: '【方案共创模式】请充分发散思考，提出你的独立方案，不要与队友趋同。\n',
+    review: '【多方评审模式】请以表格格式输出发现：| 文件 | 行号 | 问题 | 严重度 | 建议 |\n',
+  };
+
+  async _askTeamPTY(roomId, message, onEvent, timeout = 300000, mode = null) {
     const allCharacters = await this._getCachedCharacters();
     const rooms = await this._getCachedRooms();
     const room = rooms.find(r => r.id === roomId);
@@ -227,6 +232,8 @@ class TeamBridge {
 
         const isFirstMsg = cursor === 0;
         let injectedText = isFirstMsg ? buildBootstrap(roomId, charId) : '';
+        const modePrompt = TeamBridge.MODE_PROMPTS[mode] || '';
+        if (modePrompt) injectedText += modePrompt;
         const otherMsgs = history.filter(e => e.kind === 'message' && e.actor !== charId);
         if (otherMsgs.length > 0) {
           injectedText += '--- 队友和用户的近期发言 ---\n';
@@ -273,6 +280,120 @@ class TeamBridge {
 
     if (onEvent) onEvent('done', { code: 0 });
     return { code: 0, results };
+  }
+
+  async huddle(roomId, onEvent, timeout = 300000) {
+    if (!this._teamSessionManager) throw new Error('TeamSessionManager not available');
+    const allCharacters = await this._getCachedCharacters();
+    const rooms = await this._getCachedRooms();
+    const room = rooms.find(r => r.id === roomId);
+    if (!room) throw new Error(`Room not found: ${roomId}`);
+
+    const memberIds = room.members || [];
+    const recentEvents = this._eventsSinceDirect(roomId, 0, 100)
+      .filter(e => e.kind === 'message');
+    const lastN = recentEvents.slice(-20);
+
+    const peerMap = {};
+    for (const evt of lastN) {
+      const actorName = (allCharacters[evt.actor] && allCharacters[evt.actor].display_name) || evt.actor;
+      if (!peerMap[evt.actor]) peerMap[evt.actor] = [];
+      peerMap[evt.actor].push(evt.content);
+    }
+
+    const results = [];
+    const dispatches = memberIds.map(charId => {
+      const character = allCharacters[charId];
+      if (!character) return null;
+
+      const peerLines = [];
+      for (const [actor, msgs] of Object.entries(peerMap)) {
+        if (actor === charId) continue;
+        const actorName = (allCharacters[actor] && allCharacters[actor].display_name) || actor;
+        peerLines.push(`[${actorName}]: ${msgs[msgs.length - 1]}`);
+      }
+      if (peerLines.length === 0) return null;
+
+      const huddlePrompt = '--- 碰头 ---\n'
+        + '以下是队友们的回应，请审阅后给出反馈：\n'
+        + '- 指出同意的部分\n'
+        + '- 指出不同意的部分并说明理由\n'
+        + '- 补充遗漏的重要内容\n\n'
+        + peerLines.join('\n') + '\n--- 碰头结束 ---';
+
+      if (onEvent) onEvent('event', {
+        type: 'thinking', actor: charId,
+        name: character.display_name || charId,
+      });
+
+      return (async () => {
+        await this._teamSessionManager.ensureSession(roomId, character, room.project_dir);
+        const result = await this._teamSessionManager.sendMessage(roomId, charId, huddlePrompt, timeout, onEvent);
+        this._insertEventDirect(roomId, charId, 'message', result.content);
+        if (onEvent) onEvent('event', {
+          type: 'message', actor: charId,
+          name: character.display_name || charId,
+          content: result.content,
+          tokenCount: result.tokenCount || null,
+          ts: Math.floor(Date.now() / 1000),
+        });
+        return { characterId: charId, content: result.content };
+      })().catch(e => {
+        if (onEvent) onEvent('event', { type: 'error', actor: charId, content: e.message });
+        return null;
+      });
+    }).filter(Boolean);
+
+    const settled = await Promise.all(dispatches);
+    for (const r of settled) { if (r) results.push(r); }
+    if (onEvent) onEvent('done', { code: 0 });
+    return { code: 0, results };
+  }
+
+  async synthesize(roomId, onEvent, timeout = 300000) {
+    if (!this._teamSessionManager) throw new Error('TeamSessionManager not available');
+    const allCharacters = await this._getCachedCharacters();
+    const rooms = await this._getCachedRooms();
+    const room = rooms.find(r => r.id === roomId);
+    if (!room) throw new Error(`Room not found: ${roomId}`);
+
+    const memberIds = room.members || [];
+    const synthesizerId = memberIds.find(m => allCharacters[m] && allCharacters[m].backing_cli === 'claude') || memberIds[0];
+    if (!synthesizerId) throw new Error('No members to synthesize');
+    const character = allCharacters[synthesizerId];
+
+    const recentEvents = this._eventsSinceDirect(roomId, 0, 100)
+      .filter(e => e.kind === 'message');
+    const lastN = recentEvents.slice(-30);
+
+    let contextLines = '';
+    for (const evt of lastN) {
+      const actorName = (allCharacters[evt.actor] && allCharacters[evt.actor].display_name) || evt.actor;
+      contextLines += `[${actorName}]: ${evt.content}\n\n`;
+    }
+
+    const synthPrompt = '请综合以上所有讨论，生成结构化总结：\n'
+      + '1. **共识要点**（所有人同意的）\n'
+      + '2. **分歧点**（各方意见不同的，标注各方立场）\n'
+      + '3. **行动项**（具体可执行的下一步）\n\n'
+      + '--- 讨论记录 ---\n' + contextLines + '--- 记录结束 ---';
+
+    if (onEvent) onEvent('event', {
+      type: 'thinking', actor: synthesizerId,
+      name: character.display_name || synthesizerId,
+    });
+
+    await this._teamSessionManager.ensureSession(roomId, character, room.project_dir);
+    const result = await this._teamSessionManager.sendMessage(roomId, synthesizerId, synthPrompt, timeout, onEvent);
+    this._insertEventDirect(roomId, synthesizerId, 'synthesis', result.content);
+
+    if (onEvent) onEvent('event', {
+      type: 'synthesis', actor: synthesizerId,
+      content: result.content,
+      ts: Math.floor(Date.now() / 1000),
+    });
+    if (onEvent) onEvent('done', { code: 0 });
+    return { code: 0, content: result.content };
   }
 
   /**

@@ -337,14 +337,64 @@
 .tr-input {
   position: relative;
   display: flex;
-  flex-direction: row;
-  align-items: flex-end;
-  gap: 8px;
+  flex-direction: column;
+  gap: 6px;
   padding: 10px 16px 12px;
   border-top: 1px solid #262c3a;
   background: #141821;
   flex-shrink: 0;
 }
+.tr-input-row {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+/* --- 7a. Toolbar --- */
+.tr-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.tr-toolbar-modes {
+  display: flex;
+  gap: 4px;
+}
+.tr-toolbar-actions {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+.tr-mode-btn {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  border: 1px solid #2a3245;
+  background: transparent;
+  color: #8a93a6;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.tr-mode-btn:hover { border-color: #3d5a80; color: #c0c8d8; }
+.tr-mode-btn.active {
+  background: #1a2337;
+  border-color: #e8c84a;
+  color: #e8c84a;
+}
+.tr-action-toolbar-btn {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  border: 1px solid #2a3245;
+  background: transparent;
+  color: #8a93a6;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.tr-action-toolbar-btn:hover { border-color: #4a9eff; color: #4a9eff; }
+.tr-action-toolbar-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .tr-input-box {
   flex: 1;
@@ -859,4 +909,35 @@
 .tr-collapsed-hint:hover {
   color: #a7b0c2;
   background: #1a1f2b;
+}
+
+/* --- 12. Synthesis card --- */
+.tr-synthesis {
+  margin: 12px 0;
+  padding: 12px 16px;
+  background: #1a2337;
+  border: 1px solid #2a3245;
+  border-left: 4px solid #e8c84a;
+  border-radius: 8px;
+}
+.tr-synthesis-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #e8c84a;
+  margin-bottom: 8px;
+}
+.tr-synthesis-body {
+  font-size: 13px;
+  line-height: 1.6;
+  color: #e8ecf4;
+}
+
+/* --- 13. Huddle divider --- */
+.tr-huddle-divider {
+  text-align: center;
+  padding: 6px 0;
+  font-size: 11px;
+  color: #e8c84a;
+  border-top: 1px dashed #e8c84a40;
+  margin: 12px 0;
 }
