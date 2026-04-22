@@ -273,9 +273,41 @@ class TeamSessionManager {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this._pending.delete(key);
+        // Kill stuck session so next message gets a fresh one
+        const s = this._sessionManager.getSession(hubSessionId);
+        if (s) {
+          console.warn(`[team-tsm] killing stuck Claude session ${hubSessionId} for ${key}`);
+          this._sessionManager.closeSession(hubSessionId);
+        }
+        this._sessions.delete(key);
         reject(new Error(`team_respond timeout after ${timeout}ms for ${key}`));
       }, timeout);
 
+      this._pending.set(key, { resolve, reject, timer });
+
+      // Stream PTY output as text_delta events so the team room can show
+      // Claude's intermediate output (tool calls, thinking, partial response).
+      let ptyListener = null;
+      if (onEvent) {
+        ptyListener = (evt) => {
+          if (evt.sessionId !== hubSessionId) return;
+          onEvent('event', {
+            type: 'text_delta',
+            actor: characterId,
+            text: evt.data,
+          });
+        };
+        this._sessionManager.on('output', ptyListener);
+      }
+      // Clean up listener when promise settles
+      const origResolve = resolve;
+      const origReject = reject;
+      const cleanup = () => {
+        if (ptyListener) this._sessionManager.off('output', ptyListener);
+      };
+      resolve = (v) => { cleanup(); origResolve(v); };
+      reject = (e) => { cleanup(); origReject(e); };
+      // Re-bind pending so onResponse uses the wrapped resolve
       this._pending.set(key, { resolve, reject, timer });
 
       // Write to PTY stdin using bracketed-paste mode. Without paste markers,
@@ -847,14 +879,14 @@ class TeamSessionManager {
     // System prompt — Gemini CLI reads GEMINI_SYSTEM_MD as a markdown file path.
     const promptFile = this._writePromptFile(roomId, character, 'gemini');
 
-    // Use the room's project directory as Gemini's cwd so it can read project
-    // files. Fall back to a scratch directory when no project_dir is set.
+    // Resolve cwd: project dir if set, else scratch dir. NEVER use homedir
+    // as cwd — writing .gemini/settings.json there overwrites global config.
+    const scratchDir = path.join(MCP_CONFIG_DIR, `acp-${roomId}-${character.id}`);
     const projectDir = this._roomProjectDirs.get(roomId);
-    const acpWorkdir = projectDir || path.join(MCP_CONFIG_DIR, `acp-${roomId}-${character.id}`);
+    const homeDir = os.homedir();
+    const acpWorkdir = (projectDir && projectDir !== homeDir) ? projectDir : scratchDir;
     const acpGeminiDir = path.join(acpWorkdir, '.gemini');
     fs.mkdirSync(acpGeminiDir, { recursive: true });
-    // All default tools enabled EXCEPT shell: run_shell_command's bundled
-    // node-pty crashes with AttachConsole failed inside piped stdio.
     fs.writeFileSync(
       path.join(acpGeminiDir, 'settings.json'),
       JSON.stringify({
