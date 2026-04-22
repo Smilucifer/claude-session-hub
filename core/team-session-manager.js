@@ -71,6 +71,45 @@ class TeamSessionManager {
     // In-flight ensureSession guards — concurrent calls for same key share
     // the same Promise instead of double-spawning ACP processes.
     this._acpPending = new Map();
+    // Reverse map hubSessionId → "roomId:charId" for statusline token bridging
+    this._hubToTeamKey = new Map();
+    // Latest context stats per team key, updated via statusline /api/status
+    this._tokenCache = new Map();
+    this._loadPersistedSessions();
+  }
+
+  _loadPersistedSessions() {
+    try {
+      const db = new DatabaseSync(TEAM_DB_PATH);
+      try {
+        const rows = db.prepare(
+          'SELECT room_id, character_id, backing_cli, session_id FROM cli_sessions WHERE session_id IS NOT NULL'
+        ).all();
+        for (const r of rows) {
+          const key = `${r.room_id}:${r.character_id}`;
+          if (r.backing_cli === 'codex' && r.session_id) {
+            this._codexSessions.set(key, r.session_id);
+          }
+        }
+        if (rows.length) console.log(`[team-tsm] restored ${rows.length} persisted sessions`);
+      } finally { db.close(); }
+    } catch (e) {
+      console.warn(`[team-tsm] session load failed: ${e.message}`);
+    }
+  }
+
+  _persistSession(roomId, characterId, backingCli, sessionId) {
+    try {
+      const db = new DatabaseSync(TEAM_DB_PATH);
+      try {
+        db.prepare(
+          `INSERT OR REPLACE INTO cli_sessions (room_id, character_id, backing_cli, session_id, updated_ts)
+           VALUES (?, ?, ?, ?, ?)`
+        ).run(roomId, characterId, backingCli, sessionId, Math.floor(Date.now() / 1000));
+      } finally { db.close(); }
+    } catch (e) {
+      console.warn(`[team-tsm] session persist failed: ${e.message}`);
+    }
   }
 
   /**
@@ -86,7 +125,19 @@ class TeamSessionManager {
     }
     clearTimeout(pending.timer);
     this._pending.delete(key);
-    pending.resolve({ content, eventId });
+    const tokenCount = this._tokenCache.get(key) || null;
+    pending.resolve({ content, eventId, tokenCount });
+  }
+
+  updateStatusForSession(hubSessionId, data) {
+    const key = this._hubToTeamKey.get(hubSessionId);
+    if (!key) return;
+    this._tokenCache.set(key, {
+      input: data.contextUsed || 0,
+      output: 0,
+      contextPct: data.contextPct,
+      contextMax: data.contextMax,
+    });
   }
 
   /**
@@ -133,7 +184,6 @@ class TeamSessionManager {
         AI_TEAM_ROOM_ID: roomId,
         AI_TEAM_CHARACTER_ID: character.id,
         AI_TEAM_HUB_CALLBACK_URL: `http://127.0.0.1:${this._hookPort}`,
-        CLAUDE_CODE_SKIP_HOOKS: '1',
       },
     };
     if (cliKind === 'claude' || cliKind === 'claude-resume') {
@@ -153,6 +203,7 @@ class TeamSessionManager {
     const session = this._sessionManager.createSession(cliKind, createOpts);
 
     this._sessions.set(key, session.id);
+    this._hubToTeamKey.set(session.id, key);
 
     // Wait for CLI to be ready
     const ptyEntry = this._sessionManager.sessions.get(session.id);
@@ -450,6 +501,7 @@ class TeamSessionManager {
             console.warn(`[team-tsm] codex sid update key=${key} ${priorSid || '(first)'} -> ${capturedSid}`);
           }
           this._codexSessions.set(key, capturedSid);
+          this._persistSession(roomId, characterId, 'codex', capturedSid);
         }
 
         // Persist event + notify Hub (mirrors what Claude's team_respond MCP

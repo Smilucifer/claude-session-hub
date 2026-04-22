@@ -581,6 +581,9 @@ const hookServer = http.createServer((req, res) => {
           linesAdded: parsed.linesAdded,
           linesRemoved: parsed.linesRemoved,
         });
+        if (teamSessionManager) {
+          teamSessionManager.updateStatusForSession(parsed.sessionId, parsed);
+        }
       }
     }
     res.writeHead(200); res.end('{}');

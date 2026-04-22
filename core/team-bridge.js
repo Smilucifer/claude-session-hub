@@ -4,6 +4,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 
+const { buildBootstrap } = require('./session-bootstrap');
 const AI_TEAM_DIR = path.join(os.homedir(), '.ai-team');
 const DB_PATH = path.join(AI_TEAM_DIR, 'team.db');
 
@@ -181,7 +182,7 @@ class TeamBridge {
           history = history.slice(history.length - 30);
         }
 
-        let injectedText = '';
+        let injectedText = buildBootstrap(roomId, charId);
         if (history.length > 0) {
           injectedText += '--- 最近的对话记录 ---\n';
           for (const evt of history) {
