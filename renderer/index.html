@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css">
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="team-room.css">
+  <link rel="stylesheet" href="meeting-room.css">
 </head>
 <body>
   <div class="app-container" id="app-container">
@@ -23,6 +24,8 @@
               <button class="new-session-option" data-kind="powershell">PowerShell</button>
               <div class="new-session-divider"></div>
               <button class="new-session-option" data-kind="team-room">🏠 创建房间</button>
+              <div class="new-session-divider"></div>
+              <button class="new-session-option" data-kind="meeting">🏢 会议室</button>
             </div>
           </div>
           <button class="btn-resume-picker" id="btn-resume-picker" title="Resume a past session">↻</button>
@@ -71,6 +74,15 @@
           <div class="tr-input-box" id="tr-input-box" contenteditable="true" data-placeholder="输入消息... @team 或 @角色名"></div>
           <button class="tr-send-btn" id="tr-send-btn" title="发送">▶</button>
         </div>
+      </div>
+    </div>
+    <div class="meeting-room-panel" id="meeting-room-panel" style="display:none">
+      <div class="mr-header" id="mr-header"></div>
+      <div class="mr-terminals" id="mr-terminals"></div>
+      <div class="mr-toolbar" id="mr-toolbar"></div>
+      <div class="mr-input-row" id="mr-input-row">
+        <div class="mr-input-box" id="mr-input-box" contenteditable="true" data-placeholder="输入消息..."></div>
+        <button class="mr-send-btn" id="mr-send-btn" title="发送">▶</button>
       </div>
     </div>
     <div class="modal-overlay" id="resume-modal" style="display:none">
@@ -125,6 +137,7 @@
   </div>
   <script src="renderer.js"></script>
   <script src="team-room.js"></script>
+  <script src="meeting-room.js"></script>
 
   <div id="pair-modal" class="pair-modal-overlay hidden">
     <div class="pair-modal-content">
