@@ -180,6 +180,7 @@ class TeamBridge {
     const rooms = await this._getCachedRooms();
     const room = rooms.find(r => r.id === roomId);
     if (!room) throw new Error(`Room not found: ${roomId}`);
+    if (!room.project_dir) room.project_dir = require('os').homedir();
 
     const memberIds = room.members || [];
 
@@ -304,6 +305,7 @@ class TeamBridge {
     const rooms = await this._getCachedRooms();
     const room = rooms.find(r => r.id === roomId);
     if (!room) throw new Error(`Room not found: ${roomId}`);
+    if (!room.project_dir) room.project_dir = require('os').homedir();
 
     const memberIds = room.members || [];
     const recentEvents = this._eventsSinceDirect(roomId, 0, 100)
@@ -372,6 +374,7 @@ class TeamBridge {
     const rooms = await this._getCachedRooms();
     const room = rooms.find(r => r.id === roomId);
     if (!room) throw new Error(`Room not found: ${roomId}`);
+    if (!room.project_dir) room.project_dir = require('os').homedir();
 
     const memberIds = room.members || [];
     const synthesizerId = memberIds.find(m => allCharacters[m] && allCharacters[m].backing_cli === 'claude') || memberIds[0];

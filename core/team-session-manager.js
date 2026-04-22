@@ -836,29 +836,24 @@ class TeamSessionManager {
     // System prompt — Gemini CLI reads GEMINI_SYSTEM_MD as a markdown file path.
     const promptFile = this._writePromptFile(roomId, character, 'gemini');
 
-    // Dedicated scratch directory as the ACP session cwd. We drop a workspace
-    // settings.json that disables Gemini's interactive-shell tool: its bundled
-    // node-pty tries AttachConsole during tool registry init, which fails
-    // inside our piped stdio and crashes the whole ACP process the moment the
-    // first prompt arrives. Workspace settings merge on top of ~/.gemini/
-    // settings.json, so the user's OAuth selectedType is preserved.
-    const acpWorkdir = path.join(MCP_CONFIG_DIR, `acp-${roomId}-${character.id}`);
+    // Use the room's project directory as Gemini's cwd so it can read project
+    // files. Fall back to a scratch directory when no project_dir is set.
+    const projectDir = this._roomProjectDirs.get(roomId);
+    const acpWorkdir = projectDir || path.join(MCP_CONFIG_DIR, `acp-${roomId}-${character.id}`);
     const acpGeminiDir = path.join(acpWorkdir, '.gemini');
     fs.mkdirSync(acpGeminiDir, { recursive: true });
-    // - tools.core          built-in allowlist. We only enable no-side-effect
-    //                        tools. `run_shell_command` is intentionally off:
-    //                        its bundled node-pty crashes with AttachConsole
-    //                        failed inside piped stdio. fs/terminal operations
-    //                        are separately denied by acp-client's reverse-
-    //                        request handler.
-    //                        Exact names come from bundle/chunk-*.js:
-    //                          WEB_SEARCH_TOOL_NAME = "google_web_search"
-    // - tools.shell...:false  belt-and-suspenders shell disable.
+    // run_shell_command is intentionally off: its bundled node-pty crashes
+    // with AttachConsole failed inside piped stdio.
+    // write_file / replace kept off — read-only access is safer for team rooms.
     fs.writeFileSync(
       path.join(acpGeminiDir, 'settings.json'),
       JSON.stringify({
         tools: {
-          core: ['google_web_search'],
+          core: [
+            'google_web_search',
+            'read_file', 'read_many_files',
+            'list_directory', 'glob', 'grep_search',
+          ],
           shell: { enableInteractiveShell: false },
         },
       }, null, 2),
