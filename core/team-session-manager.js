@@ -188,10 +188,9 @@ class TeamSessionManager {
       this._sessions.delete(key);
     }
 
-    // Write MCP config (format depends on CLI) and system prompt
     const mcpConfigPath = this._writeMcpConfig(roomId, character);
-    const promptFile = this._writePromptFile(roomId, character);
-    const cliKind = this._cliKind(character.backing_cli);
+    const promptFile = this._writePromptFile(roomId, character, cli);
+    const cliKind = cli;
 
     // Gemini reads .gemini/settings.json from cwd, so it must use mcpConfigPath.
     // Claude/Codex: use projectDir (loads that project's CLAUDE.md/AGENTS.md)
