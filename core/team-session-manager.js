@@ -134,12 +134,24 @@ class TeamSessionManager {
   updateStatusForSession(hubSessionId, data) {
     const key = this._hubToTeamKey.get(hubSessionId);
     if (!key) return;
+    const pct = typeof data.contextPct === 'number' ? data.contextPct : null;
     this._tokenCache.set(key, {
       input: data.contextUsed || 0,
       output: 0,
-      contextPct: data.contextPct,
+      contextPct: pct,
       contextMax: data.contextMax,
     });
+    // Auto-compact: inject /compact when context fills past 85%
+    if (pct > 85 && !this._compactCooldown?.has(key)) {
+      const session = this._sessionManager.sessions.get(hubSessionId);
+      if (session?.pty) {
+        console.warn(`[team-tsm] auto-compact triggered for ${key} at ${pct}%`);
+        session.pty.write('/compact\r');
+        if (!this._compactCooldown) this._compactCooldown = new Map();
+        this._compactCooldown.set(key, Date.now());
+        setTimeout(() => this._compactCooldown?.delete(key), 60000);
+      }
+    }
   }
 
   /**
@@ -631,7 +643,22 @@ class TeamSessionManager {
     const tailLine = cliKind === 'gemini'
       ? '回复会被系统自动转发给队友。'
       : '回复完成后调用 team_respond 工具分享给队友。';
-    const content = `你是${displayName}，团队中的${cliLabel}。${tailLine}`;
+    let content = `你是${displayName}，团队中的${cliLabel}。${tailLine}`;
+
+    if (cliKind === 'gemini') {
+      const projDir = this._roomProjectDirs.get(roomId);
+      if (projDir) {
+        for (const name of ['GEMINI.md', 'CLAUDE.md']) {
+          try {
+            const md = fs.readFileSync(path.join(projDir, name), 'utf-8');
+            if (md.trim()) {
+              content += `\n\n--- Project Instructions (${name}) ---\n` + md.slice(0, 4000);
+              break;
+            }
+          } catch {}
+        }
+      }
+    }
 
     fs.writeFileSync(filePath, content, 'utf-8');
     return filePath;

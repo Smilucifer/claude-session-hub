@@ -613,8 +613,15 @@ const TeamRoom = (() => {
     const tc = evt.tokenCount;
     const tcIn = tc && tc.input != null ? (Number(tc.input) || 0) : null;
     const tcOut = tc && tc.output != null ? (Number(tc.output) || 0) : null;
-    const tokenHtml = (tcIn !== null || tcOut !== null)
-      ? `<span class="tr-msg-tokens" style="margin-left:8px;color:var(--text-secondary);font-size:11px;opacity:0.75" title="input / output tokens">↓${tcIn ?? 0} ↑${tcOut ?? 0}</span>`
+    const ctxPct = tc && tc.contextPct != null ? Number(tc.contextPct) : null;
+    const tokenParts = [];
+    if (tcIn !== null || tcOut !== null) tokenParts.push(`↓${tcIn ?? 0} ↑${tcOut ?? 0}`);
+    if (ctxPct !== null) {
+      const barColor = ctxPct > 85 ? '#f87171' : ctxPct > 70 ? '#fbbf24' : '#4ade80';
+      tokenParts.push(`<span style="display:inline-block;width:40px;height:6px;background:#333;border-radius:3px;vertical-align:middle;margin-left:4px" title="context ${ctxPct}%"><span style="display:block;width:${Math.min(ctxPct,100)}%;height:100%;background:${barColor};border-radius:3px"></span></span>${ctxPct}%`);
+    }
+    const tokenHtml = tokenParts.length > 0
+      ? `<span class="tr-msg-tokens" style="margin-left:8px;color:var(--text-secondary);font-size:11px;opacity:0.75">${tokenParts.join(' ')}</span>`
       : '';
 
     const msgEl = document.createElement('div');

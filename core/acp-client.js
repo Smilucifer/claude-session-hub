@@ -293,14 +293,13 @@ class AcpClient extends EventEmitter {
       return;
     }
 
-    // Deny fs / terminal operations by default — the Hub doesn't expose a
-    // filesystem or shell to Gemini. Agents should call MCP tools instead.
-    if (isRequest && (method.startsWith('fs/') || method.startsWith('terminal/'))) {
-      this._send({
-        jsonrpc: '2.0',
-        id: msg.id,
-        error: { code: -32601, message: `method not supported: ${method}` },
-      });
+    const FS_READONLY = new Set(['fs/readTextFile', 'fs/listDirectory', 'fs/stat']);
+    if (isRequest && method.startsWith('fs/') && !FS_READONLY.has(method)) {
+      this._send({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: `fs write not allowed: ${method}` } });
+      return;
+    }
+    if (isRequest && method.startsWith('terminal/')) {
+      this._send({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: `terminal not supported: ${method}` } });
       return;
     }
 
