@@ -205,6 +205,7 @@ class TeamSessionManager {
         AI_TEAM_ROOM_ID: roomId,
         AI_TEAM_CHARACTER_ID: character.id,
         AI_TEAM_HUB_CALLBACK_URL: `http://127.0.0.1:${this._hookPort}`,
+        CLAUDE_CODE_SKIP_HOOKS: '1',
       },
     };
     if (cliKind === 'claude' || cliKind === 'claude-resume') {
@@ -643,10 +644,12 @@ class TeamSessionManager {
 
     const displayName = character.display_name || character.id;
     const cliLabel = { claude: 'Claude', gemini: 'Gemini', codex: 'Codex' }[cliKind] || cliKind;
-    const tailLine = cliKind === 'gemini'
-      ? '回复会被系统自动转发给队友。'
-      : '回复完成后调用 team_respond 工具分享给队友。';
-    let content = `你是${displayName}，团队中的${cliLabel}。${tailLine}以原生${cliLabel}的专业风格回复，不要角色扮演。`;
+    let content;
+    if (cliKind === 'gemini') {
+      content = `你是${displayName}，团队中的${cliLabel}。回复会被系统自动转发给队友。以原生Gemini的专业风格回复，不要角色扮演。`;
+    } else {
+      content = `你是${displayName}，团队中的${cliLabel}。[重要] 回复完成后必须调用 team_respond 工具，这是唯一的回复通道。`;
+    }
 
     if (cliKind === 'gemini') {
       const projDir = this._roomProjectDirs.get(roomId);
