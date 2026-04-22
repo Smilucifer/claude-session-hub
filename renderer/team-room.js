@@ -469,9 +469,10 @@ const TeamRoom = (() => {
     const closeBtn = $('tr-close-btn');
     if (closeBtn) {
       closeBtn.addEventListener('click', () => {
+        const rid = currentRoomId;
         currentRoomId = null;
         currentRoomConfig = null;
-        if (typeof closeTeamRoomView === 'function') closeTeamRoomView();
+        if (typeof deleteTeamRoom === 'function') deleteTeamRoom(rid);
       });
     }
   }

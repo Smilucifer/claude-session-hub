@@ -500,13 +500,20 @@ function renderTeamRooms() {
   renderSessionList();
 }
 
-// Called from team-room.js header X button to leave the room view without
-// deleting the room. Hides panel, clears active state, shows empty-state.
-function closeTeamRoomView() {
-  activeTeamRoomId = null;
-  const trPanel = document.getElementById('team-room-panel');
-  if (trPanel) trPanel.style.display = 'none';
-  if (emptyStateEl) emptyStateEl.style.display = '';
+// Delete a team room: IPC delete from DB+YAML, clean client state, hide panel.
+// Called from both header X button (team-room.js) and right-click Close.
+async function deleteTeamRoom(roomId) {
+  if (!roomId) return;
+  try { await ipcRenderer.invoke('team:deleteRoom', roomId); } catch (_) {}
+  teamRooms = teamRooms.filter(r => r.id !== roomId);
+  delete teamRoomPreviews[roomId];
+  delete teamRoomUnread[roomId];
+  if (activeTeamRoomId === roomId) {
+    activeTeamRoomId = null;
+    const trPanel = document.getElementById('team-room-panel');
+    if (trPanel) trPanel.style.display = 'none';
+    if (emptyStateEl) emptyStateEl.style.display = '';
+  }
   renderSessionList();
 }
 
@@ -2222,19 +2229,7 @@ for (const btn of contextMenuEl.querySelectorAll('.context-menu-item')) {
     if (!sid) return;
 
     if (isTeamRoom) {
-      if (action === 'close') {
-        try { await ipcRenderer.invoke('team:deleteRoom', sid); } catch (_) {}
-        teamRooms = teamRooms.filter(r => r.id !== sid);
-        delete teamRoomPreviews[sid];
-        delete teamRoomUnread[sid];
-        if (activeTeamRoomId === sid) {
-          activeTeamRoomId = null;
-          const trPanel = document.getElementById('team-room-panel');
-          if (trPanel) trPanel.style.display = 'none';
-          if (emptyStateEl) emptyStateEl.style.display = '';
-        }
-        renderSessionList();
-      }
+      if (action === 'close') deleteTeamRoom(sid);
       return;
     }
 

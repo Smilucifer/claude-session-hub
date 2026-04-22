@@ -72,7 +72,11 @@ class TeamBridge {
 
   deleteRoom(roomId) {
     if (typeof roomId !== 'string') throw new Error('roomId must be string');
-    const dbPath = require('path').join(require('os').homedir(), '.ai-team', 'team.db');
+    // 1. Delete YAML config (this is what loadRooms reads via bridge_query.py)
+    const yamlPath = path.join(this.baseDir, 'rooms', `${roomId}.yaml`);
+    try { fs.unlinkSync(yamlPath); } catch {}
+    // 2. Delete DB rows (events + room record)
+    const dbPath = path.join(this.baseDir, 'team.db');
     const { DatabaseSync } = require('node:sqlite');
     const db = new DatabaseSync(dbPath);
     try {
@@ -238,7 +242,6 @@ class TeamBridge {
 
     const env = Object.assign({}, process.env, {
       PYTHONUTF8: '1',
-      CLAUDE_CODE_SKIP_HOOKS: '1',
       HTTP_PROXY: 'http://127.0.0.1:7890',
       HTTPS_PROXY: 'http://127.0.0.1:7890',
       AI_TEAM_ROOM_ID: roomId || '',
