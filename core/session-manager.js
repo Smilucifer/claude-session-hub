@@ -37,12 +37,14 @@ class SessionManager extends EventEmitter {
     const id = opts.id || uuid();
     const isClaude = kind === 'claude' || kind === 'claude-resume';
     const isGemini = kind === 'gemini';
-    const isAgent = isClaude || isGemini;
+    const isCodex = kind === 'codex';
+    const isAgent = isClaude || isGemini || isCodex;
     let title;
     if (opts.title) title = opts.title;
     else if (kind === 'claude') title = `Claude ${++this.claudeCounter}`;
     else if (kind === 'claude-resume') title = `Claude Resume ${++this.resumeCounter}`;
     else if (kind === 'gemini') { this.geminiCounter = (this.geminiCounter || 0) + 1; title = `Gemini ${this.geminiCounter}`; }
+    else if (kind === 'codex') { this.codexCounter = (this.codexCounter || 0) + 1; title = `Codex ${this.codexCounter}`; }
     else title = `PowerShell ${++this.psCounter}`;
 
     const sessionEnv = { ...process.env };
@@ -70,8 +72,7 @@ class SessionManager extends EventEmitter {
       if (process.env.CLAUDE_HUB_DATA_DIR) {
         sessionEnv.CLAUDE_HUB_DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR;
       }
-    } else if (isGemini) {
-      // Same proxy rule as Claude (hard user requirement).
+    } else if (isGemini || isCodex) {
       sessionEnv.HTTP_PROXY = CLAUDE_PROXY;
       sessionEnv.HTTPS_PROXY = CLAUDE_PROXY;
       sessionEnv.NO_PROXY = 'localhost,127.0.0.1';
@@ -186,6 +187,33 @@ class SessionManager extends EventEmitter {
       // --approval-mode yolo ≈ Claude's bypassPermissions.
       let cmd = ' gemini --approval-mode yolo';
       if (opts.model) cmd += ` --model ${opts.model}`;
+      cmd += '\r\n';
+      let sent = false;
+      let debounceTimer = null;
+      const watcher = ptyProcess.onData(() => {
+        if (sent) return;
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          if (sent) return;
+          sent = true;
+          watcher.dispose();
+          const s = this.sessions.get(id);
+          if (s) s.pty.write(cmd);
+        }, 200);
+      });
+      const safetyTimer = setTimeout(() => {
+        if (sent) return;
+        sent = true;
+        watcher.dispose();
+        if (debounceTimer) clearTimeout(debounceTimer);
+        const s = this.sessions.get(id);
+        if (s) s.pty.write(cmd);
+      }, 3000);
+      pendingTimers.push(safetyTimer);
+    }
+
+    if (isCodex) {
+      let cmd = ' codex --full-auto';
       cmd += '\r\n';
       let sent = false;
       let debounceTimer = null;

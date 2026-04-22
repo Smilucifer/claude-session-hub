@@ -148,6 +148,7 @@
     const kinds = [
       { kind: 'claude', label: 'Claude Code' },
       { kind: 'gemini', label: 'Gemini CLI' },
+      { kind: 'codex', label: 'Codex CLI' },
       { kind: 'powershell', label: 'PowerShell' },
     ];
 
@@ -371,7 +372,7 @@
     let optionsHtml = '<option value="all">全部</option>';
     for (const sid of meeting.subSessions) {
       const session = sessions ? sessions.get(sid) : null;
-      const label = session ? (session.kind || sid) : sid;
+      const label = session ? (session.title || session.kind || sid) : sid;
       const sel = meeting.sendTarget === sid ? ' selected' : '';
       optionsHtml += `<option value="${sid}"${sel}>${escapeHtml(label)}</option>`;
     }
@@ -445,7 +446,11 @@
         const context = await buildContextSummary(meeting, sessionId);
         payload = context + payload;
       }
-      ipcRenderer.send('terminal-input', { sessionId, data: payload + '\r' });
+      ipcRenderer.send('terminal-input', { sessionId, data: payload });
+      // Send Enter separately so TUI apps (Claude/Gemini) register it as submit
+      setTimeout(() => {
+        ipcRenderer.send('terminal-input', { sessionId, data: '\r' });
+      }, 80);
     }
 
     meeting.lastMessageTime = Date.now();
