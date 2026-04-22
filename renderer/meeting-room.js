@@ -431,12 +431,13 @@
   }
 
   async function handleMeetingSend(text, meeting) {
-    const targets = meeting.sendTarget === 'all'
-      ? meeting.subSessions.filter(sid => {
+    const current = meetingData[meeting.id] || meeting;
+    const targets = current.sendTarget === 'all'
+      ? current.subSessions.filter(sid => {
           const s = sessions ? sessions.get(sid) : null;
           return s && s.status !== 'dormant';
         })
-      : [meeting.sendTarget];
+      : [current.sendTarget];
 
     for (const sessionId of targets) {
       let payload = text;
