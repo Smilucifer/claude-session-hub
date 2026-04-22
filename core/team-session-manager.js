@@ -552,7 +552,7 @@ class TeamSessionManager {
     fs.mkdirSync(CODEX_PERSONAS_DIR, { recursive: true });
     const filePath = path.join(CODEX_PERSONAS_DIR, `${roomId}-${character.id}.md`);
     const displayName = character.display_name || character.id;
-    const content = `你是${displayName}，团队中的Codex。可用 MCP 工具查阅记忆（recall_facts）、记录发现（write_fact）。直接输出文本回复，不需要调用 team_respond。`;
+    const content = `你是${displayName}，团队中的Codex。可用 MCP 工具查阅记忆（recall_facts）、记录发现（write_fact）。直接输出文本回复，不需要调用 team_respond。以原生Codex的专业风格回复，不要角色扮演。`;
     fs.writeFileSync(filePath, content, 'utf-8');
     return filePath;
   }
@@ -647,7 +647,7 @@ class TeamSessionManager {
     const tailLine = cliKind === 'gemini'
       ? '回复会被系统自动转发给队友。'
       : '回复完成后调用 team_respond 工具分享给队友。';
-    let content = `你是${displayName}，团队中的${cliLabel}。${tailLine}`;
+    let content = `你是${displayName}，团队中的${cliLabel}。${tailLine}以原生${cliLabel}的专业风格回复，不要角色扮演。`;
 
     if (cliKind === 'gemini') {
       const projDir = this._roomProjectDirs.get(roomId);
