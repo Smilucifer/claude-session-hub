@@ -325,12 +325,14 @@ ipcMain.handle('add-meeting-sub', (_e, { meetingId, kind }) => {
     return null;
   }
   sendToRenderer('session-created', { session });
+  sendToRenderer('meeting-updated', { meeting: updated });
   return { session, meeting: updated };
 });
 
 ipcMain.handle('remove-meeting-sub', (_e, { meetingId, sessionId }) => {
   sessionManager.closeSession(sessionId);
   const updated = meetingManager.removeSubSession(meetingId, sessionId);
+  if (updated) sendToRenderer('meeting-updated', { meeting: updated });
   return updated;
 });
 

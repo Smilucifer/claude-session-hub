@@ -335,7 +335,7 @@ function escapeHtml(text) {
 // Filter: search query matches title or preview (case-insensitive).
 // Mixed list: regular sessions + AI Team Rooms share the same sort + rendering.
 function renderSessionList() {
-  const regularSessions = Array.from(sessions.values());
+  const regularSessions = Array.from(sessions.values()).filter(s => !s.meetingId);
 
   // Fold team rooms into the unified list. Preview is "actor: content" format,
   // time sort uses the latest message's ts; both parallel how regular sessions
