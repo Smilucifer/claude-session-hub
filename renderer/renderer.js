@@ -346,7 +346,8 @@ function renderSessionList() {
       ? `${teamActorDisplay(preview.actor, preview.actorName)}: ${preview.content}`
       : (room.members || []).join(', ');
     const tsSec = preview ? parseInt(preview.ts) : 0;
-    const tsMs = tsSec ? tsSec * 1000 : 0;
+    const idTs = room.id ? parseInt(room.id.replace('room-', ''), 10) : 0;
+    const tsMs = tsSec ? tsSec * 1000 : (idTs || Date.now());
     return {
       id: room.id,
       title: room.display_name || room.id,

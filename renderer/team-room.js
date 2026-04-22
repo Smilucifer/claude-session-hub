@@ -677,14 +677,15 @@ const TeamRoom = (() => {
     const tcIn = tc && tc.input != null ? (Number(tc.input) || 0) : null;
     const tcOut = tc && tc.output != null ? (Number(tc.output) || 0) : null;
     const ctxPct = tc && tc.contextPct != null ? Number(tc.contextPct) : null;
-    const tokenParts = [];
-    if (tcIn !== null || tcOut !== null) tokenParts.push(`↓${tcIn ?? 0} ↑${tcOut ?? 0}`);
+    const statParts = [];
+    if (evt.thinkSec != null && evt.thinkSec > 0) statParts.push(`${evt.thinkSec}s`);
+    if (tcIn !== null || tcOut !== null) statParts.push(`↓${tcIn ?? 0} ↑${tcOut ?? 0}`);
     if (ctxPct !== null) {
       const barColor = ctxPct > 85 ? '#f87171' : ctxPct > 70 ? '#fbbf24' : '#4ade80';
-      tokenParts.push(`<span style="display:inline-block;width:40px;height:6px;background:#333;border-radius:3px;vertical-align:middle;margin-left:4px" title="context ${ctxPct}%"><span style="display:block;width:${Math.min(ctxPct,100)}%;height:100%;background:${barColor};border-radius:3px"></span></span>${ctxPct}%`);
+      statParts.push(`<span style="display:inline-block;width:40px;height:6px;background:#333;border-radius:3px;vertical-align:middle;margin-left:4px" title="context ${ctxPct}%"><span style="display:block;width:${Math.min(ctxPct,100)}%;height:100%;background:${barColor};border-radius:3px"></span></span>${ctxPct}%`);
     }
-    const tokenHtml = tokenParts.length > 0
-      ? `<span class="tr-msg-tokens" style="margin-left:8px;color:var(--text-secondary);font-size:11px;opacity:0.75">${tokenParts.join(' ')}</span>`
+    const tokenHtml = statParts.length > 0
+      ? `<span class="tr-msg-tokens" style="margin-left:8px;color:var(--text-secondary);font-size:11px;opacity:0.75">${statParts.join(' ')}</span>`
       : '';
 
     const msgEl = document.createElement('div');
@@ -1072,7 +1073,9 @@ const TeamRoom = (() => {
     }
 
     else if (evtType === 'message') {
+      let thinkSec = null;
       if (thinkingMap[actorId]) {
+        thinkSec = Math.round((Date.now() - thinkingMap[actorId].startTs) / 1000);
         clearInterval(thinkingMap[actorId].timer);
         thinkingMap[actorId].el.remove();
         delete thinkingMap[actorId];
@@ -1085,6 +1088,7 @@ const TeamRoom = (() => {
           kind: 'message', actor: actorId,
           content: msgContent, ts: evt.ts,
           tokenCount: evt.tokenCount || null,
+          thinkSec,
         });
         lastRenderedMsg = { actor: actorId, content: msgContent };
       }
