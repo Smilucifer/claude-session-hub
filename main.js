@@ -11,6 +11,7 @@ const stateStore = require('./core/state-store.js');
 const { createMobileServer } = require('./core/mobile-server.js');
 const mobileAuth = require('./core/mobile-auth.js');
 const { getHubDataDir } = require('./core/data-dir.js');
+const { MeetingRoomManager } = require('./core/meeting-room.js');
 
 // Isolate Chromium userData when CLAUDE_HUB_DATA_DIR is set (parallel test
 // instances). Must run before app.whenReady(). Production Hub unaffected
@@ -238,6 +239,7 @@ let teamSessionManager = null; // set after hookPort is known
 
 let mainWindow;
 const sessionManager = new SessionManager();
+const meetingManager = new MeetingRoomManager();
 sessionManager.hookToken = HOOK_TOKEN;  // port set after listen
 
 // NOTE: Don't call app.setAppUserModelId here. Setting an AUMID without also
@@ -306,6 +308,55 @@ ipcMain.handle('create-session', (_e, arg) => {
   return session;
 });
 
+// --- Meeting Room IPC ---
+
+ipcMain.handle('create-meeting', () => {
+  const meeting = meetingManager.createMeeting();
+  sendToRenderer('meeting-created', { meeting });
+  return meeting;
+});
+
+ipcMain.handle('add-meeting-sub', (_e, { meetingId, kind }) => {
+  const session = sessionManager.createSession(kind, { meetingId });
+  if (!session) return null;
+  const updated = meetingManager.addSubSession(meetingId, session.id);
+  if (!updated) {
+    sessionManager.closeSession(session.id);
+    return null;
+  }
+  sendToRenderer('session-created', { session });
+  return { session, meeting: updated };
+});
+
+ipcMain.handle('remove-meeting-sub', (_e, { meetingId, sessionId }) => {
+  sessionManager.closeSession(sessionId);
+  const updated = meetingManager.removeSubSession(meetingId, sessionId);
+  return updated;
+});
+
+ipcMain.handle('close-meeting', (_e, meetingId) => {
+  const subIds = meetingManager.closeMeeting(meetingId);
+  if (!subIds) return false;
+  for (const sid of subIds) {
+    sessionManager.closeSession(sid);
+  }
+  sendToRenderer('meeting-closed', { meetingId });
+  return true;
+});
+
+ipcMain.handle('get-ring-buffer', (_e, sessionId) => {
+  return sessionManager.getSessionBuffer(sessionId);
+});
+
+ipcMain.on('update-meeting', (_e, { meetingId, fields }) => {
+  const updated = meetingManager.updateMeeting(meetingId, fields);
+  if (updated) sendToRenderer('meeting-updated', { meeting: updated });
+});
+
+ipcMain.handle('get-meetings', () => {
+  return meetingManager.getAllMeetings();
+});
+
 // Archive scanner: enumerate past Claude Code sessions for the Resume picker.
 const sessionArchive = require('./core/session-archive.js');
 ipcMain.handle('list-past-sessions', async (_e, { limit = 50 } = {}) => {
@@ -367,15 +418,28 @@ if (healed > 0) console.log(`[hub] healed ${healed} stale cwd(s) from CC transcr
 // Flip cleanShutdown to false immediately on boot; before-quit will flip it back.
 stateStore.save({ version: 1, cleanShutdown: false, sessions: lastPersistedSessions }, { sync: true });
 
+// Restore persisted meetings on boot
+const bootMeetings = Array.isArray(bootState.meetings) ? bootState.meetings : [];
+for (const m of bootMeetings) {
+  meetingManager.restoreMeeting(m);
+}
+
+ipcMain.handle('get-dormant-meetings', () => meetingManager.getAllMeetings());
+
 ipcMain.handle('get-dormant-sessions', () => ({
   sessions: lastPersistedSessions,
   wasCleanShutdown: bootWasClean,
 }));
 
-ipcMain.on('persist-sessions', (_e, list) => {
+ipcMain.on('persist-sessions', (_e, list, meetingList) => {
   if (!Array.isArray(list)) return;
   lastPersistedSessions = list;
-  stateStore.save({ version: 1, cleanShutdown: false, sessions: list });
+  stateStore.save({
+    version: 1,
+    cleanShutdown: false,
+    sessions: list,
+    meetings: Array.isArray(meetingList) ? meetingList : meetingManager.getAllMeetings(),
+  });
 });
 
 // Wake a dormant session: spawn PTY with the same hubId, reusing stored cwd,
