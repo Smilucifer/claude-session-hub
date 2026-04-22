@@ -2567,6 +2567,7 @@ async function resumeDormantSession(hubId) {
     title: dormant.title,
     cwd: dormant.cwd,
     ccSessionId: dormant.ccSessionId,
+    meetingId: dormant.meetingId || null,
     lastMessageTime: dormant.lastMessageTime,
     lastOutputPreview: dormant.lastOutputPreview,
   });
@@ -2601,6 +2602,17 @@ async function resumeDormantSession(hubId) {
       });
     }
   }
+  // Load dormant meetings BEFORE first renderSessionList — avoids race
+  // where meetings appear empty on the initial render.
+  try {
+    const dormantMeetings = await ipcRenderer.invoke('get-dormant-meetings');
+    if (Array.isArray(dormantMeetings)) {
+      for (const m of dormantMeetings) {
+        meetings[m.id] = m;
+      }
+    }
+  } catch (_) {}
+
   renderSessionList();
 })();
 
@@ -2633,16 +2645,6 @@ ipcRenderer.on('meeting-closed', (_e, { meetingId }) => {
   }
   renderSessionList();
 });
-
-// Load dormant meetings on boot
-ipcRenderer.invoke('get-dormant-meetings').then((list) => {
-  if (Array.isArray(list)) {
-    for (const m of list) {
-      meetings[m.id] = m;
-    }
-    renderSessionList();
-  }
-}).catch(() => {});
 
 // --- Mobile Pair Dialog ---
 // This file is loaded as a synchronous <script> in <body> BEFORE the

@@ -449,12 +449,14 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
 // `--continue` as fallback when we don't have a CC id recorded.
 ipcMain.handle('resume-session', (_e, meta) => {
   if (!meta || !meta.hubId) return null;
+  const isClaude = (meta.kind === 'claude' || meta.kind === 'claude-resume');
   const session = sessionManager.createSession(meta.kind || 'claude', {
     id: meta.hubId,
     title: meta.title,
     cwd: meta.cwd,
-    resumeCCSessionId: meta.ccSessionId || undefined,
-    useContinue: !meta.ccSessionId,
+    meetingId: meta.meetingId || null,
+    resumeCCSessionId: isClaude ? (meta.ccSessionId || undefined) : undefined,
+    useContinue: isClaude && !meta.ccSessionId,
     lastMessageTime: meta.lastMessageTime,
     lastOutputPreview: meta.lastOutputPreview,
   });
