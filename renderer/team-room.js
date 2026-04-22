@@ -1079,22 +1079,15 @@ const TeamRoom = (() => {
 
   // --- Send Message ---
 
-  let sending = false;
-
   async function sendMessage() {
-    if (sending) return;
-    sending = true;
     const inputBox = $('tr-input-box');
-    const sendBtn = $('tr-send-btn');
-    if (!inputBox || !currentRoomId) { sending = false; return; }
+    if (!inputBox || !currentRoomId) return;
 
     const text = inputBox.innerText.trim();
-    if (!text) { sending = false; return; }
+    if (!text) return;
 
-    // Clear input
     inputBox.innerText = '';
 
-    // Show user message immediately
     const threadEl = $('tr-thread');
     if (threadEl) {
       appendMessage(threadEl, {
@@ -1104,31 +1097,29 @@ const TeamRoom = (() => {
       threadEl.scrollTop = threadEl.scrollHeight;
     }
 
-    // Disable send while processing
-    if (sendBtn) sendBtn.disabled = true;
-
-    try {
-      await ipcRenderer.invoke('team:ask', currentRoomId, text);
-    } catch (e) {
+    // Fire and forget — don't block the UI waiting for AI responses.
+    // Events stream in via team:event listener; errors show inline.
+    const roomId = currentRoomId;
+    ipcRenderer.invoke('team:ask', roomId, text).catch(e => {
       console.error('[TeamRoom] askTeam failed:', e.message);
-      if (threadEl) {
+      const t = $('tr-thread');
+      if (t) {
         const errNote = document.createElement('div');
         errNote.className = 'tr-system-note';
         errNote.textContent = `错误: ${e.message}`;
-        threadEl.appendChild(errNote);
+        t.appendChild(errNote);
+        t.scrollTop = t.scrollHeight;
       }
-    } finally {
+    }).finally(() => {
       for (const [id, entry] of Object.entries(thinkingMap)) {
         clearInterval(entry.timer);
         entry.el.remove();
         delete thinkingMap[id];
       }
-      if (sendBtn) sendBtn.disabled = false;
-      if (inputBox) inputBox.focus();
+      refreshInspector();
+    });
 
-      await refreshInspector();
-      sending = false;
-    }
+    inputBox.focus();
   }
 
   // --- Bootstrap ---
