@@ -244,6 +244,10 @@
       if (cached && cached.container) {
         cached.container.style.display = 'block';
         termContainer.appendChild(cached.container);
+        if (!cached.opened) {
+          cached.terminal.open(cached.container);
+          cached.opened = true;
+        }
         subTerminals[sessionId] = cached;
       }
     }
