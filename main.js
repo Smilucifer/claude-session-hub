@@ -417,14 +417,14 @@ let lastPersistedSessions = Array.isArray(bootState.sessions) ? bootState.sessio
 // This reads CC's own JSONL transcripts which carry the authoritative cwd.
 const healed = healPersistedCwds(lastPersistedSessions);
 if (healed > 0) console.log(`[hub] healed ${healed} stale cwd(s) from CC transcripts`);
-// Flip cleanShutdown to false immediately on boot; before-quit will flip it back.
-stateStore.save({ version: 1, cleanShutdown: false, sessions: lastPersistedSessions }, { sync: true });
-
 // Restore persisted meetings on boot
 const bootMeetings = Array.isArray(bootState.meetings) ? bootState.meetings : [];
 for (const m of bootMeetings) {
   meetingManager.restoreMeeting(m);
 }
+
+// Flip cleanShutdown to false immediately on boot; before-quit will flip it back.
+stateStore.save({ version: 1, cleanShutdown: false, sessions: lastPersistedSessions, meetings: bootMeetings }, { sync: true });
 
 ipcMain.handle('get-dormant-meetings', () => meetingManager.getAllMeetings());
 
@@ -791,8 +791,7 @@ ipcMain.handle('team:rejectWiki', (_, factId) => teamBridge.rejectWiki(factId));
 ipcMain.handle('team:exportConversation', (_, roomId) => teamBridge.exportConversation(roomId));
 
 app.on('before-quit', async () => {
-  // Flush final state with cleanShutdown=true so next boot won't flag as crash.
-  stateStore.save({ version: 1, cleanShutdown: true, sessions: lastPersistedSessions }, { sync: true });
+  stateStore.save({ version: 1, cleanShutdown: true, sessions: lastPersistedSessions, meetings: meetingManager.getAllMeetings() }, { sync: true });
   try { teamBridge.cleanup(); } catch(e) {}
   if (teamSessionManager) { try { teamSessionManager.closeAll(); } catch(e) {} }
   if (mobileSrv) { try { await mobileSrv.close(); } catch {} }
