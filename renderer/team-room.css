@@ -16,35 +16,41 @@
   font-size: 13px;
 }
 
-/* --- 2. Header --- */
+/* --- 2. Header (single row, mirrors terminal-header) --- */
 .tr-header {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 10px 16px 8px;
+  padding: 8px 16px;
   border-bottom: 1px solid #262c3a;
   background: #141821;
   flex-shrink: 0;
 }
+.tr-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.tr-title-section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
 
 .tr-room-name {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
   color: #e8ecf4;
+  white-space: nowrap;
 }
 
-.tr-room-meta {
-  font-size: 11px;
-  color: #8a93a6;
-}
-
-/* --- 11. Members bar --- */
 .tr-members {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  margin-top: 4px;
+  gap: 4px;
+  flex-wrap: nowrap;
+  overflow: hidden;
 }
 
 .tr-member {

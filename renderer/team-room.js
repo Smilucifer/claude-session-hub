@@ -432,17 +432,14 @@ const TeamRoom = (() => {
       const colorCls = avatarColor(cli);
       const name = charName(mid);
       const av = initials(name, mid);
-      return `<span class="tr-member">
-        <span class="tr-avatar ${colorCls}">${esc(av)}</span>
-        ${esc(name)}
-      </span>`;
+      return `<span class="tr-member"><span class="tr-avatar ${colorCls}">${esc(av)}</span>${esc(name)}</span>`;
     }).join('');
 
     headerEl.innerHTML = `
       <div class="tr-header-top">
-        <div>
-          <div class="tr-room-name">${esc(cfg.display_name || currentRoomId)}</div>
-          <div class="tr-room-meta">模式: ${esc(cfg.task_mode || 'natural')} · ${members.length} 成员</div>
+        <div class="tr-title-section">
+          <span class="tr-room-name">${esc(cfg.display_name || currentRoomId)}</span>
+          <span class="tr-members">${membersHtml}</span>
         </div>
         <div class="tr-header-actions">
           <button class="tr-action-btn" id="tr-export-btn" title="导出对话">📋</button>
@@ -451,7 +448,6 @@ const TeamRoom = (() => {
           <button class="tr-action-btn btn-close-session" id="tr-close-btn" title="关闭房间" aria-label="Close room"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg></button>
         </div>
       </div>
-      <div class="tr-members">${membersHtml}</div>
     `;
 
     const exportBtn = $('tr-export-btn');
