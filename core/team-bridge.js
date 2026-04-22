@@ -44,6 +44,28 @@ class TeamBridge {
     this._roomCache = null;
   }
 
+  _insertEventDirect(roomId, actor, kind, content) {
+    const { DatabaseSync } = require('node:sqlite');
+    const eid = `evt-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    const db = new DatabaseSync(path.join(this.baseDir, 'team.db'));
+    try {
+      db.prepare(
+        'INSERT INTO events (id, room_id, actor, kind, mentions, parent_id, content, meta, ts) VALUES (?,?,?,?,?,?,?,?,?)'
+      ).run(eid, roomId, actor, kind, '[]', null, content, '{}', Math.floor(Date.now() / 1000));
+    } finally { db.close(); }
+    return eid;
+  }
+
+  _eventsSinceDirect(roomId, cursor, limit = 50) {
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(path.join(this.baseDir, 'team.db'));
+    try {
+      return db.prepare(
+        "SELECT rowid, id, actor, kind, content, ts FROM events WHERE room_id = ? AND kind = 'message' AND rowid > ? ORDER BY rowid ASC LIMIT ?"
+      ).all(roomId, cursor, limit);
+    } finally { db.close(); }
+  }
+
   isInitialized() {
     return fs.existsSync(DB_PATH) &&
            fs.existsSync(path.join(this.baseDir, 'characters')) &&
@@ -191,7 +213,7 @@ class TeamBridge {
         name: character.display_name || charId,
       });
       return (async () => {
-        await this._teamSessionManager.ensureSession(roomId, character);
+        await this._teamSessionManager.ensureSession(roomId, character, room.project_dir);
 
         const cursor = this._getReadPointer(roomId, charId);
         let history = [];

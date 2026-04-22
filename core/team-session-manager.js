@@ -75,6 +75,8 @@ class TeamSessionManager {
     this._hubToTeamKey = new Map();
     // Latest context stats per team key, updated via statusline /api/status
     this._tokenCache = new Map();
+    // Room → projectDir for Codex exec cwd (set in ensureSession, read in _sendMessageCodex)
+    this._roomProjectDirs = new Map();
     this._loadPersistedSessions();
   }
 
@@ -145,15 +147,18 @@ class TeamSessionManager {
    * Creates one via sessionManager if needed, with MCP config injected.
    * @param {string} roomId
    * @param {object} character — { id, display_name, backing_cli, model, personality, ... }
+   * @param {string} [projectDir] — optional project cwd (loads that project's CLAUDE.md/AGENTS.md)
    * @returns {Promise<string>} hubSessionId
    */
-  async ensureSession(roomId, character) {
+  async ensureSession(roomId, character, projectDir) {
     const key = `${roomId}:${character.id}`;
 
     // Gemini: use ACP (JSON-RPC over piped stdio) instead of PTY. The TUI that
     // node-pty triggers hangs on "Waiting for authentication..." in ConPTY
     // even when OAuth is cached; ACP is Gemini's official IDE integration
     // path and is immune to that stall. See core/acp-client.js.
+    if (projectDir) this._roomProjectDirs.set(roomId, projectDir);
+
     if (this._cliKind(character.backing_cli) === 'gemini') {
       return this._ensureGeminiAcpSession(roomId, character);
     }
@@ -172,9 +177,10 @@ class TeamSessionManager {
     const promptFile = this._writePromptFile(roomId, character);
     const cliKind = this._cliKind(character.backing_cli);
 
-    // Gemini reads .gemini/settings.json from cwd, so we launch the shell in
-    // the per-character workdir. Claude/Codex read a file path flag.
-    const sessionCwd = cliKind === 'gemini' ? mcpConfigPath : AI_TEAM_DIR;
+    // Gemini reads .gemini/settings.json from cwd, so it must use mcpConfigPath.
+    // Claude/Codex: use projectDir (loads that project's CLAUDE.md/AGENTS.md)
+    // or fall back to homedir (loads ~/CLAUDE.md via parent traversal).
+    const sessionCwd = cliKind === 'gemini' ? mcpConfigPath : (projectDir || os.homedir());
     const createOpts = {
       title: `Team: ${character.display_name}`,
       cwd: sessionCwd,
@@ -398,7 +404,7 @@ class TeamSessionManager {
 
     console.warn(`[team-tsm] codex spawn key=${key} resume=${priorSid || '(first)'} promptLen=${text.length}`);
     const proc = spawn('codex', args, {
-      cwd: AI_TEAM_DIR,
+      cwd: this._roomProjectDirs.get(roomId) || os.homedir(),
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
