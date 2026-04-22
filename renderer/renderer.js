@@ -361,7 +361,20 @@ function renderSessionList() {
     };
   });
 
-  const all = regularSessions.concat(teamItems);
+  const meetingItems = Object.values(meetings).map(m => ({
+    id: m.id,
+    title: m.title,
+    lastMessageTime: m.lastMessageTime,
+    createdAt: m.createdAt,
+    lastOutputPreview: `${m.subSessions.length} 个子会话`,
+    status: m.status || 'idle',
+    unreadCount: 0,
+    pinned: m.pinned,
+    _isMeeting: true,
+    _meeting: m,
+  }));
+
+  const all = regularSessions.concat(teamItems).concat(meetingItems);
 
   const filtered = searchQuery
     ? all.filter(s => {
@@ -411,6 +424,25 @@ function renderSessionList() {
       continue;
     }
 
+    if (s._isMeeting) {
+      const isActive = activeMeetingId === s.id;
+      const div = document.createElement('div');
+      div.className = 'session-item meeting' + (isActive ? ' selected' : '');
+      div.innerHTML = `
+        <div class="session-item-header">
+          <span class="session-title">${s.pinned ? '<span class="pin-icon" title="Pinned">📌</span>' : ''}<span class="session-status running"></span>🏢 ${escapeHtml(s.title)}<span class="meeting-badge">${s._meeting.subSessions.length}</span></span>
+          <span class="session-header-right">
+            <span class="session-time">${formatTime(s.lastMessageTime)}</span>
+          </span>
+        </div>
+        <div class="session-preview">${escapeHtml(s.lastOutputPreview)}</div>
+      `;
+      div.addEventListener('click', () => selectMeeting(s.id));
+      div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY); });
+      sessionListEl.appendChild(div);
+      continue;
+    }
+
     const isActive = s.id === activeSessionId;
     const div = document.createElement('div');
     const dormantCls = s.status === 'dormant' ? ' dormant' : '';
@@ -453,6 +485,8 @@ let teamRoomPreviews = {};
 let teamRoomUnread = {}; // { roomId: unreadCount } — parallels session.unreadCount
 let teamCharacters = {}; // { id: {display_name, ...} } — cached once per boot
 let activeTeamRoomId = null;
+let activeMeetingId = null;
+let meetings = {};
 
 // Resolve actor id → display name. Team event payloads already include `name`,
 // but historical previews loaded from DB only have actor id, so we fall back
@@ -520,6 +554,9 @@ async function deleteTeamRoom(roomId) {
 
 function selectTeamRoom(roomId) {
   activeSessionId = null;
+  activeMeetingId = null;
+  const mrp = document.getElementById('meeting-room-panel');
+  if (mrp) mrp.style.display = 'none';
   activeTeamRoomId = roomId;
   // Opening the room counts as "reading" any queued messages — parallels how
   // selectSession resets session.unreadCount = 0.
@@ -532,6 +569,33 @@ function selectTeamRoom(roomId) {
     const room = teamRooms.find(r => r.id === roomId);
     TeamRoom.openRoom(roomId, room);
   }
+  renderSessionList();
+}
+
+function selectMeeting(meetingId) {
+  activeSessionId = null;
+  activeTeamRoomId = null;
+  activeMeetingId = meetingId;
+
+  if (terminalPanelEl) terminalPanelEl.style.display = 'none';
+  if (emptyStateEl) emptyStateEl.style.display = 'none';
+  const trp = document.getElementById('team-room-panel');
+  if (trp) trp.style.display = 'none';
+
+  const meeting = meetings[meetingId];
+  if (meeting && typeof MeetingRoom !== 'undefined') {
+    if (meeting.status === 'dormant') {
+      meeting.status = 'idle';
+      for (const sid of meeting.subSessions) {
+        const s = sessions.get(sid);
+        if (s && s.status === 'dormant') {
+          resumeDormantSession(sid);
+        }
+      }
+    }
+    MeetingRoom.openMeeting(meetingId, meeting);
+  }
+
   renderSessionList();
 }
 
@@ -1046,6 +1110,9 @@ function selectSession(id) {
   activeTeamRoomId = null;
   const trp = document.getElementById('team-room-panel');
   if (trp) trp.style.display = 'none';
+  activeMeetingId = null;
+  const mrp = document.getElementById('meeting-room-panel');
+  if (mrp) mrp.style.display = 'none';
   const tp = document.getElementById('terminal-panel');
   if (tp) tp.style.display = '';
 
@@ -1105,6 +1172,16 @@ document.addEventListener('mousedown', (e) => {
 for (const btn of document.querySelectorAll('.new-session-option')) {
   btn.addEventListener('click', async () => {
     menuEl.style.display = 'none';
+    if (btn.dataset.kind === 'meeting') {
+      const meeting = await ipcRenderer.invoke('create-meeting');
+      if (meeting) {
+        meetings[meeting.id] = meeting;
+        selectMeeting(meeting.id);
+        renderSessionList();
+        schedulePersist();
+      }
+      return;
+    }
     if (btn.dataset.kind === 'team-room') {
       openCreateRoomModal();
       return;
@@ -2251,6 +2328,20 @@ for (const btn of contextMenuEl.querySelectorAll('.context-menu-item')) {
     }
 
     const session = sessions.get(sid);
+
+    if (action === 'close' && meetings[sid]) {
+      await ipcRenderer.invoke('close-meeting', sid);
+      delete meetings[sid];
+      if (activeMeetingId === sid) {
+        activeMeetingId = null;
+        if (typeof MeetingRoom !== 'undefined') MeetingRoom.closeMeetingPanel();
+        if (emptyStateEl) emptyStateEl.style.display = '';
+      }
+      renderSessionList();
+      schedulePersist();
+      return;
+    }
+
     if (!session) return;
 
     if (action === 'pin') {
@@ -2260,7 +2351,7 @@ for (const btn of contextMenuEl.querySelectorAll('.context-menu-item')) {
     } else if (action === 'restart') {
       await ipcRenderer.invoke('restart-session', sid);
     } else if (action === 'close') {
-      if (session.status === 'dormant') {
+      if (session && session.status === 'dormant') {
         sessions.delete(sid);
         if (activeSessionId === sid) activeSessionId = null;
         renderSessionList();
@@ -2353,6 +2444,10 @@ btnExpandEl.addEventListener('click', toggleSidebar);
 document.body.classList.remove('theme-light');
 localStorage.removeItem('claude-hub-theme');
 
+if (typeof MeetingRoom !== 'undefined') {
+  MeetingRoom.init(sessions, getOrCreateTerminal);
+}
+
 ipcRenderer.on('session-created', (_e, { session }) => {
   // When resuming a dormant session, the hubId matches an existing dormant
   // entry. Merge live PTY info on top of the dormant metadata so title /
@@ -2426,7 +2521,7 @@ function schedulePersist() {
   persistDebounceTimer = setTimeout(() => {
     const list = [];
     for (const s of sessions.values()) {
-      if (s.kind !== 'claude' && s.kind !== 'claude-resume') continue;
+      if (!s.meetingId && s.kind !== 'claude' && s.kind !== 'claude-resume') continue;
       list.push({
         hubId: s.id,
         title: s.title,
@@ -2439,7 +2534,13 @@ function schedulePersist() {
         unreadCount: s.unreadCount || 0,
       });
     }
-    ipcRenderer.send('persist-sessions', list);
+    const meetingList = Object.values(meetings).map(m => ({
+      id: m.id, type: 'meeting', title: m.title, subSessions: m.subSessions,
+      layout: m.layout, focusedSub: m.focusedSub, syncContext: m.syncContext,
+      sendTarget: m.sendTarget, createdAt: m.createdAt, lastMessageTime: m.lastMessageTime,
+      pinned: m.pinned || false,
+    }));
+    ipcRenderer.send('persist-sessions', list, meetingList);
   }, 400);
 }
 
@@ -2496,6 +2597,40 @@ async function resumeDormantSession(hubId) {
 for (const ch of ['session-created', 'session-closed', 'session-updated']) {
   ipcRenderer.on(ch, () => schedulePersist());
 }
+
+// --- Meeting Room IPC events ---
+ipcRenderer.on('meeting-created', (_e, { meeting }) => {
+  meetings[meeting.id] = meeting;
+  renderSessionList();
+});
+
+ipcRenderer.on('meeting-updated', (_e, { meeting }) => {
+  meetings[meeting.id] = meeting;
+  if (typeof MeetingRoom !== 'undefined') {
+    MeetingRoom.updateMeetingData(meeting.id, meeting);
+  }
+  renderSessionList();
+});
+
+ipcRenderer.on('meeting-closed', (_e, { meetingId }) => {
+  delete meetings[meetingId];
+  if (activeMeetingId === meetingId) {
+    activeMeetingId = null;
+    if (typeof MeetingRoom !== 'undefined') MeetingRoom.closeMeetingPanel();
+    if (emptyStateEl) emptyStateEl.style.display = '';
+  }
+  renderSessionList();
+});
+
+// Load dormant meetings on boot
+ipcRenderer.invoke('get-dormant-meetings').then((list) => {
+  if (Array.isArray(list)) {
+    for (const m of list) {
+      meetings[m.id] = m;
+    }
+    renderSessionList();
+  }
+}).catch(() => {});
 
 // --- Mobile Pair Dialog ---
 // This file is loaded as a synchronous <script> in <body> BEFORE the
