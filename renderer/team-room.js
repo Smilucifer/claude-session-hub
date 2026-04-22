@@ -24,6 +24,10 @@ const TeamRoom = (() => {
   let characters = {};    // id -> character object
   let thinkingEl = null;  // reference to thinking indicator DOM node
   let streamHandler = null; // registered team:event listener (for cleanup on re-init)
+
+  // Per-room thread DOM cache: roomId -> { html, scrollTop, thinking: Map<actorId, startTs> }
+  const roomCache = new Map();
+  let lastRenderedMsg = { actor: null, content: null };
   let pendingExtractionStats = null;
   const MAX_VISIBLE_STREAM = 50;
 
@@ -387,14 +391,47 @@ const TeamRoom = (() => {
   // --- Open Room ---
 
   async function openRoom(roomId, roomConfig) {
-    for (const [id, entry] of Object.entries(thinkingMap)) {
-      clearInterval(entry.timer);
-      delete thinkingMap[id];
+    const threadEl = $('tr-thread');
+
+    // Save current room's thread state before switching
+    if (currentRoomId && threadEl) {
+      const thinkingState = new Map();
+      for (const [aid, entry] of Object.entries(thinkingMap)) {
+        thinkingState.set(aid, entry.startTs);
+        clearInterval(entry.timer);
+      }
+      roomCache.set(currentRoomId, {
+        html: threadEl.innerHTML,
+        scrollTop: threadEl.scrollTop,
+        thinking: thinkingState,
+      });
     }
+    for (const id of Object.keys(thinkingMap)) delete thinkingMap[id];
+
     currentRoomId = roomId;
     currentRoomConfig = roomConfig || {};
     renderHeader();
-    await refreshThread();
+
+    // Restore cached thread or fetch fresh from DB
+    const cached = roomCache.get(roomId);
+    if (cached && threadEl) {
+      threadEl.innerHTML = cached.html;
+      threadEl.scrollTop = cached.scrollTop;
+      for (const [aid, startTs] of cached.thinking) {
+        const el = threadEl.querySelector(`[data-thinking="${aid}"]`);
+        if (el) {
+          const elapsedSpan = el.querySelector('.tr-thinking-elapsed');
+          const timer = setInterval(() => {
+            const sec = Math.floor((Date.now() - startTs) / 1000);
+            if (elapsedSpan) elapsedSpan.textContent = ` ${sec}s`;
+          }, 1000);
+          thinkingMap[aid] = { el, timer, startTs };
+        }
+      }
+    } else {
+      await refreshThread();
+    }
+
     await refreshInspector();
     ensureInspectorToggle();
   }
@@ -905,21 +942,10 @@ const TeamRoom = (() => {
       }
     }
 
-    // thinking_delta：Claude extended thinking 的思考链增量，灰色 italic 显示
+    // thinking_delta: intentionally ignored — the thinking timer ("思考中 Ns")
+    // already indicates activity; streaming reasoning text was visual noise.
     else if (evtType === 'thinking_delta') {
-      const entry = thinkingMap[actorId];
-      if (entry && entry.el) {
-        let live = entry.el.querySelector('.tr-live-thinking');
-        if (!live) {
-          live = document.createElement('div');
-          live.className = 'tr-live-thinking';
-          live.style.cssText = 'color:var(--text-secondary);font-style:italic;margin-top:6px;white-space:pre-wrap;font-size:12px';
-          const body = entry.el.querySelector('.tr-msg-body');
-          if (body) body.appendChild(live);
-        }
-        live.textContent += (evt.text || '');
-        threadEl.scrollTop = threadEl.scrollHeight;
-      }
+      // no-op
     }
 
     // degraded：prompt 超预算自动降级（TRUNCATED / PATTERN_ONLY / ABORT）
@@ -980,12 +1006,17 @@ const TeamRoom = (() => {
         thinkingMap[actorId].el.remove();
         delete thinkingMap[actorId];
       }
-      // Append real message
-      appendMessage(threadEl, {
-        kind: 'message', actor: actorId,
-        content: evt.content || '', ts: evt.ts,
-        tokenCount: evt.tokenCount || null,
-      });
+      // Dedup: skip if same actor + same content as the most recent rendered msg
+      const msgContent = (evt.content || '').trim();
+      const isDup = lastRenderedMsg.actor === actorId && lastRenderedMsg.content === msgContent;
+      if (!isDup && msgContent) {
+        appendMessage(threadEl, {
+          kind: 'message', actor: actorId,
+          content: msgContent, ts: evt.ts,
+          tokenCount: evt.tokenCount || null,
+        });
+        lastRenderedMsg = { actor: actorId, content: msgContent };
+      }
       threadEl.scrollTop = threadEl.scrollHeight;
     }
 
