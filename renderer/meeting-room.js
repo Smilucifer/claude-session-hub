@@ -230,7 +230,7 @@
     const session = sessions ? sessions.get(sessionId) : null;
     const isDormant = session && session.status === 'dormant';
     const isSelected = meeting.sendTarget === sessionId;
-    const kindLabel = session ? (session.kind || 'session') : 'session';
+    const slotTitle = session ? (session.title || session.kind || 'session') : 'session';
 
     const slot = document.createElement('div');
     slot.className = 'mr-sub-slot' + (isSelected ? ' selected' : '') + (isDormant ? ' dormant' : '');
@@ -239,7 +239,7 @@
     const header = document.createElement('div');
     header.className = 'mr-sub-header';
     header.innerHTML = `
-      <span class="mr-sub-label">${escapeHtml(kindLabel.charAt(0).toUpperCase() + kindLabel.slice(1))}</span>
+      <span class="mr-sub-label">${escapeHtml(slotTitle)}</span>
       <button class="mr-sub-close" title="关闭此会话">✕</button>
     `;
 
@@ -398,34 +398,34 @@
 
   // --- Input & Broadcasting ---
 
+  let _inputBound = false;
   function setupInput(meeting) {
-    const inputBox = inputBoxEl();
-    const sendBtn = sendBtnEl();
+    const inputBox = document.getElementById('mr-input-box');
+    const sendBtn = document.getElementById('mr-send-btn');
     if (!inputBox || !sendBtn) return;
 
     inputBox.textContent = '';
 
+    if (_inputBound) return;
+    _inputBound = true;
+
     const doSend = () => {
       const box = document.getElementById('mr-input-box');
-      const text = box ? box.textContent.trim() : '';
+      const text = box ? box.innerText.trim() : '';
       if (!text) return;
-      handleMeetingSend(text, meeting);
+      const mid = activeMeetingId;
+      const m = meetingData[mid];
+      if (!m) return;
+      handleMeetingSend(text, m);
       if (box) box.textContent = '';
     };
 
-    const newSendBtn = sendBtn.cloneNode(true);
-    sendBtn.replaceWith(newSendBtn);
-    newSendBtn.addEventListener('click', doSend);
+    sendBtn.addEventListener('click', doSend);
 
-    const newInputBox = inputBox.cloneNode(true);
-    inputBox.replaceWith(newInputBox);
-    newInputBox.addEventListener('keydown', (e) => {
+    inputBox.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        const text = newInputBox.textContent.trim();
-        if (!text) return;
-        handleMeetingSend(text, meeting);
-        newInputBox.textContent = '';
+        doSend();
       }
     });
   }

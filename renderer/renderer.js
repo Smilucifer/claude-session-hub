@@ -2539,6 +2539,7 @@ function schedulePersist() {
         cwd: s.cwd || null,
         pinned: !!s.pinned,
         ccSessionId: s.ccSessionId || null,
+        meetingId: s.meetingId || null,
         lastMessageTime: s.lastMessageTime || Date.now(),
         lastOutputPreview: s.lastOutputPreview || '',
         unreadCount: s.unreadCount || 0,
@@ -2596,6 +2597,7 @@ async function resumeDormantSession(hubId) {
         cwd: meta.cwd || null,
         pinned: !!meta.pinned,
         ccSessionId: meta.ccSessionId || null,
+        meetingId: meta.meetingId || null,
       });
     }
   }
