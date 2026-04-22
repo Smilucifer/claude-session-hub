@@ -460,6 +460,9 @@ const TeamRoom = (() => {
     currentRoomConfig = roomConfig || {};
     renderHeader();
 
+    // Pre-warm all member sessions in background so first message is fast
+    ipcRenderer.invoke('team:warm', roomId).catch(() => {});
+
     // Restore cached thread or fetch fresh from DB
     const cached = roomCache.get(roomId);
     if (cached && threadEl) {

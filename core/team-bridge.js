@@ -133,6 +133,22 @@ class TeamBridge {
     this._invalidateCache();
   }
 
+  async warmRoom(roomId) {
+    if (!this._teamSessionManager) return;
+    const allCharacters = await this._getCachedCharacters();
+    const rooms = await this._getCachedRooms();
+    const room = rooms.find(r => r.id === roomId);
+    if (!room) return;
+    const memberIds = room.members || [];
+    console.log(`[team-bridge] warming ${memberIds.length} sessions for ${roomId}`);
+    await Promise.allSettled(memberIds.map(charId => {
+      const character = allCharacters[charId];
+      if (!character) return Promise.resolve();
+      return this._teamSessionManager.ensureSession(roomId, character, room.project_dir);
+    }));
+    console.log(`[team-bridge] warm complete for ${roomId}`);
+  }
+
   async askTeam(roomId, message, onEvent, timeout = 300000, mode = null) {
     if (typeof message !== 'string' || !message.trim()) {
       throw new Error('message must be non-empty string');

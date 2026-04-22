@@ -657,6 +657,7 @@ const teamBridge = new TeamBridge();
 ipcMain.handle('team:isInitialized', () => teamBridge.isInitialized());
 ipcMain.handle('team:loadRooms', () => teamBridge.loadRooms());
 ipcMain.handle('team:loadCharacters', () => teamBridge.loadCharacters());
+ipcMain.handle('team:warm', (_, roomId) => teamBridge.warmRoom(roomId));
 ipcMain.handle('team:getEvents', (_, roomId, limit) => teamBridge.getEvents(roomId, limit));
 ipcMain.handle('team:getWiki', (_, roomId) => teamBridge.getWiki(roomId));
 ipcMain.handle('team:ask', async (event, roomId, message, mode) => {
