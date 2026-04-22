@@ -9,8 +9,10 @@
   let meetingData = {};
   let subTerminals = {};
 
-  let sessionsRef = null;
-  let getOrCreateTerminalFn = null;
+  // Resolve lazily from global scope — renderer.js loads first, so its
+  // `sessions` Map and `getOrCreateTerminal` function already exist.
+  function sessionsRef() { return typeof sessions !== 'undefined' ? sessions : null; }
+  function getOrCreateTerminalFn() { return typeof getOrCreateTerminal === 'function' ? getOrCreateTerminal : null; }
 
   const panelEl = () => document.getElementById('meeting-room-panel');
   const headerEl = () => document.getElementById('mr-header');
@@ -19,9 +21,8 @@
   const inputBoxEl = () => document.getElementById('mr-input-box');
   const sendBtnEl = () => document.getElementById('mr-send-btn');
 
-  function init(sessions, getOrCreateTerminal) {
-    sessionsRef = sessions;
-    getOrCreateTerminalFn = getOrCreateTerminal;
+  function init() {
+    // no-op — kept for backward compat; refs resolved lazily
   }
 
   function openMeeting(meetingId, meeting) {
@@ -55,10 +56,16 @@
   }
 
   function updateMeetingData(meetingId, updated) {
+    const prev = meetingData[meetingId];
     meetingData[meetingId] = updated;
     if (activeMeetingId === meetingId) {
       renderHeader(updated);
       renderToolbar(updated);
+      const prevSubs = prev ? prev.subSessions.join(',') : '';
+      const newSubs = updated.subSessions ? updated.subSessions.join(',') : '';
+      if (prevSubs !== newSubs) {
+        renderTerminals(updated);
+      }
     }
   }
 
@@ -191,6 +198,11 @@
       container.appendChild(empty);
     }
 
+    // Open terminals AFTER slots are in the DOM — xterm needs a mounted
+    // container to initialize its canvas. Then fit in the next frame.
+    for (const sessionId of meeting.subSessions) {
+      openSubTerminal(sessionId);
+    }
     requestAnimationFrame(() => {
       for (const sessionId of meeting.subSessions) {
         fitSubTerminal(sessionId);
@@ -198,8 +210,17 @@
     });
   }
 
+  function openSubTerminal(sessionId) {
+    const cached = subTerminals[sessionId];
+    if (!cached || !cached.terminal || !cached.container) return;
+    if (!cached.opened) {
+      cached.terminal.open(cached.container);
+      cached.opened = true;
+    }
+  }
+
   function createSubSlot(meeting, sessionId) {
-    const session = sessionsRef ? sessionsRef.get(sessionId) : null;
+    const session = sessionsRef() ? sessionsRef().get(sessionId) : null;
     const isDormant = session && session.status === 'dormant';
     const isSelected = meeting.sendTarget === sessionId;
     const kindLabel = session ? (session.kind || 'session') : 'session';
@@ -239,15 +260,12 @@
     termContainer.className = 'mr-sub-terminal';
     slot.appendChild(termContainer);
 
-    if (!isDormant && getOrCreateTerminalFn) {
-      const cached = getOrCreateTerminalFn(sessionId);
+    const termFactory = getOrCreateTerminalFn();
+    if (!isDormant && termFactory) {
+      const cached = termFactory(sessionId);
       if (cached && cached.container) {
         cached.container.style.display = 'block';
         termContainer.appendChild(cached.container);
-        if (!cached.opened) {
-          cached.terminal.open(cached.container);
-          cached.opened = true;
-        }
         subTerminals[sessionId] = cached;
       }
     }
@@ -288,7 +306,7 @@
       bar.className = 'mr-preview-bar';
 
       for (const otherId of others) {
-        const session = sessionsRef ? sessionsRef.get(otherId) : null;
+        const session = sessionsRef() ? sessionsRef().get(otherId) : null;
         const label = session ? session.kind : 'session';
 
         const item = document.createElement('div');
@@ -320,6 +338,7 @@
       container.appendChild(bar);
     }
 
+    openSubTerminal(focused);
     requestAnimationFrame(() => fitSubTerminal(focused));
   }
 
@@ -345,7 +364,7 @@
 
     let optionsHtml = '<option value="all">全部</option>';
     for (const sid of meeting.subSessions) {
-      const session = sessionsRef ? sessionsRef.get(sid) : null;
+      const session = sessionsRef() ? sessionsRef().get(sid) : null;
       const label = session ? (session.kind || sid) : sid;
       const sel = meeting.sendTarget === sid ? ' selected' : '';
       optionsHtml += `<option value="${sid}"${sel}>${escapeHtml(label)}</option>`;
@@ -408,7 +427,7 @@
   async function handleMeetingSend(text, meeting) {
     const targets = meeting.sendTarget === 'all'
       ? meeting.subSessions.filter(sid => {
-          const s = sessionsRef ? sessionsRef.get(sid) : null;
+          const s = sessionsRef() ? sessionsRef().get(sid) : null;
           return s && s.status !== 'dormant';
         })
       : [meeting.sendTarget];
@@ -432,7 +451,7 @@
 
     const lines = [];
     for (const id of others) {
-      const session = sessionsRef ? sessionsRef.get(id) : null;
+      const session = sessionsRef() ? sessionsRef().get(id) : null;
       const label = session ? (session.kind || 'session') : 'session';
       const buf = await ipcRenderer.invoke('get-ring-buffer', id);
       if (buf) {
@@ -463,7 +482,7 @@
     const others = meeting.subSessions.filter(id => id !== sourceSessionId);
     if (others.length === 0) return;
 
-    const sourceSession = sessionsRef ? sessionsRef.get(sourceSessionId) : null;
+    const sourceSession = sessionsRef() ? sessionsRef().get(sourceSessionId) : null;
     const sourceLabel = sourceSession ? sourceSession.kind : 'session';
 
     const menu = document.createElement('div');
@@ -473,7 +492,7 @@
     menu.style.left = e.clientX + 'px';
 
     for (const targetId of others) {
-      const targetSession = sessionsRef ? sessionsRef.get(targetId) : null;
+      const targetSession = sessionsRef() ? sessionsRef().get(targetId) : null;
       const targetLabel = targetSession ? targetSession.kind : 'session';
       const item = document.createElement('button');
       item.className = 'mr-quote-menu-item';
