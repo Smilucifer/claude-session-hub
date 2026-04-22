@@ -959,10 +959,20 @@ const TeamRoom = (() => {
         <div class="tr-msg-avatar">${esc(av)}</div>
         <div class="tr-msg-body">
           <div class="tr-msg-meta"><span class="tr-msg-name">${esc(name)}</span></div>
-          <div class="tr-thinking"><span class="tr-thinking-text">思考中</span><span class="tr-thinking-elapsed"></span></div>
+          <div class="tr-thinking"><span class="tr-thinking-text">思考中</span><span class="tr-thinking-elapsed"></span><span class="tr-thinking-toggle">&#9660;</span></div>
+          <div class="tr-thinking-details"></div>
         </div>
       `;
       threadEl.appendChild(el);
+
+      const thinkingBar = el.querySelector('.tr-thinking');
+      const detailsEl = el.querySelector('.tr-thinking-details');
+      const toggleEl = el.querySelector('.tr-thinking-toggle');
+      thinkingBar.addEventListener('click', () => {
+        const open = detailsEl.style.display !== 'none';
+        detailsEl.style.display = open ? 'none' : 'block';
+        toggleEl.textContent = open ? '▼' : '▲';
+      });
 
       const startTs = Date.now();
       const elapsedSpan = el.querySelector('.tr-thinking-elapsed');
@@ -971,53 +981,62 @@ const TeamRoom = (() => {
         if (elapsedSpan) elapsedSpan.textContent = ` ${sec}s`;
       }, 1000);
 
-      thinkingMap[actorId] = { el, timer, startTs };
+      thinkingMap[actorId] = { el, timer, startTs, detailsEl };
       threadEl.scrollTop = threadEl.scrollHeight;
     }
 
     else if (evtType === 'checkpoint') {
-      // Do NOT remove the thinking indicator — the character is still working.
-      appendCheckpoint(threadEl, {
-        actor: actorId,
-        name,
-        content: evt.content || '',
-        ts: evt.ts,
-      });
+      const entry = thinkingMap[actorId];
+      if (entry && entry.detailsEl) {
+        const line = document.createElement('div');
+        line.className = 'tr-detail-line tr-detail-checkpoint';
+        line.textContent = evt.content || '';
+        entry.detailsEl.appendChild(line);
+      } else {
+        appendCheckpoint(threadEl, { actor: actorId, name, content: evt.content || '', ts: evt.ts });
+      }
       threadEl.scrollTop = threadEl.scrollHeight;
     }
 
     else if (evtType === 'tool_use') {
-      appendToolUse(threadEl, {
-        actor: actorId,
-        name,
-        tool: evt.tool || '',
-        input: evt.input || {},
-        ts: evt.ts,
-      });
+      const entry = thinkingMap[actorId];
+      if (entry && entry.detailsEl) {
+        const line = document.createElement('div');
+        line.className = 'tr-detail-line tr-detail-tool';
+        line.textContent = `[tool] ${evt.tool || ''}: ${JSON.stringify(evt.input || {}).slice(0, 200)}`;
+        entry.detailsEl.appendChild(line);
+      } else {
+        appendToolUse(threadEl, { actor: actorId, name, tool: evt.tool || '', input: evt.input || {}, ts: evt.ts });
+      }
       threadEl.scrollTop = threadEl.scrollHeight;
     }
 
-    // text_delta：Claude --include-partial-messages 的字级增量，附到 thinking 卡片下做 live preview
     else if (evtType === 'text_delta') {
       const entry = thinkingMap[actorId];
-      if (entry && entry.el) {
-        let live = entry.el.querySelector('.tr-live-text');
+      if (entry && entry.detailsEl) {
+        let live = entry.detailsEl.querySelector('.tr-detail-live');
         if (!live) {
           live = document.createElement('div');
-          live.className = 'tr-live-text';
-          live.style.cssText = 'color:var(--text-primary);margin-top:6px;white-space:pre-wrap;font-size:13px;opacity:0.85';
-          const body = entry.el.querySelector('.tr-msg-body');
-          if (body) body.appendChild(live);
+          live.className = 'tr-detail-line tr-detail-live';
+          entry.detailsEl.appendChild(live);
         }
         live.textContent += (evt.text || '');
         threadEl.scrollTop = threadEl.scrollHeight;
       }
     }
 
-    // thinking_delta: intentionally ignored — the thinking timer ("思考中 Ns")
-    // already indicates activity; streaming reasoning text was visual noise.
     else if (evtType === 'thinking_delta') {
-      // no-op
+      const entry = thinkingMap[actorId];
+      if (entry && entry.detailsEl) {
+        let thought = entry.detailsEl.querySelector('.tr-detail-thought');
+        if (!thought) {
+          thought = document.createElement('div');
+          thought.className = 'tr-detail-line tr-detail-thought';
+          entry.detailsEl.appendChild(thought);
+        }
+        thought.textContent += (evt.text || '');
+        threadEl.scrollTop = threadEl.scrollHeight;
+      }
     }
 
     // degraded：prompt 超预算自动降级（TRUNCATED / PATTERN_ONLY / ABORT）
