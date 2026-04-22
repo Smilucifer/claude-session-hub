@@ -53,17 +53,26 @@
     return meetingData[meetingId] || null;
   }
 
+  let _updating = false;
   function updateMeetingData(meetingId, updated) {
-    const prev = meetingData[meetingId];
-    meetingData[meetingId] = updated;
-    if (activeMeetingId === meetingId) {
-      renderHeader(updated);
-      renderToolbar(updated);
-      const prevSubs = prev ? prev.subSessions.join(',') : '';
-      const newSubs = updated.subSessions ? updated.subSessions.join(',') : '';
-      if (prevSubs !== newSubs) {
-        renderTerminals(updated);
+    if (_updating) return;
+    _updating = true;
+    try {
+      const prev = meetingData[meetingId];
+      meetingData[meetingId] = updated;
+      if (activeMeetingId === meetingId) {
+        renderHeader(updated);
+        renderToolbar(updated);
+        const prevSubs = prev ? prev.subSessions.join(',') : '';
+        const newSubs = updated.subSessions ? updated.subSessions.join(',') : '';
+        if (prevSubs !== newSubs) {
+          renderTerminals(updated);
+        }
       }
+    } catch (e) {
+      console.error('[meeting-room] updateMeetingData error:', e);
+    } finally {
+      _updating = false;
     }
   }
 
