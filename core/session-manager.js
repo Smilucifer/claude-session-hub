@@ -116,6 +116,7 @@ class SessionManager extends EventEmitter {
       unreadCount: 0,
       createdAt: now,
       cwd: spawnCwd,
+      meetingId: opts.meetingId || null,
     };
 
     const pendingTimers = [];
