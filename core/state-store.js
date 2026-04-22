@@ -15,6 +15,7 @@ function load() {
       return defaultState();
     }
     if (!Array.isArray(parsed.sessions)) parsed.sessions = [];
+    if (!Array.isArray(parsed.meetings)) parsed.meetings = [];
     return parsed;
   } catch {
     return defaultState();
@@ -22,7 +23,7 @@ function load() {
 }
 
 function defaultState() {
-  return { version: CURRENT_VERSION, cleanShutdown: true, sessions: [] };
+  return { version: CURRENT_VERSION, cleanShutdown: true, sessions: [], meetings: [] };
 }
 
 let saveDebounceTimer = null;
