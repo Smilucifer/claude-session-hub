@@ -175,9 +175,13 @@ class TeamSessionManager {
       return this._ensureGeminiAcpSession(roomId, character);
     }
 
+    // Always refresh prompt/persona so template changes take effect immediately.
+    const cli = this._cliKind(character.backing_cli);
+    if (cli === 'codex') this._writeCodexPersona(roomId, character);
+    else if (cli !== 'gemini') this._writePromptFile(roomId, character, cli);
+
     const existing = this._sessions.get(key);
     if (existing) {
-      // Check session is still alive
       const session = this._sessionManager.getSession(existing);
       if (session) return existing;
       // Dead session — clean up and recreate
