@@ -82,9 +82,23 @@
     const el = headerEl();
     if (!el) return;
     const layoutSplit = meeting.layout === 'split';
+    const focused = meeting.focusedSub || meeting.subSessions[0];
+
+    let tabsHtml = '';
+    if (!layoutSplit && meeting.subSessions.length > 0) {
+      const tabs = meeting.subSessions.map(sid => {
+        const s = sessions ? sessions.get(sid) : null;
+        const label = s ? (s.title || s.kind) : 'session';
+        const cls = sid === focused ? 'mr-tab active' : 'mr-tab';
+        return `<button class="${cls}" data-sid="${sid}">${escapeHtml(label)}</button>`;
+      }).join('');
+      tabsHtml = `<div class="mr-tabs" id="mr-tabs">${tabs}</div>`;
+    }
+
     el.innerHTML = `
       <div class="mr-header-left">
         <span class="mr-header-title" id="mr-title">${escapeHtml(meeting.title)}</span>
+        ${tabsHtml}
       </div>
       <div class="mr-header-right">
         <button class="mr-header-btn ${layoutSplit ? 'active' : ''}" id="mr-btn-split">Split</button>
@@ -96,6 +110,22 @@
     document.getElementById('mr-btn-split').addEventListener('click', () => setLayout(meeting.id, 'split'));
     document.getElementById('mr-btn-focus').addEventListener('click', () => setLayout(meeting.id, 'focus'));
     document.getElementById('mr-btn-add-sub').addEventListener('click', () => showAddSubMenu(meeting.id));
+
+    // Focus mode tab click → switch focused sub-session
+    const tabsEl = document.getElementById('mr-tabs');
+    if (tabsEl) {
+      tabsEl.addEventListener('click', (e) => {
+        const btn = e.target.closest('.mr-tab');
+        if (!btn) return;
+        const sid = btn.dataset.sid;
+        if (sid && sid !== focused) {
+          meeting.focusedSub = sid;
+          ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { focusedSub: sid } });
+          renderTerminals(meeting);
+          renderHeader(meeting);
+        }
+      });
+    }
 
     const titleSpan = document.getElementById('mr-title');
     titleSpan.addEventListener('dblclick', () => {
@@ -306,44 +336,6 @@
     const mainSlot = createSubSlot(meeting, focused);
     mainSlot.style.flex = '1';
     container.appendChild(mainSlot);
-
-    const others = meeting.subSessions.filter(id => id !== focused);
-    if (others.length > 0) {
-      const bar = document.createElement('div');
-      bar.className = 'mr-preview-bar';
-
-      for (const otherId of others) {
-        const session = sessions ? sessions.get(otherId) : null;
-        const label = session ? session.kind : 'session';
-
-        const item = document.createElement('div');
-        item.className = 'mr-preview-item';
-        item.innerHTML = `
-          <span class="mr-preview-label">${escapeHtml(label)}</span>
-          <div class="mr-preview-text" id="mr-preview-${otherId}">Loading...</div>
-        `;
-
-        item.addEventListener('click', () => {
-          meeting.focusedSub = otherId;
-          ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { focusedSub: otherId } });
-          renderTerminals(meeting);
-        });
-
-        bar.appendChild(item);
-
-        ipcRenderer.invoke('get-ring-buffer', otherId).then(buf => {
-          const previewEl = document.getElementById(`mr-preview-${otherId}`);
-          if (previewEl && buf) {
-            const lines = buf.replace(/\r/g, '').split('\n');
-            previewEl.textContent = lines.slice(-4).join('\n');
-          } else if (previewEl) {
-            previewEl.textContent = '(no output)';
-          }
-        });
-      }
-
-      container.appendChild(bar);
-    }
 
     openSubTerminal(focused);
     requestAnimationFrame(() => fitSubTerminal(focused));
