@@ -648,7 +648,18 @@ class TeamSessionManager {
     if (cliKind === 'gemini') {
       content = `你是${displayName}，团队中的${cliLabel}。回复会被系统自动转发给队友。以原生Gemini的专业风格回复，不要角色扮演。`;
     } else {
-      content = `你是${displayName}，团队中的${cliLabel}。[重要] 回复完成后必须调用 team_respond 工具，这是唯一的回复通道。`;
+      content = [
+        `# ${displayName} — Team Room`,
+        '',
+        `你是${displayName}，团队中的${cliLabel}。`,
+        '',
+        '## 回复约束（硬性，不可跳过）',
+        '',
+        '你正在 Team Room 模式下运行。你的文本输出不会传递给任何人。',
+        '唯一的回复方式是调用 team_respond(content="你的完整回复") 工具。',
+        '如果你不调用 team_respond，你的回复将丢失，队友和用户都看不到。',
+        '每次回复结束时都必须调用 team_respond。这不是建议，是系统硬约束。',
+      ].join('\n');
     }
 
     if (cliKind === 'gemini') {
