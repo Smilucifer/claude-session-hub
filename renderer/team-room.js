@@ -733,6 +733,7 @@ const TeamRoom = (() => {
   async function refreshInspector() {
     const inspEl = $('tr-inspector');
     if (!inspEl || !currentRoomId) return;
+    if (inspEl.classList.contains('collapsed')) return;
 
     let wiki = null;
     let candidates = [];

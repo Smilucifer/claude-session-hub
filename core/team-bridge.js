@@ -8,18 +8,40 @@ const { buildBootstrap } = require('./session-bootstrap');
 const AI_TEAM_DIR = path.join(os.homedir(), '.ai-team');
 const DB_PATH = path.join(AI_TEAM_DIR, 'team.db');
 
+const CACHE_TTL_MS = 30000;
+
 class TeamBridge {
   constructor() {
     this.baseDir = AI_TEAM_DIR;
     this._runningProc = null;
     this._teamSessionManager = null;
-    // Per-character read pointer: Map<"roomId:charId", number> (event cursor)
     this._readPointers = new Map();
+    this._charCache = null; // { data, ts }
+    this._roomCache = null; // { data, ts }
   }
 
   /** Injected by main.js after hookPort is known. */
   setTeamSessionManager(tsm) {
     this._teamSessionManager = tsm;
+  }
+
+  async _getCachedCharacters() {
+    if (this._charCache && Date.now() - this._charCache.ts < CACHE_TTL_MS) return this._charCache.data;
+    const data = await this._pyScript(['characters']);
+    this._charCache = { data, ts: Date.now() };
+    return data;
+  }
+
+  async _getCachedRooms() {
+    if (this._roomCache && Date.now() - this._roomCache.ts < CACHE_TTL_MS) return this._roomCache.data;
+    const data = await this._pyScript(['rooms']);
+    this._roomCache = { data, ts: Date.now() };
+    return data;
+  }
+
+  _invalidateCache() {
+    this._charCache = null;
+    this._roomCache = null;
   }
 
   isInitialized() {
@@ -86,6 +108,7 @@ class TeamBridge {
     } finally {
       db.close();
     }
+    this._invalidateCache();
   }
 
   async askTeam(roomId, message, onEvent, timeout = 300000) {
@@ -110,9 +133,8 @@ class TeamBridge {
    * wait for team_respond callback.
    */
   async _askTeamPTY(roomId, message, onEvent, timeout = 300000) {
-    // Load characters for the room
-    const allCharacters = await this._pyScript(['characters']);
-    const rooms = await this._pyScript(['rooms']);
+    const allCharacters = await this._getCachedCharacters();
+    const rooms = await this._getCachedRooms();
     const room = rooms.find(r => r.id === roomId);
     if (!room) throw new Error(`Room not found: ${roomId}`);
 
@@ -350,6 +372,7 @@ class TeamBridge {
 
     // Register in DB via Python bridge
     await this._pyScript(['create-room', id, name, JSON.stringify(memberIds)]);
+    this._invalidateCache();
 
     return { id, display_name: name };
   }
