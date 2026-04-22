@@ -194,8 +194,7 @@ class TeamBridge {
       throw new Error('No valid targets found in room');
     }
 
-    // Persist user message to DB
-    await this._pyScript(['insert-event', roomId, 'user', 'message', message]);
+    this._insertEventDirect(roomId, 'user', 'message', message);
 
     const results = [];
 
@@ -218,7 +217,7 @@ class TeamBridge {
         const cursor = this._getReadPointer(roomId, charId);
         let history = [];
         try {
-          history = await this._pyScript(['events-since', roomId, String(cursor)]);
+          history = this._eventsSinceDirect(roomId, cursor);
         } catch (e) {
           console.warn(`[team-bridge] events-since failed: ${e.message}`);
         }
