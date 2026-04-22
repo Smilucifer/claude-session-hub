@@ -2466,14 +2466,11 @@ ipcRenderer.on('session-created', (_e, { session }) => {
   } else {
     sessions.set(session.id, session);
   }
-  // Sub-sessions belonging to a meeting: don't switch panels or show terminal.
-  // The meeting room panel handles rendering them in its own sub-slots.
-  if (session.meetingId && activeMeetingId === session.meetingId) {
+  // Sub-sessions belonging to a meeting: just add to sessions Map.
+  // Don't switch panels or re-render terminals — the showAddSubMenu
+  // callback in meeting-room.js handles terminal mounting.
+  if (session.meetingId) {
     renderSessionList();
-    if (typeof MeetingRoom !== 'undefined') {
-      const m = meetings[session.meetingId];
-      if (m) MeetingRoom.openMeeting(session.meetingId, m);
-    }
     return;
   }
   activeSessionId = session.id;
