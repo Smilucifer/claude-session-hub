@@ -8,6 +8,8 @@
   let activeMeetingId = null;
   let meetingData = {};
   let subTerminals = {};
+  const _tabState = {};     // { sessionId: 'streaming'|'new-output'|'idle'|'error' }
+  const _tabTimers = {};    // { sessionId: silenceTimerId }
 
   // renderer.js loads before us — its `sessions` and `getOrCreateTerminal`
   // are accessible via the global lexical scope. We access them directly.
@@ -91,7 +93,11 @@
         const label = s ? (s.title || s.kind) : 'session';
         const badges = subModelBadgeHtml(s) + subCtxBadgeHtml(s);
         const cls = sid === focused ? 'mr-tab active' : 'mr-tab';
-        return `<button class="${cls}" data-sid="${sid}">${escapeHtml(label)}${badges ? ' ' + badges : ''}</button>`;
+        const state = _tabState[sid] || 'idle';
+        const statusDot = `<span class="mr-tab-status ${state}"></span>`;
+        const newBadge = state === 'new-output' ? ' <span class="new-badge">NEW</span>' : '';
+        const hasNewCls = state === 'new-output' ? ' has-new' : '';
+        return `<button class="${cls}${hasNewCls}" data-sid="${sid}">${statusDot}${escapeHtml(label)}${badges ? ' ' + badges : ''}${newBadge}</button>`;
       }).join('');
       tabsHtml = `<div class="mr-tabs" id="mr-tabs">${tabs}</div>`;
     }
@@ -120,6 +126,8 @@
         if (!btn) return;
         const sid = btn.dataset.sid;
         if (sid && sid !== focused) {
+          _tabState[sid] = 'idle';
+          if (_tabTimers[sid]) { clearTimeout(_tabTimers[sid]); delete _tabTimers[sid]; }
           meeting.focusedSub = sid;
           ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { focusedSub: sid } });
           renderTerminals(meeting);
@@ -572,6 +580,59 @@
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
+  // --- Tab output state tracking ---
+  ipcRenderer.on('terminal-data', (_e, { sessionId }) => {
+    if (!activeMeetingId) return;
+    const meeting = meetingData[activeMeetingId];
+    if (!meeting || !meeting.subSessions.includes(sessionId)) return;
+    const focused = meeting.focusedSub || meeting.subSessions[0];
+    if (sessionId === focused) return;
+
+    _tabState[sessionId] = 'streaming';
+    updateTabIndicator(sessionId);
+
+    if (_tabTimers[sessionId]) clearTimeout(_tabTimers[sessionId]);
+    _tabTimers[sessionId] = setTimeout(() => {
+      if (_tabState[sessionId] === 'streaming') {
+        _tabState[sessionId] = 'new-output';
+        updateTabIndicator(sessionId);
+      }
+    }, 2000);
+  });
+
+  ipcRenderer.on('session-closed', (_e, { sessionId }) => {
+    if (_tabState[sessionId] !== undefined) {
+      _tabState[sessionId] = 'error';
+      updateTabIndicator(sessionId);
+    }
+  });
+
+  function updateTabIndicator(sessionId) {
+    const tab = document.querySelector(`.mr-tab[data-sid="${sessionId}"]`);
+    if (!tab) return;
+    const state = _tabState[sessionId] || 'idle';
+    let dot = tab.querySelector('.mr-tab-status');
+    if (!dot) {
+      dot = document.createElement('span');
+      dot.className = 'mr-tab-status';
+      tab.prepend(dot);
+    }
+    dot.className = `mr-tab-status ${state}`;
+    let badge = tab.querySelector('.new-badge');
+    if (state === 'new-output') {
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'new-badge';
+        badge.textContent = 'NEW';
+        tab.appendChild(badge);
+      }
+      tab.classList.add('has-new');
+    } else {
+      if (badge) badge.remove();
+      tab.classList.remove('has-new');
+    }
+  }
+
   // --- Live badge refresh on status-event ---
   ipcRenderer.on('status-event', (_e, payload) => {
     if (!activeMeetingId) return;
@@ -588,9 +649,14 @@
       const label = slot.querySelector('.mr-sub-label');
       if (label) label.innerHTML = newHtml;
     }
-    // Update focus-mode tab
+    // Update focus-mode tab (preserve status dot + NEW badge)
     const tab = document.querySelector(`.mr-tab[data-sid="${payload.sessionId}"]`);
-    if (tab) tab.innerHTML = newHtml;
+    if (tab) {
+      const state = _tabState[payload.sessionId] || 'idle';
+      const statusDot = `<span class="mr-tab-status ${state}"></span>`;
+      const newBadge = state === 'new-output' ? ' <span class="new-badge">NEW</span>' : '';
+      tab.innerHTML = `${statusDot}${newHtml}${newBadge}`;
+    }
   });
 
   // --- Expose global ---

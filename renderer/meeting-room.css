@@ -78,6 +78,31 @@
   color: #fff;
 }
 
+.mr-tab-status {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.mr-tab-status.streaming  { background: #22c55e; }
+.mr-tab-status.new-output { background: #eab308; }
+.mr-tab-status.idle       { background: #6b7280; }
+.mr-tab-status.error      { background: #ef4444; }
+.mr-tab .new-badge {
+  font-size: 9px;
+  padding: 1px 4px;
+  background: rgba(250,204,21,0.25);
+  border-radius: 3px;
+  color: #eab308;
+  font-weight: 600;
+  margin-left: 4px;
+}
+.mr-tab.has-new {
+  border: 1px solid rgba(250,204,21,0.5);
+}
+
 .mr-header-btn:hover {
   background: var(--bg-hover, #1c2128);
   color: var(--text-primary, #c9d1d9);
