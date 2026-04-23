@@ -117,6 +117,12 @@
     document.getElementById('mr-btn-focus').addEventListener('click', () => setLayout(meeting.id, 'focus'));
     document.getElementById('mr-btn-blackboard').addEventListener('click', () => setLayout(meeting.id, 'blackboard'));
     document.getElementById('mr-btn-add-sub').addEventListener('click', () => showAddSubMenu(meeting.id));
+    document.getElementById('mr-btn-zoom-out').addEventListener('click', () => { if (typeof applyZoom === 'function') applyZoom(currentZoom - 1); });
+    document.getElementById('mr-btn-zoom-in').addEventListener('click', () => { if (typeof applyZoom === 'function') applyZoom(currentZoom + 1); });
+    document.getElementById('mr-btn-close').addEventListener('click', async () => {
+      await ipcRenderer.invoke('close-meeting', meeting.id);
+      closeMeetingPanel();
+    });
 
     // Focus mode tab click → switch focused sub-session
     const tabsEl = document.getElementById('mr-tabs');
