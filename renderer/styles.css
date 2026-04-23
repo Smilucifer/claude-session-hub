@@ -885,6 +885,47 @@ body.theme-light .session-time {
   text-align: right;
 }
 
+/* Compact text-only usage lines — one row per provider */
+.usage-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.usage-badge {
+  font-size: 9px;
+  padding: 0 4px;
+  line-height: 15px;
+  min-width: 42px;
+  text-align: center;
+}
+.usage-slot {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.usage-sep {
+  color: var(--border);
+  font-size: 9px;
+}
+.usage-pct {
+  font-weight: 600;
+  margin: 0 2px;
+}
+.usage-pct.ok     { color: var(--accent-green); }
+.usage-pct.warn   { color: var(--accent-orange); }
+.usage-pct.danger { color: var(--accent-red); }
+.usage-reset {
+  color: var(--text-muted);
+  margin-left: 2px;
+  font-size: 9px;
+}
+.usage-na {
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
 /* Per-session context badge in footer */
 .session-footer {
   margin-top: 4px;
@@ -913,7 +954,9 @@ body.theme-light .session-time {
 .model-badge.opus    { background: rgba(188, 140, 255, 0.22); color: #d2a8ff; }
 .model-badge.sonnet  { background: rgba(88, 166, 255, 0.22);  color: #79c0ff; }
 .model-badge.haiku   { background: rgba(63, 185, 80, 0.22);   color: #56d364; }
-.model-badge:not(.opus):not(.sonnet):not(.haiku) { background: rgba(139, 148, 158, 0.22); color: #b1bac4; }
+.model-badge.gemini  { background: rgba(66, 133, 244, 0.22);  color: #79b8ff; }
+.model-badge.codex   { background: rgba(16, 163, 127, 0.22);  color: #56d4a4; }
+.model-badge:not(.opus):not(.sonnet):not(.haiku):not(.gemini):not(.codex) { background: rgba(139, 148, 158, 0.22); color: #b1bac4; }
 
 .terminal-model-badge {
   margin-left: 8px;
@@ -926,7 +969,9 @@ body.theme-light .session-time {
 .terminal-model-badge.opus    { background: rgba(188, 140, 255, 0.22); color: #d2a8ff; }
 .terminal-model-badge.sonnet  { background: rgba(88, 166, 255, 0.22);  color: #79c0ff; }
 .terminal-model-badge.haiku   { background: rgba(63, 185, 80, 0.22);   color: #56d364; }
-.terminal-model-badge:not(.opus):not(.sonnet):not(.haiku) { background: rgba(139, 148, 158, 0.22); color: #b1bac4; }
+.terminal-model-badge.gemini  { background: rgba(66, 133, 244, 0.22);  color: #79b8ff; }
+.terminal-model-badge.codex   { background: rgba(16, 163, 127, 0.22);  color: #56d4a4; }
+.terminal-model-badge:not(.opus):not(.sonnet):not(.haiku):not(.gemini):not(.codex) { background: rgba(139, 148, 158, 0.22); color: #b1bac4; }
 .terminal-model-badge.clickable { cursor: pointer; user-select: none; transition: filter 0.12s ease; }
 .terminal-model-badge.clickable:hover { filter: brightness(1.25); }
 

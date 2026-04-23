@@ -89,8 +89,9 @@
       const tabs = meeting.subSessions.map(sid => {
         const s = sessions ? sessions.get(sid) : null;
         const label = s ? (s.title || s.kind) : 'session';
+        const badges = subModelBadgeHtml(s) + subCtxBadgeHtml(s);
         const cls = sid === focused ? 'mr-tab active' : 'mr-tab';
-        return `<button class="${cls}" data-sid="${sid}">${escapeHtml(label)}</button>`;
+        return `<button class="${cls}" data-sid="${sid}">${escapeHtml(label)}${badges ? ' ' + badges : ''}</button>`;
       }).join('');
       tabsHtml = `<div class="mr-tabs" id="mr-tabs">${tabs}</div>`;
     }
@@ -577,15 +578,20 @@
     if (!activeMeetingId) return;
     const meeting = meetingData[activeMeetingId];
     if (!meeting || !meeting.subSessions.includes(payload.sessionId)) return;
-    const slot = document.querySelector(`.mr-sub-slot[data-session-id="${payload.sessionId}"]`);
-    if (!slot) return;
     const session = sessions ? sessions.get(payload.sessionId) : null;
-    const label = slot.querySelector('.mr-sub-label');
-    if (label && session) {
-      const title = session.title || session.kind || 'session';
-      const badges = subModelBadgeHtml(session) + subCtxBadgeHtml(session);
-      label.innerHTML = `${escapeHtml(title)}${badges ? ' ' + badges : ''}`;
+    if (!session) return;
+    const title = session.title || session.kind || 'session';
+    const badges = subModelBadgeHtml(session) + subCtxBadgeHtml(session);
+    const newHtml = `${escapeHtml(title)}${badges ? ' ' + badges : ''}`;
+    // Update split-mode sub-slot header
+    const slot = document.querySelector(`.mr-sub-slot[data-session-id="${payload.sessionId}"]`);
+    if (slot) {
+      const label = slot.querySelector('.mr-sub-label');
+      if (label) label.innerHTML = newHtml;
     }
+    // Update focus-mode tab
+    const tab = document.querySelector(`.mr-tab[data-sid="${payload.sessionId}"]`);
+    if (tab) tab.innerHTML = newHtml;
   });
 
   // --- Expose global ---

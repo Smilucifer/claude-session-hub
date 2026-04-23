@@ -744,33 +744,36 @@ function stripAnsi(str) {
 
 function parseGeminiUsage(plain) {
   const result = {};
-  const modelMatch = plain.match(/model[:\s]+(\bgemini[-\w.]+)/i);
-  if (modelMatch) result.model = { id: modelMatch[1], displayName: SessionManager.geminiDisplayName(modelMatch[1]) };
-  const tokenMatch = plain.match(/(\d[\d,]+)\s*(?:input\s*)?tokens?/i);
-  if (tokenMatch) result.tokensUsed = parseInt(tokenMatch[1].replace(/,/g, ''), 10);
-  if (result.tokensUsed) {
-    const ctxMax = 1048576;
-    result.contextPct = Math.round((result.tokensUsed / ctxMax) * 100);
-    result.contextUsed = result.tokensUsed;
-    result.contextMax = ctxMax;
+  // Gemini CLI footer: "gemini-2.5-pro (95% context left)"
+  const footerMatch = plain.match(/(gemini[-\w.]+)\s*\((\d+)%\s*context\s*left\)/i);
+  if (footerMatch) {
+    result.model = { id: footerMatch[1], displayName: SessionManager.geminiDisplayName(footerMatch[1]) };
+    const remaining = parseInt(footerMatch[2], 10);
+    result.contextPct = 100 - remaining;
+  } else {
+    const modelMatch = plain.match(/\b(gemini[-\w.]+)\b/i);
+    if (modelMatch) result.model = { id: modelMatch[1], displayName: SessionManager.geminiDisplayName(modelMatch[1]) };
   }
   return result;
 }
 
 function parseCodexUsage(plain) {
   const result = {};
-  const modelMatch = plain.match(/model[:\s]+([\w.-]+)/i);
-  if (modelMatch && modelMatch[1] !== 'badge') {
-    result.model = { id: modelMatch[1], displayName: modelMatch[1].replace(/-/g, ' ').replace(/\bo\d/i, m => m.toUpperCase()) };
+  // Codex CLI status bar: "Context 95% left"
+  const ctxMatch = plain.match(/Context\s+(\d+)%\s+left/i);
+  if (ctxMatch) {
+    const remaining = parseInt(ctxMatch[1], 10);
+    result.contextPct = 100 - remaining;
   }
-  const tokenMatch = plain.match(/(\d[\d,]+)\s*tokens?/i);
+  // Codex status bar: "gpt-5.4 medium" or "gpt-4.1-mini low"
+  const modelMatch = plain.match(/\b(gpt-[\w.-]+|o\d-[\w.-]+)\b/i);
+  if (modelMatch) {
+    const id = modelMatch[1];
+    result.model = { id, displayName: id };
+  }
+  // Exit summary: "Token usage: total=12,840 input=11,897 (+ 3,456 cached) output=943"
+  const tokenMatch = plain.match(/Token usage:\s*total=([\d,]+)/i);
   if (tokenMatch) result.tokensUsed = parseInt(tokenMatch[1].replace(/,/g, ''), 10);
-  if (result.tokensUsed) {
-    const ctxMax = 200000;
-    result.contextPct = Math.round((result.tokensUsed / ctxMax) * 100);
-    result.contextUsed = result.tokensUsed;
-    result.contextMax = ctxMax;
-  }
   return result;
 }
 

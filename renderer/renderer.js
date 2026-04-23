@@ -1694,6 +1694,7 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
 // Status updates from our custom statusline script.
 // Carries contextPct / cwd / api time / session_name per session + account-wide usage5h/usage7d.
 const accountUsage = { usage5h: null, usage7d: null };
+const agentUsage = { gemini: null, codex: null };
 // Samples for quota burn-rate attribution. Per-session contextUsed history
 // (15 min ring) → tokens/min. Global 5h samples let us estimate tokens-per-pct
 // so we can project each session's burn as "% of 5h cap per hour".
@@ -1793,13 +1794,21 @@ ipcRenderer.on('status-event', (_e, payload) => {
   renderSessionList();
 });
 
-// Map a Claude Code model id to a CSS family class for badge coloring.
+ipcRenderer.on('agent-usage', (_e, totals) => {
+  if (totals.gemini && (totals.gemini.usage5h || totals.gemini.usage7d)) agentUsage.gemini = totals.gemini;
+  if (totals.codex && (totals.codex.usage5h || totals.codex.usage7d)) agentUsage.codex = totals.codex;
+  renderAccountUsage();
+});
+
+// Map a model id to a CSS family class for badge coloring.
 function modelClass(id) {
   if (!id) return '';
   const s = id.toLowerCase();
   if (s.includes('opus')) return 'opus';
   if (s.includes('sonnet')) return 'sonnet';
   if (s.includes('haiku')) return 'haiku';
+  if (s.includes('gemini')) return 'gemini';
+  if (s.includes('codex') || s.includes('o3') || s.includes('o4-mini')) return 'codex';
   return '';
 }
 
@@ -1813,6 +1822,8 @@ function modelShort(m) {
   if (id.includes('opus')) return 'Opus';
   if (id.includes('sonnet')) return 'Sonnet';
   if (id.includes('haiku')) return 'Haiku';
+  if (id.includes('gemini')) return id.replace(/^gemini-/, 'Gemini ').replace(/-/g, ' ');
+  if (id.includes('codex')) return 'Codex';
   return m.id || '';
 }
 
@@ -1969,18 +1980,21 @@ function formatResetIn(resetsAt) {
 function renderAccountUsage() {
   const el = document.getElementById('account-usage');
   if (!el) return;
-  const { usage5h, usage7d } = accountUsage;
-  if (!usage5h && !usage7d) { el.style.display = 'none'; return; }
   el.style.display = 'block';
-  const parts = [];
-  const buildRow = (label, usage) => {
-    const pct = Math.round(usage.pct);
-    const reset = formatResetIn(usage.resetsAt);
-    return `<div class="usage-row"><span class="usage-label">${label}</span><div class="usage-bar"><div class="usage-bar-fill ${pctClass(pct)}" style="width:${pct}%"></div></div><span class="usage-val">${pct}%${reset ? ' · ' + reset : ''}</span></div>`;
+  const fmtSlot = (u) => {
+    if (!u) return '<span class="usage-na">—</span>';
+    const pct = Math.round(u.pct);
+    const reset = formatResetIn(u.resetsAt);
+    return `<span class="usage-pct ${pctClass(pct)}">${pct}%</span>${reset ? '<span class="usage-reset">' + reset + '</span>' : ''}`;
   };
-  if (usage5h) parts.push(buildRow('5h', usage5h));
-  if (usage7d) parts.push(buildRow('7d', usage7d));
-  el.innerHTML = parts.join('');
+  const buildLine = (badgeClass, label, u5h, u7d) =>
+    `<div class="usage-line"><span class="model-badge ${badgeClass} usage-badge">${label}</span><span class="usage-slot">5h ${fmtSlot(u5h)}</span><span class="usage-sep">│</span><span class="usage-slot">7d ${fmtSlot(u7d)}</span></div>`;
+  const g = agentUsage.gemini || {};
+  const c = agentUsage.codex || {};
+  el.innerHTML =
+    buildLine('opus', 'Claude', accountUsage.usage5h, accountUsage.usage7d) +
+    buildLine('gemini', 'Gemini', g.usage5h, g.usage7d) +
+    buildLine('codex', 'Codex', c.usage5h, c.usage7d);
 }
 
 function pctClass(pct) {
@@ -2531,7 +2545,7 @@ function schedulePersist() {
   persistDebounceTimer = setTimeout(() => {
     const list = [];
     for (const s of sessions.values()) {
-      if (!s.meetingId && s.kind !== 'claude' && s.kind !== 'claude-resume') continue;
+      if (!s.meetingId && s.kind !== 'claude' && s.kind !== 'claude-resume' && s.kind !== 'gemini' && s.kind !== 'codex') continue;
       list.push({
         hubId: s.id,
         title: s.title,
@@ -2543,6 +2557,7 @@ function schedulePersist() {
         lastMessageTime: s.lastMessageTime || Date.now(),
         lastOutputPreview: s.lastOutputPreview || '',
         unreadCount: s.unreadCount || 0,
+        currentModel: s.currentModel || null,
       });
     }
     const meetingList = Object.values(meetings).map(m => ({
@@ -2599,6 +2614,7 @@ async function resumeDormantSession(hubId) {
         pinned: !!meta.pinned,
         ccSessionId: meta.ccSessionId || null,
         meetingId: meta.meetingId || null,
+        currentModel: meta.currentModel || null,
       });
     }
   }
@@ -2610,6 +2626,21 @@ async function resumeDormantSession(hubId) {
       for (const m of dormantMeetings) {
         meetings[m.id] = m;
       }
+    }
+  } catch (_) {}
+
+  // Restore cached usage data so sidebar shows account usage immediately,
+  // without waiting for a live statusline callback.
+  try {
+    const cached = await ipcRenderer.invoke('get-usage-cache');
+    if (cached) {
+      if (cached.claude && cached.claude.usage5h) {
+        accountUsage.usage5h = cached.claude.usage5h;
+        accountUsage.usage7d = cached.claude.usage7d;
+      }
+      if (cached.gemini) agentUsage.gemini = cached.gemini;
+      if (cached.codex) agentUsage.codex = cached.codex;
+      renderAccountUsage();
     }
   } catch (_) {}
 
