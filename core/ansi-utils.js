@@ -11,9 +11,9 @@ function stripAnsi(str) {
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, ''); // control chars (keep \n \r \t)
 }
 
-// TUI noise patterns — ported from renderer-mobile + extended for Gemini/Codex
+// TUI noise patterns — ported from renderer-mobile + extended for all 3 CLIs
 const TUI_LINE_PATTERNS = [
-  // Claude CLI
+  // === Claude CLI ===
   /bypass\s*permissions/i,
   /tab to cycle/i,
   /new task\?/i,
@@ -21,20 +21,63 @@ const TUI_LINE_PATTERNS = [
   /how is claude doing/i,
   /\d+:\s*(Bad|Fine|Good|Dismiss)/,
   /^\d*k?\s*tokens?\s*$/i,
-  /^[─━═┈┉⎯⏵⏴\- \t]{4,}$/,        // separator lines (space/tab, not \s which matches too broadly)
   /ClaudeMax/i,
   /Smooshing/i,
   /Compacting/i,
   /^[❯]\s*(Research|Searching|Reading|Analyzing|Writing|Editing|Running)/i,
-  // Gemini CLI
-  /^Gemini\s+(Advanced|Ultra|Pro|Flash)/i,
+  /Type your message or @/i,
+  /\d+\s+skills\s*$/i,
+
+  // === Gemini CLI ===
+  /^Gemini\s+(Advanced|Ultra|Pro|Flash|CLI)/i,
+  /Gemini CLI v[\d.]/i,
   /^Model:\s+gemini/i,
   /^Tokens:\s+\d/i,
   /^[◆◇✔✗↓↑]\s+\w/,
-  /Press Ctrl\+C/i,
-  // Codex CLI
+  /Press (Ctrl\+C|Esc)/i,
+  /Waiting for authentication/i,
+  /Signed in with Google/i,
+  /Plan:\s+Gemini Code Assist/i,
+  /workspace \(\/directory\)/i,
+  /YOLO\s+Ctrl/i,
+  /^\?\s+for shortcuts/i,
+  /quota|0% used/i,
+
+  // === Codex CLI ===
   /^apply patch\?/i,
   /^codex v\d/i,
+  /^Usage:\s+\w+\s+\[OPTIONS\]/i,
+  /^error:\s+unexpected argument/i,
+  /For more information,?\s+try\s+'--help'/i,
+
+  // === PowerShell startup ===
+  /^Windows PowerShell/,
+  /版权所有.*Microsoft/,
+  /加载个人及系统配置文件/,
+  /aka\.ms\/PSWindows/i,
+  /安装最新的 PowerShell/,
+  /in pwsh at \d+:\d+/i,
+
+  // === Line-drawing / box-drawing / block characters ===
+  /^[─━═┈┉⎯╭╮╰╯│┌┐└┘├┤┬┴┼\- \t]{4,}$/,
+  /^[▀▄▝▜▗▟▚▞█▌▐░▒▓ ]{4,}$/,
+
+  // === CLI command echo ===
+  /^(gemini|codex|claude)\s+--/i,
+  /^(gemini|codex|claude)\s+-p\b/i,
+
+  // === PowerShell error noise (question sent to PS instead of CLI) ===
+  /CategoryInfo\s+:/,
+  /FullyQualifiedErrorId\s+:/,
+  /CommandNotFoundException/,
+  /无法将.*识别为 cmdlet/,
+  /请检查名称的拼写/,
+  /然后再试一次/,
+  /所在位置 行:\d+/,
+  /^\+ .+\+ CategoryInfo/,             // PS error block (multi-line with CategoryInfo)
+
+  // === ConPTY cursor query residue ===
+  /^\[>\w*$/,
 ];
 
 function removePromptNoise(str) {
