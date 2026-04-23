@@ -459,6 +459,7 @@ if (healed > 0) console.log(`[hub] healed ${healed} stale cwd(s) from CC transcr
 // Restore persisted meetings on boot
 const bootMeetings = Array.isArray(bootState.meetings) ? bootState.meetings : [];
 for (const m of bootMeetings) {
+  if (m.layout === 'split') m.layout = 'focus';
   meetingManager.restoreMeeting(m);
 }
 

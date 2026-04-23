@@ -111,11 +111,6 @@
   background: var(--bg-primary, #0d1117);
 }
 
-.mr-sub-slot.selected {
-  outline: 2px solid var(--accent, #6366f1);
-  outline-offset: -2px;
-}
-
 .mr-sub-slot.dormant {
   opacity: 0.5;
 }
@@ -158,34 +153,6 @@
 .mr-sub-terminal {
   flex: 1;
   min-height: 0;
-}
-
-/* Empty slot */
-.mr-empty-slot {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  flex: 1;
-  min-width: 0;
-  background: var(--bg-primary, #0d1117);
-  cursor: pointer;
-  gap: 8px;
-}
-
-.mr-empty-slot:hover {
-  background: var(--bg-hover, #1c2128);
-}
-
-.mr-empty-slot-icon {
-  font-size: 32px;
-  color: var(--text-secondary, #8b949e);
-  opacity: 0.5;
-}
-
-.mr-empty-slot-text {
-  font-size: 13px;
-  color: var(--text-secondary, #8b949e);
 }
 
 /* Focus mode preview bar */

@@ -2624,6 +2624,7 @@ async function resumeDormantSession(hubId) {
     const dormantMeetings = await ipcRenderer.invoke('get-dormant-meetings');
     if (Array.isArray(dormantMeetings)) {
       for (const m of dormantMeetings) {
+        if (m.layout === 'split') m.layout = 'focus';
         meetings[m.id] = m;
       }
     }

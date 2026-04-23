@@ -82,7 +82,6 @@
   function renderHeader(meeting) {
     const el = headerEl();
     if (!el) return;
-    const layoutSplit = meeting.layout === 'split';
     const focused = meeting.focusedSub || meeting.subSessions[0];
 
     let tabsHtml = '';
@@ -103,14 +102,12 @@
         ${tabsHtml}
       </div>
       <div class="mr-header-right">
-        <button class="mr-header-btn ${meeting.layout === 'split' ? 'active' : ''}" id="mr-btn-split">Split</button>
         <button class="mr-header-btn ${meeting.layout === 'focus' ? 'active' : ''}" id="mr-btn-focus">Focus</button>
         <button class="mr-header-btn ${meeting.layout === 'blackboard' ? 'active' : ''}" id="mr-btn-blackboard">Blackboard</button>
         <button class="mr-header-btn" id="mr-btn-add-sub" title="添加子会话">+ 添加</button>
       </div>
     `;
 
-    document.getElementById('mr-btn-split').addEventListener('click', () => setLayout(meeting.id, 'split'));
     document.getElementById('mr-btn-focus').addEventListener('click', () => setLayout(meeting.id, 'focus'));
     document.getElementById('mr-btn-blackboard').addEventListener('click', () => setLayout(meeting.id, 'blackboard'));
     document.getElementById('mr-btn-add-sub').addEventListener('click', () => showAddSubMenu(meeting.id));
@@ -219,9 +216,8 @@
   function renderTerminals(meeting) {
     const container = terminalsEl();
     if (!container) return;
-
+    container.innerHTML = '';
     if (meeting.layout === 'blackboard') {
-      container.innerHTML = '';
       container.className = 'mr-terminals mr-blackboard';
       subTerminals = {};
       if (typeof MeetingBlackboard !== 'undefined') {
@@ -229,40 +225,9 @@
       }
       return;
     }
-
-    container.innerHTML = '';
-    container.className = meeting.layout === 'focus' ? 'mr-terminals focus-mode' : 'mr-terminals';
-
+    container.className = 'mr-terminals focus-mode';
     subTerminals = {};
-
-    if (meeting.layout === 'focus') {
-      renderFocusMode(meeting, container);
-      return;
-    }
-
-    for (const sessionId of meeting.subSessions) {
-      const slot = createSubSlot(meeting, sessionId);
-      container.appendChild(slot);
-    }
-
-    for (let i = meeting.subSessions.length; i < 3; i++) {
-      const empty = document.createElement('div');
-      empty.className = 'mr-empty-slot';
-      empty.innerHTML = '<div class="mr-empty-slot-icon">+</div><div class="mr-empty-slot-text">点击添加子会话</div>';
-      empty.addEventListener('click', () => showAddSubMenu(meeting.id));
-      container.appendChild(empty);
-    }
-
-    // Open terminals AFTER slots are in the DOM — xterm needs a mounted
-    // container to initialize its canvas. Then fit in the next frame.
-    for (const sessionId of meeting.subSessions) {
-      openSubTerminal(sessionId);
-    }
-    requestAnimationFrame(() => {
-      for (const sessionId of meeting.subSessions) {
-        fitSubTerminal(sessionId);
-      }
-    });
+    renderFocusMode(meeting, container);
   }
 
   function openSubTerminal(sessionId) {
@@ -617,7 +582,7 @@
     const title = session.title || session.kind || 'session';
     const badges = subModelBadgeHtml(session) + subCtxBadgeHtml(session);
     const newHtml = `${escapeHtml(title)}${badges ? ' ' + badges : ''}`;
-    // Update split-mode sub-slot header
+    // Update sub-slot header
     const slot = document.querySelector(`.mr-sub-slot[data-session-id="${payload.sessionId}"]`);
     if (slot) {
       const label = slot.querySelector('.mr-sub-label');

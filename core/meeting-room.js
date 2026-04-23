@@ -13,7 +13,7 @@ class MeetingRoomManager {
       type: 'meeting',
       title: `会议室-${++this._counter}`,
       subSessions: [],
-      layout: 'split',
+      layout: 'focus',
       focusedSub: null,
       syncContext: false,
       sendTarget: 'all',
