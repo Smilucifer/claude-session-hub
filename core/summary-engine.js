@@ -14,6 +14,7 @@ class SummaryEngine {
   constructor(config = {}) {
     this._templatesPath = config.templatesPath || DEFAULT_TEMPLATES_PATH;
     this._templates = null;
+    this._markerCache = new Map();
   }
 
   _loadTemplates() {
@@ -46,31 +47,39 @@ class SummaryEngine {
     return MARKER_INSTRUCTION;
   }
 
-  extractMarker(rawBuffer) {
-    if (!rawBuffer) return '';
+  extractMarker(rawBuffer, sessionId) {
+    if (!rawBuffer) return this._markerCache.get(sessionId) || '';
     const cleaned = stripAnsi(rawBuffer);
     const startIdx = cleaned.lastIndexOf(START_MARKER);
-    if (startIdx < 0) return '';
+    if (startIdx < 0) {
+      return this._markerCache.get(sessionId) || '';
+    }
     const contentStart = startIdx + START_MARKER.length;
     const endIdx = cleaned.indexOf(END_MARKER, contentStart);
     if (endIdx < 0) {
       return cleaned.slice(contentStart).trim();
     }
-    return cleaned.slice(contentStart, endIdx).trim();
+    const content = cleaned.slice(contentStart, endIdx).trim();
+    if (sessionId && content) this._markerCache.set(sessionId, content);
+    return content;
   }
 
-  markerStatus(rawBuffer) {
-    if (!rawBuffer) return 'none';
+  markerStatus(rawBuffer, sessionId) {
+    if (!rawBuffer) return this._markerCache.has(sessionId) ? 'done' : 'none';
     const cleaned = stripAnsi(rawBuffer);
     const startIdx = cleaned.lastIndexOf(START_MARKER);
-    if (startIdx < 0) return 'none';
-    const endIdx = cleaned.indexOf(END_MARKER, startIdx + START_MARKER.length);
-    if (endIdx >= 0) return 'done';
-    return 'streaming';
+    if (startIdx >= 0) {
+      const endIdx = cleaned.indexOf(END_MARKER, startIdx + START_MARKER.length);
+      if (endIdx >= 0) return 'done';
+      return 'streaming';
+    }
+    if (this._markerCache.has(sessionId)) return 'done';
+    if (cleaned.includes(END_MARKER)) return 'done';
+    return 'none';
   }
 
-  quickSummary(rawBuffer) {
-    return this.extractMarker(rawBuffer);
+  quickSummary(rawBuffer, sessionId) {
+    return this.extractMarker(rawBuffer, sessionId);
   }
 
   async deepSummary(rawBuffer, options = {}) {

@@ -372,12 +372,12 @@ ipcMain.handle('get-ring-buffer', (_e, sessionId) => {
 
 ipcMain.handle('quick-summary', (_e, sessionId) => {
   const raw = sessionManager.getSessionBuffer(sessionId);
-  return summaryEngine.quickSummary(raw || '');
+  return summaryEngine.quickSummary(raw || '', sessionId);
 });
 
 ipcMain.handle('marker-status', (_e, sessionId) => {
   const raw = sessionManager.getSessionBuffer(sessionId);
-  return summaryEngine.markerStatus(raw || '');
+  return summaryEngine.markerStatus(raw || '', sessionId);
 });
 
 ipcMain.handle('get-marker-instruction', () => {
