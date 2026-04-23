@@ -7,6 +7,7 @@
 
   let _summaryCache = {};
   let _expandedRaw = {};
+  let _bbFocusedTab = null;
   let _syncing = false;
 
   function escapeHtml(str) {
@@ -26,52 +27,66 @@
   async function renderBlackboard(meeting, container) {
     container.innerHTML = '';
     container.className = 'mr-terminals mr-blackboard';
-
     const subs = meeting.subSessions || [];
     if (subs.length === 0) {
       container.innerHTML = '<div class="mr-bb-empty">暂无子会话，请先添加 AI</div>';
       return;
     }
 
-    // Always refresh L0 summaries (parallel fetch, no stale cache)
-    const freshResults = await Promise.all(
-      subs.map(sid => ipcRenderer.invoke('quick-summary', sid).then(q => ({ sid, quick: q })))
-    );
-    for (const { sid, quick } of freshResults) {
-      const prev = _summaryCache[sid];
-      _summaryCache[sid] = { quick, deep: prev ? prev.deep : '' };
-    }
+    const focused = _bbFocusedTab && subs.includes(_bbFocusedTab) ? _bbFocusedTab : subs[0];
+    _bbFocusedTab = focused;
 
-    // Re-read subs in case meeting changed during await
-    const currentSubs = meeting.subSessions || [];
-
-    for (const sid of currentSubs) {
+    // Tab bar
+    const tabBar = document.createElement('div');
+    tabBar.className = 'mr-bb-tabs';
+    for (const sid of subs) {
       const label = getLabel(sid);
-      const cache = _summaryCache[sid] || { quick: '', deep: '' };
-      const displaySummary = cache.deep || cache.quick || '(暂无输出)';
-      const isExpanded = !!_expandedRaw[sid];
-
-      const col = document.createElement('div');
-      col.className = 'mr-bb-column';
-      col.dataset.sessionId = sid;
-
-      col.innerHTML = `
-        <div class="mr-bb-col-header">
-          <span class="mr-bb-col-label">${escapeHtml(label)}</span>
-          ${cache.deep ? '<span class="mr-bb-badge-deep">深度</span>' : ''}
-        </div>
-        <div class="mr-bb-summary">${escapeHtml(displaySummary)}</div>
-        <button class="mr-bb-toggle-raw">${isExpanded ? '▼ 收起原文' : '▶ 展开原文'}</button>
-        <div class="mr-bb-raw" style="display:${isExpanded ? 'block' : 'none'}">${escapeHtml(cache.quick || '')}</div>
-      `;
-
-      col.querySelector('.mr-bb-toggle-raw').addEventListener('click', () => {
-        _expandedRaw[sid] = !_expandedRaw[sid];
+      const btn = document.createElement('button');
+      btn.className = 'mr-bb-tab' + (sid === focused ? ' active' : '');
+      btn.dataset.sid = sid;
+      btn.textContent = label;
+      btn.addEventListener('click', () => {
+        _bbFocusedTab = sid;
         renderBlackboard(meeting, container);
       });
-
-      container.appendChild(col);
+      tabBar.appendChild(btn);
     }
+    container.appendChild(tabBar);
+
+    // Content area
+    const contentEl = document.createElement('div');
+    contentEl.className = 'mr-bb-content';
+    container.appendChild(contentEl);
+
+    // Fetch summary for focused tab
+    let summary = '';
+    try {
+      summary = await ipcRenderer.invoke('quick-summary', focused);
+    } catch {}
+    _summaryCache[focused] = { quick: summary || '', deep: (_summaryCache[focused] || {}).deep || '' };
+    const displayText = _summaryCache[focused].deep || _summaryCache[focused].quick || '(暂无输出)';
+
+    // Info header with model badge + ctx + time
+    const session = getSession(focused);
+    const infoHtml = [];
+    if (session && session.currentModel) {
+      const cls = typeof modelClass === 'function' ? modelClass(session.currentModel.id) : '';
+      const lbl = typeof modelShort === 'function' ? modelShort(session.currentModel) : (session.currentModel.displayName || '');
+      infoHtml.push('<span class="model-badge ' + cls + '">' + escapeHtml(lbl) + '</span>');
+    }
+    if (session && typeof session.contextPct === 'number') {
+      const cls = typeof pctClass === 'function' ? pctClass(session.contextPct) : 'ok';
+      infoHtml.push('<span class="ctx-badge ' + cls + '">Ctx ' + session.contextPct + '%</span>');
+    }
+    infoHtml.push('<span class="mr-bb-time">最后更新 ' + new Date().toLocaleTimeString() + '</span>');
+
+    // Markdown render
+    const { marked } = require('marked');
+    const renderedHtml = marked.parse(displayText);
+
+    contentEl.innerHTML =
+      '<div class="mr-bb-info">' + infoHtml.join(' ') + '</div>' +
+      '<div class="mr-bb-markdown">' + renderedHtml + '</div>';
   }
 
   function renderBlackboardToolbar(meeting, toolbarEl) {
