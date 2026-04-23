@@ -21,6 +21,7 @@ class MeetingRoomManager {
       lastMessageTime: Date.now(),
       pinned: false,
       status: 'idle',
+      lastScene: 'free_discussion',
     };
     this.meetings.set(id, meeting);
     return { ...meeting };
@@ -60,7 +61,7 @@ class MeetingRoomManager {
   updateMeeting(meetingId, fields) {
     const m = this.meetings.get(meetingId);
     if (!m) return null;
-    const allowed = ['title', 'layout', 'focusedSub', 'syncContext', 'sendTarget', 'pinned', 'lastMessageTime', 'status'];
+    const allowed = ['title', 'layout', 'focusedSub', 'syncContext', 'sendTarget', 'pinned', 'lastMessageTime', 'status', 'lastScene'];
     for (const key of allowed) {
       if (key in fields) m[key] = fields[key];
     }
