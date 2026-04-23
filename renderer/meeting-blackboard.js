@@ -14,6 +14,15 @@
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
+  function getSession(sid) {
+    return (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
+  }
+
+  function getLabel(sid) {
+    const s = getSession(sid);
+    return s ? (s.title || s.kind || 'AI') : 'AI';
+  }
+
   async function renderBlackboard(meeting, container) {
     container.innerHTML = '';
     container.className = 'mr-terminals mr-blackboard';
@@ -24,16 +33,20 @@
       return;
     }
 
-    for (const sid of subs) {
-      if (!_summaryCache[sid]) {
-        const quick = await ipcRenderer.invoke('quick-summary', sid);
-        _summaryCache[sid] = { quick, deep: '' };
-      }
+    // Always refresh L0 summaries (parallel fetch, no stale cache)
+    const freshResults = await Promise.all(
+      subs.map(sid => ipcRenderer.invoke('quick-summary', sid).then(q => ({ sid, quick: q })))
+    );
+    for (const { sid, quick } of freshResults) {
+      const prev = _summaryCache[sid];
+      _summaryCache[sid] = { quick, deep: prev ? prev.deep : '' };
     }
 
-    for (const sid of subs) {
-      const session = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
-      const label = session ? (session.title || session.kind || 'AI') : 'AI';
+    // Re-read subs in case meeting changed during await
+    const currentSubs = meeting.subSessions || [];
+
+    for (const sid of currentSubs) {
+      const label = getLabel(sid);
       const cache = _summaryCache[sid] || { quick: '', deep: '' };
       const displaySummary = cache.deep || cache.quick || '(暂无输出)';
       const isExpanded = !!_expandedRaw[sid];
@@ -66,8 +79,7 @@
 
     let targetHtml = '<option value="all">全部</option>';
     for (const sid of meeting.subSessions) {
-      const session = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
-      const label = session ? (session.title || session.kind || sid) : sid;
+      const label = getLabel(sid);
       const sel = meeting.sendTarget === sid ? ' selected' : '';
       targetHtml += `<option value="${sid}"${sel}>${escapeHtml(label)}</option>`;
     }
@@ -110,18 +122,15 @@
       });
     }
 
-    document.getElementById('mr-bb-quick-sync').addEventListener('click', () => {
-      handleSync(meeting, 'quick');
-    });
-
-    document.getElementById('mr-bb-deep-sync').addEventListener('click', () => {
-      handleSync(meeting, 'deep');
-    });
+    document.getElementById('mr-bb-quick-sync').addEventListener('click', () => handleSync(meeting, 'quick'));
+    document.getElementById('mr-bb-deep-sync').addEventListener('click', () => handleSync(meeting, 'deep'));
   }
 
   async function handleSync(meeting, mode) {
     if (_syncing) return;
     _syncing = true;
+    const toolbarEl = document.getElementById('mr-toolbar');
+    if (toolbarEl) renderBlackboardToolbar(meeting, toolbarEl);
 
     try {
       const sceneEl = document.getElementById('mr-bb-scene-select');
@@ -131,27 +140,28 @@
 
       const targetIds = meeting.sendTarget === 'all'
         ? meeting.subSessions.filter(sid => {
-            const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
+            const s = getSession(sid);
             return s && s.status !== 'dormant';
           })
         : [meeting.sendTarget];
 
       for (const targetId of targetIds) {
         const otherIds = meeting.subSessions.filter(id => id !== targetId);
-        const summaries = [];
 
-        for (const otherId of otherIds) {
-          const session = (typeof sessions !== 'undefined' && sessions) ? sessions.get(otherId) : null;
-          const label = session ? (session.title || session.kind || 'AI') : 'AI';
+        const summaryResults = await Promise.all(otherIds.map(async (otherId) => {
+          const label = getLabel(otherId);
           let summary = '';
 
           if (mode === 'deep') {
-            summary = await ipcRenderer.invoke('deep-summary', {
-              sessionId: otherId,
-              scene,
-              question: userFollowUp || '',
-              agentName: label,
-            });
+            try {
+              summary = await ipcRenderer.invoke('deep-summary', {
+                sessionId: otherId, scene,
+                question: userFollowUp || '',
+                agentName: label,
+              });
+            } catch (e) {
+              console.warn('[blackboard] deep-summary failed for', otherId, e.message);
+            }
             if (summary) {
               if (!_summaryCache[otherId]) _summaryCache[otherId] = { quick: '', deep: '' };
               _summaryCache[otherId].deep = summary;
@@ -162,10 +172,10 @@
             summary = await ipcRenderer.invoke('quick-summary', otherId);
           }
 
-          if (summary) {
-            summaries.push({ label, summary });
-          }
-        }
+          return summary ? { label, summary } : null;
+        }));
+
+        const summaries = summaryResults.filter(Boolean);
 
         if (summaries.length > 0) {
           const payload = await ipcRenderer.invoke('build-injection', { summaries, userFollowUp });
@@ -179,9 +189,6 @@
       }
 
       if (inputBox && userFollowUp) inputBox.textContent = '';
-
-      const container = document.getElementById('mr-terminals');
-      if (container) await renderBlackboard(meeting, container);
 
       const prevLayout = meeting.subSessions.length > 1 ? 'split' : 'focus';
       meeting.layout = prevLayout;

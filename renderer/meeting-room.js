@@ -38,6 +38,7 @@
 
   function closeMeetingPanel() {
     activeMeetingId = null;
+    _inputBound = false;
     const panel = panelEl();
     if (panel) panel.style.display = 'none';
     const el = terminalsEl();
@@ -498,10 +499,9 @@
     for (const id of others) {
       const session = sessions ? sessions.get(id) : null;
       const label = session ? (session.kind || 'session') : 'session';
-      const buf = await ipcRenderer.invoke('get-ring-buffer', id);
-      if (buf) {
-        const truncated = buf.slice(-500).replace(/\r/g, '').trim();
-        const summary = truncated.length > 200 ? truncated.slice(-200) : truncated;
+      const cleaned = await ipcRenderer.invoke('quick-summary', id);
+      if (cleaned) {
+        const summary = cleaned.length > 500 ? cleaned.slice(-500) : cleaned;
         lines.push(`- ${label}: ${summary}`);
       }
     }

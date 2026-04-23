@@ -19,7 +19,7 @@ class SummaryEngine {
       this._templates = JSON.parse(raw);
     } catch (e) {
       console.error('[summary-engine] Failed to load templates:', e.message);
-      this._templates = { scenes: {}, deep: { system: '', promptTemplate: '{{content}}' } };
+      return { scenes: {}, deep: { system: '', promptTemplate: '{{content}}' } };
     }
     return this._templates;
   }
@@ -105,6 +105,9 @@ class SummaryEngine {
         resolve(stdout.trim());
       });
 
+      child.stdin.on('error', (e) => {
+        if (e.code !== 'EPIPE') reject(e);
+      });
       child.stdin.write(prompt);
       child.stdin.end();
     });
