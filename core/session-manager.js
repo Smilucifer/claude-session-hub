@@ -2,7 +2,7 @@ const pty = require('node-pty');
 const { v4: uuid } = require('uuid');
 const { EventEmitter } = require('events');
 
-const RING_BUFFER_BYTES = 8192;
+const RING_BUFFER_BYTES = 16384;
 
 // Default proxy for Claude sessions. Change if your proxy differs.
 const CLAUDE_PROXY = 'http://127.0.0.1:7890';
@@ -106,6 +106,14 @@ class SessionManager extends EventEmitter {
       conptyInheritCursor: !opts.noInheritCursor,
     });
 
+    let currentModel = null;
+    if (isGemini) {
+      const mid = opts.model || 'gemini-2.5-pro';
+      currentModel = { id: mid, displayName: SessionManager.geminiDisplayName(mid) };
+    } else if (isCodex) {
+      currentModel = { id: 'codex', displayName: 'Codex' };
+    }
+
     const now = Date.now();
     const info = {
       id,
@@ -118,6 +126,7 @@ class SessionManager extends EventEmitter {
       createdAt: now,
       cwd: spawnCwd,
       meetingId: opts.meetingId || null,
+      currentModel,
     };
 
     const pendingTimers = [];
@@ -355,6 +364,20 @@ class SessionManager extends EventEmitter {
       s.pty.kill();
     }
     this.sessions.clear();
+  }
+
+  static geminiDisplayName(id) {
+    if (!id) return 'Gemini';
+    return id
+      .replace(/^gemini-/, 'Gemini ')
+      .replace(/-/g, ' ')
+      .replace(/\b\w/g, c => c.toUpperCase())
+      .replace(/^Gemini (\d)/, 'Gemini $1');
+  }
+
+  // Strip ANSI escape codes from terminal output for pattern matching.
+  static stripAnsi(str) {
+    return str.replace(/\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][0-9A-Za-z]|\x1b\[[\?]?[0-9;]*[a-zA-Z]/g, '');
   }
 }
 
