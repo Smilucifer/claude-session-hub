@@ -437,12 +437,38 @@
   function setupInput(meeting) {
     const inputBox = document.getElementById('mr-input-box');
     const sendBtn = document.getElementById('mr-send-btn');
+    const targetSelect = document.getElementById('mr-input-target');
     if (!inputBox || !sendBtn) return;
 
     inputBox.textContent = '';
 
+    if (targetSelect) {
+      targetSelect.innerHTML = '<option value="all">全部</option>';
+      for (const sid of meeting.subSessions) {
+        const session = sessions ? sessions.get(sid) : null;
+        const label = session ? (session.title || session.kind || sid) : sid;
+        const opt = document.createElement('option');
+        opt.value = sid;
+        opt.textContent = label;
+        if (meeting.sendTarget === sid) opt.selected = true;
+        targetSelect.appendChild(opt);
+      }
+      targetSelect.value = meeting.sendTarget || 'all';
+    }
+
     if (_inputBound) return;
     _inputBound = true;
+
+    if (targetSelect) {
+      targetSelect.addEventListener('change', (e) => {
+        const mid = activeMeetingId;
+        const m = meetingData[mid];
+        if (m) {
+          m.sendTarget = e.target.value;
+          ipcRenderer.send('update-meeting', { meetingId: m.id, fields: { sendTarget: m.sendTarget } });
+        }
+      });
+    }
 
     const doSend = () => {
       const box = document.getElementById('mr-input-box');
@@ -451,6 +477,8 @@
       const mid = activeMeetingId;
       const m = meetingData[mid];
       if (!m) return;
+      const sel = document.getElementById('mr-input-target');
+      if (sel) m.sendTarget = sel.value;
       handleMeetingSend(text, m);
       if (box) box.textContent = '';
     };
