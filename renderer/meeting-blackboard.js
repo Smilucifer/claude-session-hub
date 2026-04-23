@@ -58,15 +58,19 @@
     contentEl.className = 'mr-bb-content';
     container.appendChild(contentEl);
 
-    // Fetch summary for focused tab
+    // Fetch summary + marker status for focused tab
     let summary = '';
+    let markerStatus = 'none';
     try {
-      summary = await ipcRenderer.invoke('quick-summary', focused);
+      [summary, markerStatus] = await Promise.all([
+        ipcRenderer.invoke('quick-summary', focused),
+        ipcRenderer.invoke('marker-status', focused),
+      ]);
     } catch {}
     _summaryCache[focused] = { quick: summary || '', deep: (_summaryCache[focused] || {}).deep || '' };
-    const displayText = _summaryCache[focused].deep || _summaryCache[focused].quick || '(暂无输出)';
+    const displayText = _summaryCache[focused].deep || _summaryCache[focused].quick || '';
 
-    // Info header with model badge + ctx + time
+    // Info header with model badge + ctx + marker status + time
     const session = getSession(focused);
     const infoHtml = [];
     if (session && session.currentModel) {
@@ -78,15 +82,26 @@
       const cls = typeof pctClass === 'function' ? pctClass(session.contextPct) : 'ok';
       infoHtml.push('<span class="ctx-badge ' + cls + '">Ctx ' + session.contextPct + '%</span>');
     }
+    if (markerStatus === 'done') infoHtml.push('<span class="mr-marker-status done">✓ 摘要就绪</span>');
+    else if (markerStatus === 'streaming') infoHtml.push('<span class="mr-marker-status streaming">⏳ 输出中</span>');
     infoHtml.push('<span class="mr-bb-time">最后更新 ' + new Date().toLocaleTimeString() + '</span>');
 
-    // Markdown render
-    const { marked } = require('marked');
-    const renderedHtml = marked.parse(displayText);
-
-    contentEl.innerHTML =
-      '<div class="mr-bb-info">' + infoHtml.join(' ') + '</div>' +
-      '<div class="mr-bb-markdown">' + renderedHtml + '</div>';
+    // Content: marker-based display
+    if (displayText) {
+      const { marked } = require('marked');
+      const renderedHtml = marked.parse(displayText);
+      contentEl.innerHTML =
+        '<div class="mr-bb-info">' + infoHtml.join(' ') + '</div>' +
+        '<div class="mr-bb-markdown">' + renderedHtml + '</div>';
+    } else if (markerStatus === 'streaming') {
+      contentEl.innerHTML =
+        '<div class="mr-bb-info">' + infoHtml.join(' ') + '</div>' +
+        '<div class="mr-bb-summary" style="color:var(--text-secondary);font-style:italic">正在输出中…</div>';
+    } else {
+      contentEl.innerHTML =
+        '<div class="mr-bb-info">' + infoHtml.join(' ') + '</div>' +
+        '<div class="mr-bb-summary" style="color:var(--text-secondary);font-style:italic">未检测到摘要标记。请确认 AI 已完成回答。</div>';
+    }
   }
 
   function renderBlackboardToolbar(meeting, toolbarEl) {
