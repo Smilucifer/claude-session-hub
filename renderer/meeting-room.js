@@ -85,7 +85,7 @@
     const focused = meeting.focusedSub || meeting.subSessions[0];
 
     let tabsHtml = '';
-    if (!layoutSplit && meeting.subSessions.length > 0) {
+    if (meeting.layout === 'focus' && meeting.subSessions.length > 0) {
       const tabs = meeting.subSessions.map(sid => {
         const s = sessions ? sessions.get(sid) : null;
         const label = s ? (s.title || s.kind) : 'session';
@@ -101,14 +101,16 @@
         ${tabsHtml}
       </div>
       <div class="mr-header-right">
-        <button class="mr-header-btn ${layoutSplit ? 'active' : ''}" id="mr-btn-split">Split</button>
-        <button class="mr-header-btn ${!layoutSplit ? 'active' : ''}" id="mr-btn-focus">Focus</button>
+        <button class="mr-header-btn ${meeting.layout === 'split' ? 'active' : ''}" id="mr-btn-split">Split</button>
+        <button class="mr-header-btn ${meeting.layout === 'focus' ? 'active' : ''}" id="mr-btn-focus">Focus</button>
+        <button class="mr-header-btn ${meeting.layout === 'blackboard' ? 'active' : ''}" id="mr-btn-blackboard">Blackboard</button>
         <button class="mr-header-btn" id="mr-btn-add-sub" title="添加子会话">+ 添加</button>
       </div>
     `;
 
     document.getElementById('mr-btn-split').addEventListener('click', () => setLayout(meeting.id, 'split'));
     document.getElementById('mr-btn-focus').addEventListener('click', () => setLayout(meeting.id, 'focus'));
+    document.getElementById('mr-btn-blackboard').addEventListener('click', () => setLayout(meeting.id, 'blackboard'));
     document.getElementById('mr-btn-add-sub').addEventListener('click', () => showAddSubMenu(meeting.id));
 
     // Focus mode tab click → switch focused sub-session
@@ -213,6 +215,17 @@
   function renderTerminals(meeting) {
     const container = terminalsEl();
     if (!container) return;
+
+    if (meeting.layout === 'blackboard') {
+      container.innerHTML = '';
+      container.className = 'mr-terminals mr-blackboard';
+      subTerminals = {};
+      if (typeof MeetingBlackboard !== 'undefined') {
+        MeetingBlackboard.renderBlackboard(meeting, container);
+      }
+      return;
+    }
+
     container.innerHTML = '';
     container.className = meeting.layout === 'focus' ? 'mr-terminals focus-mode' : 'mr-terminals';
 
@@ -257,6 +270,19 @@
     }
   }
 
+  function subModelBadgeHtml(session) {
+    if (!session || !session.currentModel) return '';
+    const cls = typeof modelClass === 'function' ? modelClass(session.currentModel.id) : '';
+    const label = typeof modelShort === 'function' ? modelShort(session.currentModel) : (session.currentModel.displayName || '');
+    return `<span class="model-badge ${cls}" title="${escapeHtml(session.currentModel.id)}">${escapeHtml(label)}</span>`;
+  }
+
+  function subCtxBadgeHtml(session) {
+    if (!session || typeof session.contextPct !== 'number') return '';
+    const cls = typeof pctClass === 'function' ? pctClass(session.contextPct) : 'ok';
+    return `<span class="ctx-badge ${cls}" title="Context ${session.contextPct}%">Ctx ${session.contextPct}%</span>`;
+  }
+
   function createSubSlot(meeting, sessionId) {
     const session = sessions ? sessions.get(sessionId) : null;
     const isDormant = session && session.status === 'dormant';
@@ -267,10 +293,11 @@
     slot.className = 'mr-sub-slot' + (isSelected ? ' selected' : '') + (isDormant ? ' dormant' : '');
     slot.dataset.sessionId = sessionId;
 
+    const badgeHtml = subModelBadgeHtml(session) + subCtxBadgeHtml(session);
     const header = document.createElement('div');
     header.className = 'mr-sub-header';
     header.innerHTML = `
-      <span class="mr-sub-label">${escapeHtml(slotTitle)}</span>
+      <span class="mr-sub-label">${escapeHtml(slotTitle)}${badgeHtml ? ' ' + badgeHtml : ''}</span>
       <button class="mr-sub-close" title="关闭此会话">✕</button>
     `;
 
@@ -360,6 +387,13 @@
   function renderToolbar(meeting) {
     const el = toolbarEl();
     if (!el) return;
+
+    if (meeting.layout === 'blackboard') {
+      if (typeof MeetingBlackboard !== 'undefined') {
+        MeetingBlackboard.renderBlackboardToolbar(meeting, el);
+      }
+      return;
+    }
 
     let optionsHtml = '<option value="all">全部</option>';
     for (const sid of meeting.subSessions) {
@@ -537,6 +571,22 @@
     if (!str) return '';
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
+
+  // --- Live badge refresh on status-event ---
+  ipcRenderer.on('status-event', (_e, payload) => {
+    if (!activeMeetingId) return;
+    const meeting = meetingData[activeMeetingId];
+    if (!meeting || !meeting.subSessions.includes(payload.sessionId)) return;
+    const slot = document.querySelector(`.mr-sub-slot[data-session-id="${payload.sessionId}"]`);
+    if (!slot) return;
+    const session = sessions ? sessions.get(payload.sessionId) : null;
+    const label = slot.querySelector('.mr-sub-label');
+    if (label && session) {
+      const title = session.title || session.kind || 'session';
+      const badges = subModelBadgeHtml(session) + subCtxBadgeHtml(session);
+      label.innerHTML = `${escapeHtml(title)}${badges ? ' ' + badges : ''}`;
+    }
+  });
 
   // --- Expose global ---
 
