@@ -375,6 +375,15 @@ ipcMain.handle('quick-summary', (_e, sessionId) => {
   return summaryEngine.quickSummary(raw || '');
 });
 
+ipcMain.handle('marker-status', (_e, sessionId) => {
+  const raw = sessionManager.getSessionBuffer(sessionId);
+  return summaryEngine.markerStatus(raw || '');
+});
+
+ipcMain.handle('get-marker-instruction', () => {
+  return summaryEngine.getMarkerInstruction();
+});
+
 ipcMain.handle('deep-summary', async (_e, { sessionId, scene, question, agentName }) => {
   const raw = sessionManager.getSessionBuffer(sessionId);
   if (!raw) return '';

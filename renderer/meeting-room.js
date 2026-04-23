@@ -111,6 +111,9 @@
         <button class="mr-header-btn ${meeting.layout === 'focus' ? 'active' : ''}" id="mr-btn-focus">Focus</button>
         <button class="mr-header-btn ${meeting.layout === 'blackboard' ? 'active' : ''}" id="mr-btn-blackboard">Blackboard</button>
         <button class="mr-header-btn" id="mr-btn-add-sub" title="添加子会话">+ 添加</button>
+        <button class="btn-zoom" id="mr-btn-zoom-out" title="Shrink UI">A−</button>
+        <button class="btn-zoom" id="mr-btn-zoom-in" title="Enlarge UI">A+</button>
+        <button class="btn-close-session" id="mr-btn-close" title="关闭会议室" aria-label="Close meeting"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg></button>
       </div>
     `;
 
@@ -482,14 +485,15 @@
         })
       : [current.sendTarget];
 
+    const markerInstruction = await ipcRenderer.invoke('get-marker-instruction');
+
     for (const sessionId of targets) {
-      let payload = text;
+      let payload = text + markerInstruction;
       if (meeting.syncContext) {
         const context = await buildContextSummary(meeting, sessionId);
         payload = context + payload;
       }
       ipcRenderer.send('terminal-input', { sessionId, data: payload });
-      // Send Enter separately so TUI apps (Claude/Gemini) register it as submit
       setTimeout(() => {
         ipcRenderer.send('terminal-input', { sessionId, data: '\r' });
       }, 80);
