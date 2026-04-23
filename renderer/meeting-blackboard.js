@@ -92,8 +92,6 @@
       <label>场景: <select class="mr-target-select" id="${sceneSelectId}">
         <option value="free_discussion">自动</option>
       </select></label>
-      <button class="mr-header-btn" id="mr-bb-quick-sync" ${_syncing ? 'disabled' : ''}>快速同步</button>
-      <button class="mr-header-btn" id="mr-bb-deep-sync" style="background:var(--accent);color:#fff" ${_syncing ? 'disabled' : ''}>深度同步</button>
     `;
 
     ipcRenderer.invoke('get-summary-scenes').then(scenes => {
@@ -122,8 +120,6 @@
       });
     }
 
-    document.getElementById('mr-bb-quick-sync').addEventListener('click', () => handleSync(meeting, 'quick'));
-    document.getElementById('mr-bb-deep-sync').addEventListener('click', () => handleSync(meeting, 'deep'));
   }
 
   async function handleSync(meeting, mode) {
@@ -190,14 +186,44 @@
 
       if (inputBox && userFollowUp) inputBox.textContent = '';
 
-      const prevLayout = meeting.subSessions.length > 1 ? 'split' : 'focus';
-      meeting.layout = prevLayout;
-      ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { layout: prevLayout } });
-      if (typeof MeetingRoom !== 'undefined') {
-        MeetingRoom.openMeeting(meeting.id, meeting);
-      }
+      const container = document.querySelector('.mr-blackboard');
+      if (container) renderBlackboard(meeting, container);
     } catch (err) {
       console.error('[blackboard] sync error:', err);
+    } finally {
+      _syncing = false;
+    }
+  }
+
+  async function handleSyncFromFocus(meeting) {
+    if (_syncing) return;
+    _syncing = true;
+    try {
+      const inputBox = document.getElementById('mr-input-box');
+      const userFollowUp = inputBox ? inputBox.innerText.trim() : '';
+      const targetIds = meeting.sendTarget === 'all'
+        ? meeting.subSessions.filter(sid => { const s = getSession(sid); return s && s.status !== 'dormant'; })
+        : [meeting.sendTarget];
+
+      for (const targetId of targetIds) {
+        const otherIds = meeting.subSessions.filter(id => id !== targetId);
+        const summaryResults = await Promise.all(otherIds.map(async (otherId) => {
+          const label = getLabel(otherId);
+          const summary = await ipcRenderer.invoke('quick-summary', otherId);
+          return summary ? { label, summary } : null;
+        }));
+        const summaries = summaryResults.filter(Boolean);
+        if (summaries.length > 0) {
+          const payload = await ipcRenderer.invoke('build-injection', { summaries, userFollowUp });
+          if (payload) {
+            ipcRenderer.send('terminal-input', { sessionId: targetId, data: payload });
+            setTimeout(() => ipcRenderer.send('terminal-input', { sessionId: targetId, data: '\r' }), 80);
+          }
+        }
+      }
+      if (inputBox && userFollowUp) inputBox.textContent = '';
+    } catch (err) {
+      console.error('[blackboard] sync from focus error:', err);
     } finally {
       _syncing = false;
     }
@@ -212,5 +238,6 @@
     renderBlackboard,
     renderBlackboardToolbar,
     clearCache,
+    handleSyncFromFocus,
   };
 })();

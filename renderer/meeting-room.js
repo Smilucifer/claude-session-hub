@@ -386,6 +386,7 @@
 
     el.innerHTML = `
       <label>发送到: <select class="mr-target-select" id="mr-target-select">${optionsHtml}</select></label>
+      <button class="mr-header-btn" id="mr-sync-btn">⟳ 同步</button>
       <div class="mr-sync-toggle ${meeting.syncContext ? 'active' : ''}" id="mr-sync-toggle">
         <span>自动同步: ${meeting.syncContext ? '开' : '关'}</span>
       </div>
@@ -401,6 +402,12 @@
       meeting.syncContext = !meeting.syncContext;
       ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { syncContext: meeting.syncContext } });
       renderToolbar(meeting);
+    });
+
+    document.getElementById('mr-sync-btn').addEventListener('click', () => {
+      if (typeof MeetingBlackboard !== 'undefined' && MeetingBlackboard.handleSyncFromFocus) {
+        MeetingBlackboard.handleSyncFromFocus(meeting);
+      }
     });
   }
 
