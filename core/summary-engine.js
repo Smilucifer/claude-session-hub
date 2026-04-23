@@ -2,9 +2,13 @@
 const { execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-const { stripAnsi, removePromptNoise, extractLastResponse, smartTruncate } = require('./ansi-utils');
+const { stripAnsi } = require('./ansi-utils');
 
 const DEFAULT_TEMPLATES_PATH = path.join(__dirname, '..', 'config', 'summary-templates.json');
+
+const START_MARKER = '<<<MEETING_SUMMARY>>>';
+const END_MARKER = '<<<END_SUMMARY>>>';
+const MARKER_INSTRUCTION = '\n\n（请在回答的最末尾，用 <<<MEETING_SUMMARY>>> 和 <<<END_SUMMARY>>> 标记包裹核心摘要（100-300字），保留关键结论与依据。若内容复杂难以精简，可将完整分析写入 .md 文件，标记内只需注明文件路径。不要解释这些标记。）';
 
 class SummaryEngine {
   constructor(config = {}) {
@@ -38,21 +42,42 @@ class SummaryEngine {
     return result;
   }
 
-  quickSummary(rawBuffer) {
+  getMarkerInstruction() {
+    return MARKER_INSTRUCTION;
+  }
+
+  extractMarker(rawBuffer) {
     if (!rawBuffer) return '';
-    let cleaned = stripAnsi(rawBuffer);
-    cleaned = removePromptNoise(cleaned);
-    cleaned = extractLastResponse(cleaned);
-    return smartTruncate(cleaned, 2000);
+    const cleaned = stripAnsi(rawBuffer);
+    const startIdx = cleaned.lastIndexOf(START_MARKER);
+    if (startIdx < 0) return '';
+    const contentStart = startIdx + START_MARKER.length;
+    const endIdx = cleaned.indexOf(END_MARKER, contentStart);
+    if (endIdx < 0) {
+      return cleaned.slice(contentStart).trim();
+    }
+    return cleaned.slice(contentStart, endIdx).trim();
+  }
+
+  markerStatus(rawBuffer) {
+    if (!rawBuffer) return 'none';
+    const cleaned = stripAnsi(rawBuffer);
+    const hasStart = cleaned.lastIndexOf(START_MARKER) >= 0;
+    const hasEnd = cleaned.lastIndexOf(END_MARKER) >= 0;
+    if (hasStart && hasEnd) return 'done';
+    if (hasStart) return 'streaming';
+    return 'none';
+  }
+
+  quickSummary(rawBuffer) {
+    return this.extractMarker(rawBuffer);
   }
 
   async deepSummary(rawBuffer, options = {}) {
     const { agentName = 'AI', question = '', scene = 'free_discussion' } = options;
 
-    let cleaned = stripAnsi(rawBuffer);
-    cleaned = removePromptNoise(cleaned);
-    cleaned = extractLastResponse(cleaned);
-    if (!cleaned) return '';
+    const content = this.extractMarker(rawBuffer);
+    if (!content) return '';
 
     const t = this._loadTemplates();
     const sceneConfig = (t.scenes || {})[scene] || (t.scenes || {}).free_discussion || {};
@@ -63,15 +88,15 @@ class SummaryEngine {
     const prompt = template
       .replace('{{agent_name}}', agentName)
       .replace('{{question}}', question)
-      .replace('{{content}}', cleaned)
+      .replace('{{content}}', content)
       .replace('{{instruction}}', instruction);
 
     try {
       const summary = await this._callGeminiPipe(system, prompt);
       return summary;
     } catch (err) {
-      console.error('[summary-engine] Gemini pipe failed, falling back to L0:', err.message);
-      return smartTruncate(cleaned, 2000);
+      console.error('[summary-engine] Gemini pipe failed:', err.message);
+      return '';
     }
   }
 
@@ -114,4 +139,4 @@ class SummaryEngine {
   }
 }
 
-module.exports = { SummaryEngine };
+module.exports = { SummaryEngine, START_MARKER, END_MARKER, MARKER_INSTRUCTION };
