@@ -126,6 +126,8 @@
           ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { focusedSub: sid } });
           renderTerminals(meeting);
           renderHeader(meeting);
+          const cached = subTerminals[sid];
+          if (cached && cached.terminal) cached.terminal.scrollToBottom();
         }
       });
     }
@@ -324,6 +326,10 @@
 
     const termContainer = document.createElement('div');
     termContainer.className = 'mr-sub-terminal';
+    termContainer.addEventListener('click', () => {
+      const cached = subTerminals[sessionId];
+      if (cached && cached.terminal) cached.terminal.scrollToBottom();
+    });
     slot.appendChild(termContainer);
 
     if (!isDormant && typeof getOrCreateTerminal === 'function') {
