@@ -12,6 +12,8 @@ const { createMobileServer } = require('./core/mobile-server.js');
 const mobileAuth = require('./core/mobile-auth.js');
 const { getHubDataDir } = require('./core/data-dir.js');
 const { MeetingRoomManager } = require('./core/meeting-room.js');
+const { SummaryEngine } = require('./core/summary-engine');
+const summaryEngine = new SummaryEngine();
 
 // Isolate Chromium userData when CLAUDE_HUB_DATA_DIR is set (parallel test
 // instances). Must run before app.whenReady(). Production Hub unaffected
@@ -350,6 +352,25 @@ ipcMain.handle('get-ring-buffer', (_e, sessionId) => {
   return sessionManager.getSessionBuffer(sessionId);
 });
 
+ipcMain.handle('quick-summary', (_e, sessionId) => {
+  const raw = sessionManager.getSessionBuffer(sessionId);
+  return summaryEngine.quickSummary(raw || '');
+});
+
+ipcMain.handle('deep-summary', async (_e, { sessionId, scene, question, agentName }) => {
+  const raw = sessionManager.getSessionBuffer(sessionId);
+  if (!raw) return '';
+  return await summaryEngine.deepSummary(raw, { agentName, question, scene });
+});
+
+ipcMain.handle('get-summary-scenes', () => {
+  return summaryEngine.getScenes();
+});
+
+ipcMain.handle('build-injection', (_e, { summaries, userFollowUp }) => {
+  return summaryEngine.buildInjection(summaries, userFollowUp);
+});
+
 ipcMain.on('update-meeting', (_e, { meetingId, fields }) => {
   const updated = meetingManager.updateMeeting(meetingId, fields);
   if (updated) sendToRenderer('meeting-updated', { meeting: updated });
@@ -651,6 +672,7 @@ const hookServer = http.createServer((req, res) => {
           linesAdded: parsed.linesAdded,
           linesRemoved: parsed.linesRemoved,
         });
+        if (parsed.usage5h || parsed.usage7d) cacheAccountUsage({ usage5h: parsed.usage5h, usage7d: parsed.usage7d });
         if (teamSessionManager) {
           teamSessionManager.updateStatusForSession(parsed.sessionId, parsed);
         }
@@ -682,6 +704,156 @@ function listenWithFallback() {
   });
 }
 
+// --- Account usage cache ---
+// Persist the latest Claude account usage so the sidebar renders immediately on
+// restart without waiting for the first statusline callback.
+const USAGE_CACHE_FILE = path.join(getHubDataDir(), 'usage-cache.json');
+
+function cacheAccountUsage(data) {
+  try {
+    const existing = loadUsageCache();
+    if (data.usage5h) existing.claude = { usage5h: data.usage5h, usage7d: data.usage7d, ts: Date.now() };
+    fs.mkdirSync(path.dirname(USAGE_CACHE_FILE), { recursive: true });
+    fs.writeFileSync(USAGE_CACHE_FILE, JSON.stringify(existing));
+  } catch {}
+}
+
+function cacheAgentUsage(provider, tokenData) {
+  try {
+    const existing = loadUsageCache();
+    existing[provider] = { ...tokenData, ts: Date.now() };
+    fs.mkdirSync(path.dirname(USAGE_CACHE_FILE), { recursive: true });
+    fs.writeFileSync(USAGE_CACHE_FILE, JSON.stringify(existing));
+  } catch {}
+}
+
+function loadUsageCache() {
+  try { return JSON.parse(fs.readFileSync(USAGE_CACHE_FILE, 'utf8')); } catch { return {}; }
+}
+
+ipcMain.handle('get-usage-cache', () => loadUsageCache());
+
+// --- Gemini/Codex ring-buffer usage scanner ---
+// Periodically scans agent sessions' ring buffers for token/model patterns
+// and emits status-event so the renderer can show context/usage badges.
+const _agentLastStatus = new Map();
+
+function stripAnsi(str) {
+  return str.replace(/\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][0-9A-Za-z]/g, '');
+}
+
+function parseGeminiUsage(plain) {
+  const result = {};
+  const modelMatch = plain.match(/model[:\s]+(\bgemini[-\w.]+)/i);
+  if (modelMatch) result.model = { id: modelMatch[1], displayName: SessionManager.geminiDisplayName(modelMatch[1]) };
+  const tokenMatch = plain.match(/(\d[\d,]+)\s*(?:input\s*)?tokens?/i);
+  if (tokenMatch) result.tokensUsed = parseInt(tokenMatch[1].replace(/,/g, ''), 10);
+  if (result.tokensUsed) {
+    const ctxMax = 1048576;
+    result.contextPct = Math.round((result.tokensUsed / ctxMax) * 100);
+    result.contextUsed = result.tokensUsed;
+    result.contextMax = ctxMax;
+  }
+  return result;
+}
+
+function parseCodexUsage(plain) {
+  const result = {};
+  const modelMatch = plain.match(/model[:\s]+([\w.-]+)/i);
+  if (modelMatch && modelMatch[1] !== 'badge') {
+    result.model = { id: modelMatch[1], displayName: modelMatch[1].replace(/-/g, ' ').replace(/\bo\d/i, m => m.toUpperCase()) };
+  }
+  const tokenMatch = plain.match(/(\d[\d,]+)\s*tokens?/i);
+  if (tokenMatch) result.tokensUsed = parseInt(tokenMatch[1].replace(/,/g, ''), 10);
+  if (result.tokensUsed) {
+    const ctxMax = 200000;
+    result.contextPct = Math.round((result.tokensUsed / ctxMax) * 100);
+    result.contextUsed = result.tokensUsed;
+    result.contextMax = ctxMax;
+  }
+  return result;
+}
+
+// Token-based rolling-window tracker for Gemini/Codex.
+// Accumulates tokens over 5h and 7d windows, estimates usage% against known limits.
+// Known rate limits (tokens per window) — conservative estimates for paid plans.
+const AGENT_LIMITS = {
+  gemini: { tokens5h: 2_000_000, tokens7d: 50_000_000 },
+  codex:  { tokens5h: 1_000_000, tokens7d: 10_000_000 },
+};
+const _agentTokenLog = { gemini: [], codex: [] }; // [{ts, tokens}]
+
+function recordAgentTokens(kind, tokens) {
+  if (!_agentTokenLog[kind]) return;
+  _agentTokenLog[kind].push({ ts: Date.now(), tokens });
+}
+
+function calcAgentUsage(kind) {
+  const log = _agentTokenLog[kind];
+  if (!log) return null;
+  const now = Date.now();
+  const H5 = 5 * 3600 * 1000;
+  const D7 = 7 * 86400 * 1000;
+  // Prune entries older than 7d
+  while (log.length && log[0].ts < now - D7) log.shift();
+  const tok5h = log.filter(e => e.ts >= now - H5).reduce((s, e) => s + e.tokens, 0);
+  const tok7d = log.reduce((s, e) => s + e.tokens, 0);
+  const lim = AGENT_LIMITS[kind];
+  if (!lim) return null;
+  if (tok5h === 0 && tok7d === 0) return null;
+  return {
+    usage5h: { pct: Math.min(100, Math.round(tok5h / lim.tokens5h * 100)), resetsAt: now + H5 },
+    usage7d: { pct: Math.min(100, Math.round(tok7d / lim.tokens7d * 100)), resetsAt: now + D7 },
+  };
+}
+
+function scanAgentSessions() {
+  const allSessions = sessionManager.getAllSessions();
+  for (const s of allSessions) {
+    if (s.kind !== 'gemini' && s.kind !== 'codex') continue;
+    if (s.status === 'dormant') continue;
+    const buf = sessionManager.getSessionBuffer(s.id);
+    if (!buf) continue;
+    const plain = stripAnsi(buf);
+    const parsed = s.kind === 'gemini' ? parseGeminiUsage(plain) : parseCodexUsage(plain);
+    if (parsed.tokensUsed) {
+      const prev = _agentLastStatus.get(s.id + ':tok');
+      if (prev !== parsed.tokensUsed) {
+        const delta = prev ? parsed.tokensUsed - prev : parsed.tokensUsed;
+        if (delta > 0) recordAgentTokens(s.kind, delta);
+        _agentLastStatus.set(s.id + ':tok', parsed.tokensUsed);
+      }
+    }
+    if (!parsed.model && !parsed.tokensUsed) continue;
+    const prev = _agentLastStatus.get(s.id);
+    const sig = JSON.stringify(parsed);
+    if (prev === sig) continue;
+    _agentLastStatus.set(s.id, sig);
+    const payload = { sessionId: s.id };
+    if (parsed.contextPct != null) payload.contextPct = parsed.contextPct;
+    if (parsed.contextUsed != null) payload.contextUsed = parsed.contextUsed;
+    if (parsed.contextMax != null) payload.contextMax = parsed.contextMax;
+    if (parsed.model) payload.model = parsed.model;
+    sendToRenderer('status-event', payload);
+  }
+  // Build and broadcast per-provider 5h/7d usage
+  const agentData = {};
+  for (const kind of ['gemini', 'codex']) {
+    const usage = calcAgentUsage(kind);
+    if (usage) {
+      agentData[kind] = usage;
+      cacheAgentUsage(kind, usage);
+    }
+  }
+  if (Object.keys(agentData).length > 0) sendToRenderer('agent-usage', agentData);
+}
+
+let _agentScanInterval = null;
+function startAgentScanner() {
+  if (_agentScanInterval) return;
+  _agentScanInterval = setInterval(scanAgentSessions, 5000);
+}
+
 app.whenReady().then(async () => {
   ensureHooksDeployed();
   hookPort = await listenWithFallback();
@@ -710,6 +882,7 @@ app.whenReady().then(async () => {
     global.__mobileSrv = null;
   }
   createWindow();
+  startAgentScanner();
   // Push status to renderer after window is ready
   if (mainWindow) {
     mainWindow.webContents.on('did-finish-load', () => {
