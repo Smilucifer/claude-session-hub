@@ -89,7 +89,8 @@
     // Content: marker-based display
     if (displayText) {
       const { marked } = require('marked');
-      const renderedHtml = marked.parse(displayText);
+      const DOMPurify = require('dompurify');
+      const renderedHtml = DOMPurify.sanitize(marked.parse(displayText));
       contentEl.innerHTML =
         '<div class="mr-bb-info">' + infoHtml.join(' ') + '</div>' +
         '<div class="mr-bb-markdown">' + renderedHtml + '</div>';

@@ -62,11 +62,11 @@ class SummaryEngine {
   markerStatus(rawBuffer) {
     if (!rawBuffer) return 'none';
     const cleaned = stripAnsi(rawBuffer);
-    const hasStart = cleaned.lastIndexOf(START_MARKER) >= 0;
-    const hasEnd = cleaned.lastIndexOf(END_MARKER) >= 0;
-    if (hasStart && hasEnd) return 'done';
-    if (hasStart) return 'streaming';
-    return 'none';
+    const startIdx = cleaned.lastIndexOf(START_MARKER);
+    if (startIdx < 0) return 'none';
+    const endIdx = cleaned.indexOf(END_MARKER, startIdx + START_MARKER.length);
+    if (endIdx >= 0) return 'done';
+    return 'streaming';
   }
 
   quickSummary(rawBuffer) {
@@ -77,7 +77,10 @@ class SummaryEngine {
     const { agentName = 'AI', question = '', scene = 'free_discussion' } = options;
 
     const content = this.extractMarker(rawBuffer);
-    if (!content) return '';
+    if (!content) {
+      console.warn('[summary-engine] deepSummary: no marker content for', agentName);
+      return '';
+    }
 
     const t = this._loadTemplates();
     const sceneConfig = (t.scenes || {})[scene] || (t.scenes || {}).free_discussion || {};

@@ -114,17 +114,24 @@
         ${tabsHtml}
       </div>
       <div class="mr-header-right">
-        <button class="mr-header-btn ${meeting.layout === 'split' ? 'active' : ''}" id="mr-btn-split">Split</button>
         <button class="mr-header-btn ${meeting.layout === 'focus' ? 'active' : ''}" id="mr-btn-focus">Focus</button>
         <button class="mr-header-btn ${meeting.layout === 'blackboard' ? 'active' : ''}" id="mr-btn-blackboard">Blackboard</button>
         <button class="mr-header-btn" id="mr-btn-add-sub" title="添加子会话">+ 添加</button>
+        <button class="btn-zoom" id="mr-btn-zoom-out" title="Shrink UI">A−</button>
+        <button class="btn-zoom" id="mr-btn-zoom-in" title="Enlarge UI">A+</button>
+        <button class="btn-close-session" id="mr-btn-close" title="关闭会议室" aria-label="Close meeting"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg></button>
       </div>
     `;
 
-    document.getElementById('mr-btn-split').addEventListener('click', () => setLayout(meeting.id, 'split'));
     document.getElementById('mr-btn-focus').addEventListener('click', () => setLayout(meeting.id, 'focus'));
     document.getElementById('mr-btn-blackboard').addEventListener('click', () => setLayout(meeting.id, 'blackboard'));
     document.getElementById('mr-btn-add-sub').addEventListener('click', () => showAddSubMenu(meeting.id));
+    document.getElementById('mr-btn-zoom-out').addEventListener('click', () => { if (typeof applyZoom === 'function') applyZoom(currentZoom - 1); });
+    document.getElementById('mr-btn-zoom-in').addEventListener('click', () => { if (typeof applyZoom === 'function') applyZoom(currentZoom + 1); });
+    document.getElementById('mr-btn-close').addEventListener('click', async () => {
+      await ipcRenderer.invoke('close-meeting', meeting.id);
+      closeMeetingPanel();
+    });
 
     // Focus mode tab click → switch focused sub-session
     const tabsEl = document.getElementById('mr-tabs');
@@ -338,6 +345,7 @@
     header.querySelector('.mr-sub-close').addEventListener('click', async () => {
       const result = await ipcRenderer.invoke('remove-meeting-sub', { meetingId: meeting.id, sessionId });
       if (result) {
+        delete _markerStatusCache[sessionId];
         meetingData[meeting.id] = result;
         renderTerminals(result);
         renderToolbar(result);
