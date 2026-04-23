@@ -8,6 +8,8 @@
   let activeMeetingId = null;
   let meetingData = {};
   let subTerminals = {};
+  let _markerStatusCache = {};
+  let _markerPollTimer = null;
   const _tabState = {};     // { sessionId: 'streaming'|'new-output'|'idle'|'error' }
   const _tabTimers = {};    // { sessionId: silenceTimerId }
 
@@ -36,11 +38,14 @@
     renderTerminals(meeting);
     renderToolbar(meeting);
     setupInput(meeting);
+    startMarkerPoll();
   }
 
   function closeMeetingPanel() {
     activeMeetingId = null;
     _inputBound = false;
+    stopMarkerPoll();
+    _markerStatusCache = {};
     const panel = panelEl();
     if (panel) panel.style.display = 'none';
     const el = terminalsEl();
@@ -94,10 +99,11 @@
         const badges = subModelBadgeHtml(s) + subCtxBadgeHtml(s);
         const cls = sid === focused ? 'mr-tab active' : 'mr-tab';
         const state = _tabState[sid] || 'idle';
+        const markerBadge = markerStatusHtml(sid);
         const statusDot = `<span class="mr-tab-status ${state}"></span>`;
         const newBadge = state === 'new-output' ? ' <span class="new-badge">NEW</span>' : '';
         const hasNewCls = state === 'new-output' ? ' has-new' : '';
-        return `<button class="${cls}${hasNewCls}" data-sid="${sid}">${statusDot}${escapeHtml(label)}${badges ? ' ' + badges : ''}${newBadge}</button>`;
+        return `<button class="${cls}${hasNewCls}" data-sid="${sid}">${statusDot}${escapeHtml(label)}${badges ? ' ' + badges : ''} ${markerBadge}${newBadge}</button>`;
       }).join('');
       tabsHtml = `<div class="mr-tabs" id="mr-tabs">${tabs}</div>`;
     }
@@ -266,6 +272,45 @@
     return `<span class="ctx-badge ${cls}" title="Context ${session.contextPct}%">Ctx ${session.contextPct}%</span>`;
   }
 
+  function markerStatusHtml(sessionId) {
+    const cache = _markerStatusCache[sessionId];
+    if (cache === 'done') return '<span class="mr-marker-status mr-marker-badge done">✓</span>';
+    if (cache === 'streaming') return '<span class="mr-marker-status mr-marker-badge streaming">⏳</span>';
+    return '<span class="mr-marker-status mr-marker-badge none">—</span>';
+  }
+
+  function startMarkerPoll() {
+    if (_markerPollTimer) return;
+    _markerPollTimer = setInterval(async () => {
+      if (!activeMeetingId) return;
+      const meeting = meetingData[activeMeetingId];
+      if (!meeting) return;
+      let changed = false;
+      for (const sid of meeting.subSessions) {
+        const status = await ipcRenderer.invoke('marker-status', sid);
+        if (_markerStatusCache[sid] !== status) {
+          _markerStatusCache[sid] = status;
+          changed = true;
+        }
+      }
+      if (changed) updateMarkerBadges(meeting);
+    }, 2000);
+  }
+
+  function stopMarkerPoll() {
+    if (_markerPollTimer) { clearInterval(_markerPollTimer); _markerPollTimer = null; }
+  }
+
+  function updateMarkerBadges(meeting) {
+    for (const sid of meeting.subSessions) {
+      const newHtml = markerStatusHtml(sid);
+      const slotBadge = document.querySelector(`.mr-sub-slot[data-session-id="${sid}"] .mr-marker-badge`);
+      if (slotBadge) slotBadge.outerHTML = newHtml;
+      const tabBadge = document.querySelector(`.mr-tab[data-sid="${sid}"] .mr-marker-badge`);
+      if (tabBadge) tabBadge.outerHTML = newHtml;
+    }
+  }
+
   function createSubSlot(meeting, sessionId) {
     const session = sessions ? sessions.get(sessionId) : null;
     const isDormant = session && session.status === 'dormant';
@@ -277,10 +322,11 @@
     slot.dataset.sessionId = sessionId;
 
     const badgeHtml = subModelBadgeHtml(session) + subCtxBadgeHtml(session);
+    const markerBadge = markerStatusHtml(sessionId);
     const header = document.createElement('div');
     header.className = 'mr-sub-header';
     header.innerHTML = `
-      <span class="mr-sub-label">${escapeHtml(slotTitle)}${badgeHtml ? ' ' + badgeHtml : ''}</span>
+      <span class="mr-sub-label">${escapeHtml(slotTitle)}${badgeHtml ? ' ' + badgeHtml : ''} ${markerBadge}</span>
       <button class="mr-sub-close" title="关闭此会话">✕</button>
     `;
 
@@ -656,20 +702,21 @@
     if (!session) return;
     const title = session.title || session.kind || 'session';
     const badges = subModelBadgeHtml(session) + subCtxBadgeHtml(session);
+    const markerBadge = markerStatusHtml(payload.sessionId);
     const newHtml = `${escapeHtml(title)}${badges ? ' ' + badges : ''}`;
     // Update sub-slot header
     const slot = document.querySelector(`.mr-sub-slot[data-session-id="${payload.sessionId}"]`);
     if (slot) {
       const label = slot.querySelector('.mr-sub-label');
-      if (label) label.innerHTML = newHtml;
+      if (label) label.innerHTML = `${newHtml} ${markerBadge}`;
     }
-    // Update focus-mode tab (preserve status dot + NEW badge)
+    // Update focus-mode tab (preserve status dot + NEW badge + marker badge)
     const tab = document.querySelector(`.mr-tab[data-sid="${payload.sessionId}"]`);
     if (tab) {
       const state = _tabState[payload.sessionId] || 'idle';
       const statusDot = `<span class="mr-tab-status ${state}"></span>`;
       const newBadge = state === 'new-output' ? ' <span class="new-badge">NEW</span>' : '';
-      tab.innerHTML = `${statusDot}${newHtml}${newBadge}`;
+      tab.innerHTML = `${statusDot}${newHtml} ${markerBadge}${newBadge}`;
     }
   });
 

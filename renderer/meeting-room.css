@@ -450,3 +450,29 @@
   color: var(--text-secondary, #8b949e);
   font-size: 14px;
 }
+
+/* Marker status indicator */
+.mr-marker-status {
+  display: inline-block;
+  font-size: 11px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+.mr-marker-status.done {
+  color: #3fb950;
+}
+
+.mr-marker-status.streaming {
+  color: #d29922;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.mr-marker-status.none {
+  color: var(--text-secondary, #8b949e);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
