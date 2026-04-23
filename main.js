@@ -111,6 +111,24 @@ function ensureHooksDeployed() {
   }
 }
 
+// Ensure Codex CLI status bar includes context-remaining so the scanner can
+// parse context usage. Idempotent — only patches if the key is absent.
+function ensureCodexContextConfig() {
+  const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
+  const configPath = path.join(home, '.codex', 'config.toml');
+  try {
+    let content = '';
+    try { content = fs.readFileSync(configPath, 'utf8'); } catch {}
+    if (content.includes('status_line')) return;
+    const line = '\n[tui]\nstatus_line = ["model-with-reasoning", "context-remaining", "current-dir"]\n';
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.appendFileSync(configPath, line);
+    console.log('[hub] codex config.toml patched with context-remaining');
+  } catch (e) {
+    console.warn('[hub] codex config patch failed:', e.message);
+  }
+}
+
 // Find the project directory holding a given CC session's JSONL by globbing
 // ~/.claude/projects/<slug>/<ccSessionId>.jsonl across all project slugs.
 // Returns the full path, or null if not found.
@@ -744,12 +762,16 @@ function stripAnsi(str) {
 
 function parseGeminiUsage(plain) {
   const result = {};
-  // Gemini CLI footer: "gemini-2.5-pro (95% context left)"
-  const footerMatch = plain.match(/(gemini[-\w.]+)\s*\((\d+)%\s*context\s*left\)/i);
-  if (footerMatch) {
-    result.model = { id: footerMatch[1], displayName: SessionManager.geminiDisplayName(footerMatch[1]) };
-    const remaining = parseInt(footerMatch[2], 10);
-    result.contextPct = 100 - remaining;
+  // Gemini CLI footer format 1: "gemini-2.5-pro (95% context left)"
+  const leftMatch = plain.match(/(gemini[-\w.]+)\s*\((\d+)%\s*context\s*left\)/i);
+  // Gemini CLI footer format 2 (v0.38+): "gemini-2.5-pro36% used" (ANSI-stripped)
+  const usedMatch = plain.match(/(gemini[-\w.]*[a-z])\s*(\d+)%\s*used/i);
+  if (leftMatch) {
+    result.model = { id: leftMatch[1], displayName: SessionManager.geminiDisplayName(leftMatch[1]) };
+    result.contextPct = 100 - parseInt(leftMatch[2], 10);
+  } else if (usedMatch) {
+    result.model = { id: usedMatch[1], displayName: SessionManager.geminiDisplayName(usedMatch[1]) };
+    result.contextPct = parseInt(usedMatch[2], 10);
   } else {
     const modelMatch = plain.match(/\b(gemini[-\w.]+)\b/i);
     if (modelMatch) result.model = { id: modelMatch[1], displayName: SessionManager.geminiDisplayName(modelMatch[1]) };
@@ -859,6 +881,7 @@ function startAgentScanner() {
 
 app.whenReady().then(async () => {
   ensureHooksDeployed();
+  ensureCodexContextConfig();
   hookPort = await listenWithFallback();
   if (hookPort) {
     console.log(`[hub] hook server listening on 127.0.0.1:${hookPort}`);
