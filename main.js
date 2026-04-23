@@ -755,6 +755,7 @@ ipcMain.handle('get-usage-cache', () => loadUsageCache());
 // Periodically scans agent sessions' ring buffers for token/model patterns
 // and emits status-event so the renderer can show context/usage badges.
 const _agentLastStatus = new Map();
+const _agentQuota = { gemini: null, codex: null };
 
 function stripAnsi(str) {
   return str.replace(/\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][0-9A-Za-z]/g, '');
@@ -762,17 +763,19 @@ function stripAnsi(str) {
 
 function parseGeminiUsage(plain) {
   const result = {};
-  // Gemini CLI footer format 1: "gemini-2.5-pro (95% context left)"
+  // Gemini CLI footer: "(95% context left)" — actual context window usage
   const leftMatch = plain.match(/(gemini[-\w.]+)\s*\((\d+)%\s*context\s*left\)/i);
-  // Gemini CLI footer format 2 (v0.38+): "gemini-2.5-pro36% used" (ANSI-stripped)
-  const usedMatch = plain.match(/(gemini[-\w.]*[a-z])\s*(\d+)%\s*used/i);
   if (leftMatch) {
     result.model = { id: leftMatch[1], displayName: SessionManager.geminiDisplayName(leftMatch[1]) };
     result.contextPct = 100 - parseInt(leftMatch[2], 10);
-  } else if (usedMatch) {
-    result.model = { id: usedMatch[1], displayName: SessionManager.geminiDisplayName(usedMatch[1]) };
-    result.contextPct = parseInt(usedMatch[2], 10);
-  } else {
+  }
+  // Gemini CLI footer quota column: "N% used" — API quota, NOT context window
+  const usedMatch = plain.match(/(gemini[-\w.]*[a-z])\s*(\d+)%\s*used/i);
+  if (usedMatch) {
+    if (!result.model) result.model = { id: usedMatch[1], displayName: SessionManager.geminiDisplayName(usedMatch[1]) };
+    result.quotaPct = parseInt(usedMatch[2], 10);
+  }
+  if (!result.model) {
     const modelMatch = plain.match(/\b(gemini[-\w.]+)\b/i);
     if (modelMatch) result.model = { id: modelMatch[1], displayName: SessionManager.geminiDisplayName(modelMatch[1]) };
   }
@@ -849,7 +852,14 @@ function scanAgentSessions() {
         _agentLastStatus.set(s.id + ':tok', parsed.tokensUsed);
       }
     }
-    if (!parsed.model && !parsed.tokensUsed) continue;
+    // Gemini quotaPct → direct sidebar usage (real API quota from CLI footer)
+    if (parsed.quotaPct != null) {
+      const now = Date.now();
+      const H5 = 5 * 3600 * 1000;
+      const usageObj = { usage5h: { pct: parsed.quotaPct, resetsAt: now + H5 } };
+      _agentQuota.gemini = usageObj;
+    }
+    if (!parsed.model && !parsed.tokensUsed && parsed.contextPct == null && parsed.quotaPct == null) continue;
     const prev = _agentLastStatus.get(s.id);
     const sig = JSON.stringify(parsed);
     if (prev === sig) continue;
@@ -861,13 +871,18 @@ function scanAgentSessions() {
     if (parsed.model) payload.model = parsed.model;
     sendToRenderer('status-event', payload);
   }
-  // Build and broadcast per-provider 5h/7d usage
+  // Build and broadcast per-provider usage from real quota data or token estimates
   const agentData = {};
   for (const kind of ['gemini', 'codex']) {
-    const usage = calcAgentUsage(kind);
-    if (usage) {
-      agentData[kind] = usage;
-      cacheAgentUsage(kind, usage);
+    if (_agentQuota[kind]) {
+      agentData[kind] = _agentQuota[kind];
+      cacheAgentUsage(kind, _agentQuota[kind]);
+    } else {
+      const usage = calcAgentUsage(kind);
+      if (usage) {
+        agentData[kind] = usage;
+        cacheAgentUsage(kind, usage);
+      }
     }
   }
   if (Object.keys(agentData).length > 0) sendToRenderer('agent-usage', agentData);

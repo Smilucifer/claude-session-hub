@@ -272,7 +272,7 @@ class SessionManager extends EventEmitter {
 
   resizeSession(sessionId, cols, rows) {
     const s = this.sessions.get(sessionId);
-    if (s) s.pty.resize(cols, rows);
+    if (s) s.pty.resize(Math.max(cols, 60), rows);
   }
 
   setFocusedSession(sessionId) {
