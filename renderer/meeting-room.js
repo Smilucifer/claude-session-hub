@@ -12,6 +12,9 @@
   let _markerPollTimer = null;
   const _tabState = {};     // { sessionId: 'streaming'|'new-output'|'idle'|'error' }
   const _tabTimers = {};    // { sessionId: silenceTimerId }
+  let _divergenceEnabled = false;
+  let _divergenceResult = null;
+  let _divergenceHash = '';
 
   // renderer.js loads before us — its `sessions` and `getOrCreateTerminal`
   // are accessible via the global lexical scope. We access them directly.
@@ -307,7 +310,10 @@
           changed = true;
         }
       }
-      if (changed) updateMarkerBadges(meeting);
+      if (changed) {
+        updateMarkerBadges(meeting);
+        if (_divergenceEnabled) checkDivergence(meeting);
+      }
     }, 2000);
   }
 
@@ -471,12 +477,26 @@
       <div class="mr-sync-toggle ${meeting.syncContext ? 'active' : ''}" id="mr-sync-toggle">
         <span>自动同步: ${meeting.syncContext ? '开' : '关'}</span>
       </div>
+      <div class="mr-sync-toggle ${_divergenceEnabled ? 'active' : ''}" id="mr-divergence-toggle">
+        <span>分歧检测: ${_divergenceEnabled ? '开' : '关'}</span>
+      </div>
     `;
 
     document.getElementById('mr-sync-toggle').addEventListener('click', () => {
       meeting.syncContext = !meeting.syncContext;
       ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { syncContext: meeting.syncContext } });
       renderToolbar(meeting);
+    });
+
+    document.getElementById('mr-divergence-toggle').addEventListener('click', () => {
+      _divergenceEnabled = !_divergenceEnabled;
+      renderToolbar(meeting);
+      if (_divergenceEnabled) checkDivergence(meeting);
+      else {
+        _divergenceResult = null;
+        const bar = document.getElementById('mr-divergence-bar');
+        if (bar) bar.remove();
+      }
     });
 
     document.getElementById('mr-sync-btn').addEventListener('click', () => {
@@ -576,6 +596,10 @@
     meeting.lastMessageTime = Date.now();
     ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { lastMessageTime: meeting.lastMessageTime } });
     _contextCompressCache.clear();
+    _divergenceResult = null;
+    _divergenceHash = '';
+    const divBar = document.getElementById('mr-divergence-bar');
+    if (divBar) divBar.remove();
   }
 
   const _contextCompressCache = new Map();
@@ -625,6 +649,102 @@
       hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
     }
     return hash.toString(36);
+  }
+
+  // --- Divergence Detection ---
+
+  async function checkDivergence(meeting) {
+    if (!_divergenceEnabled) return;
+    let doneCount = 0;
+    for (const sid of meeting.subSessions) {
+      if (_markerStatusCache[sid] === 'done') doneCount++;
+    }
+    if (doneCount < 2) {
+      _divergenceResult = null;
+      renderDivergenceBar(meeting);
+      return;
+    }
+
+    const hashes = [];
+    for (const sid of meeting.subSessions) {
+      const content = await ipcRenderer.invoke('quick-summary', sid);
+      hashes.push(simpleHash(content || ''));
+    }
+    const hash = hashes.join('-');
+    if (hash === _divergenceHash && _divergenceResult) {
+      renderDivergenceBar(meeting);
+      return;
+    }
+
+    _divergenceResult = await ipcRenderer.invoke('detect-divergence', { meetingId: meeting.id });
+    _divergenceHash = hash;
+    renderDivergenceBar(meeting);
+  }
+
+  function renderDivergenceBar(meeting) {
+    let bar = document.getElementById('mr-divergence-bar');
+    if (!_divergenceEnabled || !_divergenceResult) {
+      if (bar) bar.remove();
+      return;
+    }
+
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'mr-divergence-bar';
+      const container = terminalsEl();
+      if (container) container.parentElement.insertBefore(bar, container);
+    }
+
+    const { consensus = [], divergence = [] } = _divergenceResult;
+    let html = '';
+
+    if (divergence.length > 0) {
+      html += `<div class="mr-div-header mr-div-warn">⚠ ${divergence.length} 个分歧点</div>`;
+      html += '<div class="mr-div-cards">';
+      for (const d of divergence) {
+        const positions = Object.entries(d.positions || {})
+          .map(([k, v]) => `<span class="mr-div-pos"><b>${escapeHtml(k)}</b>: ${escapeHtml(v)}</span>`)
+          .join('');
+        html += `<div class="mr-div-card">
+          <div class="mr-div-topic">${escapeHtml(d.topic)}</div>
+          <div class="mr-div-positions">${positions}</div>
+          <div class="mr-div-actions">
+            <button class="mr-div-ask" data-q="${escapeHtml(d.suggestedQuestion || '')}" data-target="all">追问全部</button>
+            ${meeting.subSessions.map(sid => {
+              const s = sessions ? sessions.get(sid) : null;
+              const label = s ? (s.kind || 'AI') : 'AI';
+              return `<button class="mr-div-ask" data-q="${escapeHtml(d.suggestedQuestion || '')}" data-target="${sid}">问 ${escapeHtml(label)}</button>`;
+            }).join('')}
+          </div>
+        </div>`;
+      }
+      html += '</div>';
+    }
+
+    if (consensus.length > 0) {
+      html += `<div class="mr-div-header mr-div-ok">✓ ${consensus.length} 个共识点</div>`;
+      html += '<div class="mr-div-consensus">' + consensus.map(c => `<span class="mr-div-consensus-item">${escapeHtml(c)}</span>`).join('') + '</div>';
+    }
+
+    bar.innerHTML = html;
+
+    bar.querySelectorAll('.mr-div-ask').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const question = btn.dataset.q;
+        const target = btn.dataset.target;
+        const inputBox = document.getElementById('mr-input-box');
+        if (inputBox && question) inputBox.textContent = question;
+        if (target !== 'all') {
+          meeting.sendTarget = target;
+        } else {
+          meeting.sendTarget = 'all';
+        }
+        ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { sendTarget: meeting.sendTarget } });
+        const sel = document.getElementById('mr-input-target');
+        if (sel) sel.value = meeting.sendTarget;
+        if (inputBox) inputBox.focus();
+      });
+    });
   }
 
   // --- Quote (Right-click) ---
@@ -785,5 +905,6 @@
     getActiveMeetingId,
     getMeetingData,
     updateMeetingData,
+    get _divergenceResult() { return _divergenceResult; },
   };
 })();
