@@ -116,6 +116,7 @@ const AI_MARKERS_RE = /[⏺●◉◐◑◒◓◔◕]/;
 const ABS_PATH_RE = /[A-Za-z]:[\\/](?:[^\\/:*?"<>|\r\n\s]+[\\/])*[^\\/:*?"<>|\r\n\s]+\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9])/g;
 // Image-only subset of ABS_PATH_RE for hover-preview detection.
 const IMAGE_PATH_RE = /[A-Za-z]:[\\/](?:[^\\/:*?"<>|\r\n\s]+[\\/])*[^\\/:*?"<>|\r\n\s]+\.(?:png|jpe?g|gif|webp|bmp)(?![A-Za-z0-9])/gi;
+const PREVIEW_PATH_RE = /\.(?:html?|md|markdown|png|jpe?g|gif|webp|bmp)$/i;
 // Our own clipboard-image directory. Stripped from sidebar preview: paste
 // injects the path before the user's typed text and would otherwise eat the
 // entire 60-char preview.
@@ -704,6 +705,8 @@ function selectTeamRoom(roomId) {
   activeMeetingId = null;
   const mrp = document.getElementById('meeting-room-panel');
   if (mrp) mrp.style.display = 'none';
+  const pp = document.getElementById('preview-panel');
+  if (pp) { pp.style.display = 'none'; previewSourcePanel = null; currentPreviewPath = null; }
   activeTeamRoomId = roomId;
   // Opening the room counts as "reading" any queued messages — parallels how
   // selectSession resets session.unreadCount = 0.
@@ -728,6 +731,8 @@ function selectMeeting(meetingId) {
   if (emptyStateEl) emptyStateEl.style.display = 'none';
   const trp = document.getElementById('team-room-panel');
   if (trp) trp.style.display = 'none';
+  const pp = document.getElementById('preview-panel');
+  if (pp) { pp.style.display = 'none'; previewSourcePanel = null; currentPreviewPath = null; }
 
   const meeting = meetings[meetingId];
   if (meeting && typeof MeetingRoom !== 'undefined') {
@@ -1267,6 +1272,8 @@ function selectSession(id) {
   activeMeetingId = null;
   const mrp = document.getElementById('meeting-room-panel');
   if (mrp) mrp.style.display = 'none';
+  const pp = document.getElementById('preview-panel');
+  if (pp) { pp.style.display = 'none'; previewSourcePanel = null; currentPreviewPath = null; }
   const tp = document.getElementById('terminal-panel');
   if (tp) tp.style.display = '';
 
@@ -1645,8 +1652,12 @@ function registerLocalPathLinks(terminal) {
           },
           text: filePath,
           activate: async (_event, uri) => {
-            const err = await ipcRenderer.invoke('open-path', uri);
-            if (err) console.warn('[hub] open-path failed:', uri, '→', err);
+            if (PREVIEW_PATH_RE.test(uri)) {
+              openPreviewPanel(uri);
+            } else {
+              const err = await ipcRenderer.invoke('open-path', uri);
+              if (err) console.warn('[hub] open-path failed:', uri, '→', err);
+            }
           },
         });
       }
@@ -1666,6 +1677,93 @@ function buildPreviewFromUserMessage(raw) {
   if (!clean) return '';
   return clean.length > 60 ? clean.substring(0, 58) + '…' : clean;
 }
+
+// --- File Preview Panel ---
+const previewPanelEl = document.getElementById('preview-panel');
+const previewTitleEl = document.getElementById('preview-title');
+const previewBodyEl = document.getElementById('preview-body');
+let previewSourcePanel = null;
+let currentPreviewPath = null;
+
+async function openPreviewPanel(filePath) {
+  currentPreviewPath = filePath;
+  const fileName = filePath.replace(/^.*[\\/]/, '');
+  previewTitleEl.textContent = fileName;
+  previewTitleEl.title = filePath;
+
+  if (!previewSourcePanel) {
+    if (document.getElementById('meeting-room-panel').style.display !== 'none'
+        && document.getElementById('meeting-room-panel').style.display !== '') {
+      previewSourcePanel = 'meeting-room-panel';
+    } else if (document.getElementById('team-room-panel').style.display !== 'none'
+        && document.getElementById('team-room-panel').style.display !== '') {
+      previewSourcePanel = 'team-room-panel';
+    } else {
+      previewSourcePanel = 'terminal-panel';
+    }
+  }
+
+  const src = document.getElementById(previewSourcePanel);
+  if (src) src.style.display = 'none';
+  const emptyEl = document.getElementById('empty-state');
+  if (emptyEl) emptyEl.style.display = 'none';
+  previewPanelEl.style.display = 'flex';
+
+  previewBodyEl.innerHTML = '';
+
+  const ext = filePath.replace(/^.*\./, '.').toLowerCase();
+
+  if (ext === '.html' || ext === '.htm') {
+    const wv = document.createElement('webview');
+    wv.src = 'file:///' + filePath.replace(/\\/g, '/');
+    wv.style.cssText = 'width:100%;height:100%;border:none;';
+    previewBodyEl.style.alignItems = 'stretch';
+    previewBodyEl.style.justifyContent = 'stretch';
+    previewBodyEl.appendChild(wv);
+  } else if (ext === '.md' || ext === '.markdown') {
+    const { marked } = require('marked');
+    const DOMPurify = require('dompurify');
+    const result = await ipcRenderer.invoke('read-file', filePath);
+    if (result.error) {
+      previewBodyEl.innerHTML = `<div class="preview-markdown" style="color:var(--text-secondary)">Failed to load: ${result.error}</div>`;
+      return;
+    }
+    const html = DOMPurify.sanitize(marked.parse(result.content));
+    previewBodyEl.style.alignItems = 'flex-start';
+    previewBodyEl.style.justifyContent = 'flex-start';
+    previewBodyEl.innerHTML = `<div class="preview-markdown">${html}</div>`;
+  } else {
+    const fileUrl = 'file:///' + filePath.replace(/\\/g, '/');
+    previewBodyEl.style.alignItems = 'center';
+    previewBodyEl.style.justifyContent = 'center';
+    previewBodyEl.innerHTML = `<img src="${fileUrl}" class="preview-image">`;
+  }
+}
+
+function closePreviewPanel() {
+  previewPanelEl.style.display = 'none';
+  currentPreviewPath = null;
+
+  if (previewSourcePanel) {
+    const src = document.getElementById(previewSourcePanel);
+    if (src) src.style.display = previewSourcePanel === 'terminal-panel' ? '' : 'flex';
+    previewSourcePanel = null;
+  }
+}
+
+document.getElementById('preview-close').addEventListener('click', closePreviewPanel);
+document.getElementById('preview-open-external').addEventListener('click', async () => {
+  if (currentPreviewPath) {
+    const err = await ipcRenderer.invoke('open-path', currentPreviewPath);
+    if (err) console.warn('[hub] open-path for preview failed:', currentPreviewPath, '→', err);
+  }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && previewPanelEl.style.display === 'flex') {
+    e.preventDefault();
+    closePreviewPanel();
+  }
+});
 
 // --- Terminal buffer reading (xterm.js buffer API) ---
 
