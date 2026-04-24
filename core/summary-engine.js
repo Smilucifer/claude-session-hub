@@ -91,7 +91,6 @@ class SummaryEngine {
       return 'streaming';
     }
     if (this._markerCache.has(sessionId)) return 'done';
-    if (cleaned.includes(END_MARKER)) return 'done';
     return 'none';
   }
 
