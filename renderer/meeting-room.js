@@ -575,7 +575,10 @@
 
     meeting.lastMessageTime = Date.now();
     ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { lastMessageTime: meeting.lastMessageTime } });
+    _contextCompressCache.clear();
   }
+
+  const _contextCompressCache = new Map();
 
   async function buildContextSummary(meeting, excludeSessionId) {
     const others = meeting.subSessions.filter(id => id !== excludeSessionId);
@@ -585,15 +588,43 @@
     for (const id of others) {
       const session = sessions ? sessions.get(id) : null;
       const label = session ? (session.kind || 'session') : 'session';
-      const cleaned = await ipcRenderer.invoke('quick-summary', id);
-      if (cleaned) {
-        const summary = cleaned.length > 500 ? cleaned.slice(-500) : cleaned;
-        lines.push(`- ${label}: ${summary}`);
+
+      // 1. Try SM marker content first
+      let content = await ipcRenderer.invoke('quick-summary', id);
+
+      // 2. Fallback to ring buffer last 1000 chars
+      if (!content) {
+        const raw = await ipcRenderer.invoke('get-ring-buffer', id);
+        if (raw) content = raw.length > 1000 ? raw.slice(-1000) : raw;
       }
+
+      if (!content) continue;
+
+      // 3. Threshold: ≤1000 use as-is, >1000 compress via Gemini Flash
+      if (content.length > 1000) {
+        const cacheKey = id + ':' + simpleHash(content);
+        if (_contextCompressCache.has(cacheKey)) {
+          content = _contextCompressCache.get(cacheKey);
+        } else {
+          const compressed = await ipcRenderer.invoke('compress-context', { content, maxChars: 1000 });
+          _contextCompressCache.set(cacheKey, compressed);
+          content = compressed;
+        }
+      }
+
+      lines.push(`【${label}】${content}`);
     }
 
     if (lines.length === 0) return '';
-    return `[会议室上下文] 其他参会者最近的发言：\n${lines.join('\n')}\n---\n`;
+    return `[会议室协作同步]\n${lines.join('\n')}\n---\n`;
+  }
+
+  function simpleHash(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+    }
+    return hash.toString(36);
   }
 
   // --- Quote (Right-click) ---
