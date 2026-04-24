@@ -145,10 +145,8 @@
           if (_tabTimers[sid]) { clearTimeout(_tabTimers[sid]); delete _tabTimers[sid]; }
           meeting.focusedSub = sid;
           ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { focusedSub: sid } });
-          renderTerminals(meeting);
+          switchFocusTab(meeting, sid);
           renderHeader(meeting);
-          const cached = subTerminals[sid];
-          if (cached && cached.terminal) cached.terminal.scrollToBottom();
         }
       });
     }
@@ -405,12 +403,35 @@
     const focused = meeting.focusedSub || meeting.subSessions[0];
     if (!focused) return;
 
-    const mainSlot = createSubSlot(meeting, focused);
-    mainSlot.style.flex = '1';
-    container.appendChild(mainSlot);
+    for (const sessionId of meeting.subSessions) {
+      const slot = createSubSlot(meeting, sessionId);
+      slot.style.flex = '1';
+      slot.style.display = sessionId === focused ? '' : 'none';
+      container.appendChild(slot);
+    }
 
-    openSubTerminal(focused);
-    requestAnimationFrame(() => fitSubTerminal(focused));
+    for (const sessionId of meeting.subSessions) {
+      openSubTerminal(sessionId);
+    }
+    requestAnimationFrame(() => {
+      for (const sessionId of meeting.subSessions) {
+        fitSubTerminal(sessionId);
+      }
+    });
+  }
+
+  function switchFocusTab(meeting, newSid) {
+    const container = terminalsEl();
+    if (!container) return;
+    const slots = container.querySelectorAll('.mr-sub-slot');
+    for (const slot of slots) {
+      slot.style.display = slot.dataset.sessionId === newSid ? '' : 'none';
+    }
+    requestAnimationFrame(() => {
+      fitSubTerminal(newSid);
+      const cached = subTerminals[newSid];
+      if (cached && cached.terminal) cached.terminal.scrollToBottom();
+    });
   }
 
   // --- Layout Toggle ---
