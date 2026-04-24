@@ -239,6 +239,11 @@
   function renderTerminals(meeting) {
     const container = terminalsEl();
     if (!container) return;
+    for (const cached of Object.values(subTerminals)) {
+      if (cached && cached.container && cached.container.parentElement) {
+        cached.container.parentElement.removeChild(cached.container);
+      }
+    }
     container.innerHTML = '';
     if (meeting.layout === 'blackboard') {
       container.className = 'mr-terminals mr-blackboard';
@@ -256,7 +261,7 @@
   function openSubTerminal(sessionId) {
     const cached = subTerminals[sessionId];
     if (!cached || !cached.terminal || !cached.container) return;
-    if (!cached.opened) {
+    if (!cached.container.querySelector('.xterm-screen')) {
       cached.terminal.open(cached.container);
       cached.opened = true;
     }
