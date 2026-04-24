@@ -47,10 +47,22 @@ class SummaryEngine {
     return MARKER_INSTRUCTION;
   }
 
+  // Find SM-START at line boundary (not inside instruction echo like "[用SM-START和SM-END包裹...]")
+  _findStartMarker(cleaned) {
+    let searchFrom = cleaned.length;
+    while (searchFrom > 0) {
+      const idx = cleaned.lastIndexOf(START_MARKER, searchFrom - 1);
+      if (idx < 0) return -1;
+      if (idx === 0 || cleaned[idx - 1] === '\n' || cleaned[idx - 1] === '\r') return idx;
+      searchFrom = idx;
+    }
+    return -1;
+  }
+
   extractMarker(rawBuffer, sessionId) {
     if (!rawBuffer) return this._markerCache.get(sessionId) || '';
     const cleaned = stripAnsi(rawBuffer);
-    const startIdx = cleaned.lastIndexOf(START_MARKER);
+    const startIdx = this._findStartMarker(cleaned);
     if (startIdx < 0) {
       return this._markerCache.get(sessionId) || '';
     }
@@ -67,12 +79,11 @@ class SummaryEngine {
   markerStatus(rawBuffer, sessionId) {
     if (!rawBuffer) return this._markerCache.has(sessionId) ? 'done' : 'none';
     const cleaned = stripAnsi(rawBuffer);
-    const startIdx = cleaned.lastIndexOf(START_MARKER);
+    const startIdx = this._findStartMarker(cleaned);
     if (startIdx >= 0) {
       const contentStart = startIdx + START_MARKER.length;
       const endIdx = cleaned.indexOf(END_MARKER, contentStart);
       if (endIdx >= 0) {
-        // Cache content so extractMarker can return it after buffer overwrite
         const content = cleaned.slice(contentStart, endIdx).trim();
         if (sessionId && content) this._markerCache.set(sessionId, content);
         return 'done';
