@@ -388,8 +388,30 @@ ipcMain.handle('get-marker-instruction', () => {
   return summaryEngine.getMarkerInstruction();
 });
 
+function collectAgentOutputs(meetingId) {
+  const meeting = meetingManager.getMeeting(meetingId);
+  if (!meeting) return null;
+  const outputs = {};
+  for (const sid of meeting.subSessions) {
+    const raw = sessionManager.getSessionBuffer(sid);
+    const content = summaryEngine.extractMarker(raw || '', sid);
+    if (content) {
+      const session = sessionManager.getSession(sid);
+      const label = session ? (session.kind || 'AI') : 'AI';
+      outputs[label] = content;
+    }
+  }
+  return Object.keys(outputs).length >= 2 ? outputs : null;
+}
+
 ipcMain.handle('compress-context', async (_e, { content, maxChars }) => {
   return await summaryEngine.compressContext(content, maxChars || 1000);
+});
+
+ipcMain.handle('detect-divergence', async (_e, { meetingId }) => {
+  const outputs = collectAgentOutputs(meetingId);
+  if (!outputs) return { consensus: [], divergence: [] };
+  return await summaryEngine.detectDivergence(outputs);
 });
 
 ipcMain.handle('deep-summary', async (_e, { sessionId, scene, question, agentName }) => {

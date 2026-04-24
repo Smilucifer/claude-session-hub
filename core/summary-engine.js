@@ -95,6 +95,28 @@ class SummaryEngine {
     }
   }
 
+  async detectDivergence(agentOutputs) {
+    if (!agentOutputs || Object.keys(agentOutputs).length < 2) {
+      return { consensus: [], divergence: [] };
+    }
+    const system = '你是一个多AI协作分析助手。分析多个AI的回答，识别共识和分歧。只输出JSON，不要其他内容。';
+    let prompt = '分析以下多个 AI 对同一问题的回答，识别共识和分歧。\n\n';
+    for (const [name, content] of Object.entries(agentOutputs)) {
+      prompt += `【${name}】\n${content}\n\n`;
+    }
+    prompt += '请以 JSON 格式输出：\n{\n  "consensus": ["共识点1", "共识点2"],\n  "divergence": [\n    {\n      "topic": "分歧主题",\n      "positions": {"Agent1": "观点", "Agent2": "观点"},\n      "suggestedQuestion": "建议追问的问题"\n    }\n  ]\n}';
+
+    try {
+      const raw = await this._callGeminiPipe(system, prompt);
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (jsonMatch) return JSON.parse(jsonMatch[0]);
+      return { consensus: [], divergence: [] };
+    } catch (err) {
+      console.error('[summary-engine] detectDivergence failed:', err.message);
+      return { consensus: [], divergence: [] };
+    }
+  }
+
   async deepSummary(rawBuffer, options = {}) {
     const { agentName = 'AI', question = '', scene = 'free_discussion' } = options;
 
