@@ -6,9 +6,9 @@ const { stripAnsi } = require('./ansi-utils');
 
 const DEFAULT_TEMPLATES_PATH = path.join(__dirname, '..', 'config', 'summary-templates.json');
 
-const START_MARKER = '<<<MEETING_SUMMARY>>>';
-const END_MARKER = '<<<END_SUMMARY>>>';
-const MARKER_INSTRUCTION = '\n\n（请在回答的最末尾，用 <<<MEETING_SUMMARY>>> 和 <<<END_SUMMARY>>> 标记包裹核心摘要（100-300字），保留关键结论与依据。若内容复杂难以精简，可将完整分析写入 .md 文件，标记内只需注明文件路径。不要解释这些标记。）';
+const START_MARKER = 'HSUMMARY_START';
+const END_MARKER = 'HSUMMARY_END';
+const MARKER_INSTRUCTION = '\n\n[回答末尾用 HSUMMARY_START 和 HSUMMARY_END 包裹100-300字核心摘要。复杂内容可写入.md文件,标记内注明路径]';
 
 class SummaryEngine {
   constructor(config = {}) {
