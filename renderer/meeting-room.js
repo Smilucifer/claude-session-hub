@@ -75,6 +75,7 @@
         const newSubs = updated.subSessions ? updated.subSessions.join(',') : '';
         if (prevSubs !== newSubs) {
           renderTerminals(updated);
+          setupInput(updated);
         }
       }
     } catch (e) {
@@ -217,6 +218,7 @@
           meetingData[meetingId] = result.meeting;
           renderTerminals(result.meeting);
           renderToolbar(result.meeting);
+          setupInput(result.meeting);
         }
       });
       menu.appendChild(item);
@@ -576,9 +578,11 @@
         payload = context + payload;
       }
       ipcRenderer.send('terminal-input', { sessionId, data: payload });
+      const session = sessions ? sessions.get(sessionId) : null;
+      const enterDelay = session && session.kind === 'codex' ? 300 : 80;
       setTimeout(() => {
         ipcRenderer.send('terminal-input', { sessionId, data: '\r' });
-      }, 80);
+      }, enterDelay);
     }
 
     meeting.lastMessageTime = Date.now();
