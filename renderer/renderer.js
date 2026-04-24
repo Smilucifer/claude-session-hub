@@ -993,7 +993,14 @@ function showTerminal(sessionId, opts = { focus: true }) {
 
   const headerActions = document.createElement('div');
   headerActions.className = 'terminal-header-actions';
-  headerActions.append(zoomOutBtn, zoomInBtn, closeBtn);
+  const memoBtn = document.createElement('button');
+  memoBtn.className = 'btn-zoom btn-memo-toggle';
+  memoBtn.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M2 3.5A1.5 1.5 0 013.5 2h9A1.5 1.5 0 0114 3.5v9a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 12.5v-9zM4 5h8M4 8h8M4 11h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" fill="none"/></svg>';
+  memoBtn.title = 'Toggle memo panel';
+  if (localStorage.getItem(MEMO_OPEN_KEY) === 'true') memoBtn.classList.add('active');
+  memoBtn.addEventListener('click', () => toggleMemoPanel());
+
+  headerActions.append(memoBtn, zoomOutBtn, zoomInBtn, closeBtn);
 
   titleRow.append(titleSection, headerActions);
 
