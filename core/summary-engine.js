@@ -69,8 +69,14 @@ class SummaryEngine {
     const cleaned = stripAnsi(rawBuffer);
     const startIdx = cleaned.lastIndexOf(START_MARKER);
     if (startIdx >= 0) {
-      const endIdx = cleaned.indexOf(END_MARKER, startIdx + START_MARKER.length);
-      if (endIdx >= 0) return 'done';
+      const contentStart = startIdx + START_MARKER.length;
+      const endIdx = cleaned.indexOf(END_MARKER, contentStart);
+      if (endIdx >= 0) {
+        // Cache content so extractMarker can return it after buffer overwrite
+        const content = cleaned.slice(contentStart, endIdx).trim();
+        if (sessionId && content) this._markerCache.set(sessionId, content);
+        return 'done';
+      }
       return 'streaming';
     }
     if (this._markerCache.has(sessionId)) return 'done';
