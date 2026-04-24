@@ -319,6 +319,145 @@ function applyZoom(level) {
 // Restore persisted zoom on boot.
 applyZoom(currentZoom);
 
+// --- Global Memo Panel ---
+const MEMO_KEY = 'claude-hub-memo-items';
+const MEMO_OPEN_KEY = 'claude-hub-memo-open';
+
+function loadMemoItems() {
+  try { return JSON.parse(localStorage.getItem(MEMO_KEY)) || []; }
+  catch { return []; }
+}
+function saveMemoItems(items) {
+  localStorage.setItem(MEMO_KEY, JSON.stringify(items));
+}
+
+function formatMemoTime(ts) {
+  const d = new Date(ts);
+  const now = new Date();
+  const sameDay = d.getFullYear() === now.getFullYear()
+    && d.getMonth() === now.getMonth()
+    && d.getDate() === now.getDate();
+  if (sameDay) return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
+}
+
+function renderMemoList() {
+  const listEl = document.getElementById('memo-list');
+  if (!listEl) return;
+  const items = loadMemoItems();
+  if (items.length === 0) {
+    listEl.innerHTML = '<div class="memo-empty">暂无备忘</div>';
+    return;
+  }
+  listEl.innerHTML = items.map(item => `
+    <div class="memo-item" data-id="${item.id}">
+      <div class="memo-item-time">${formatMemoTime(item.ts)}</div>
+      <div class="memo-item-body">
+        <span class="memo-item-text">${escapeHtml(item.text)}</span>
+        <span class="memo-item-actions">
+          <button class="memo-item-btn memo-copy-btn" title="复制">📋</button>
+          <button class="memo-item-btn memo-del-btn" title="删除">🗑</button>
+        </span>
+      </div>
+    </div>
+  `).join('');
+}
+
+function addMemoItem(text) {
+  if (!text.trim()) return;
+  const items = loadMemoItems();
+  items.unshift({ id: 'm_' + Date.now(), text: text.trim(), ts: Date.now() });
+  saveMemoItems(items);
+  renderMemoList();
+}
+
+function deleteMemoItem(id) {
+  const items = loadMemoItems().filter(i => i.id !== id);
+  saveMemoItems(items);
+  renderMemoList();
+}
+
+function clearAllMemo() {
+  saveMemoItems([]);
+  renderMemoList();
+}
+
+function toggleMemoPanel() {
+  const panel = document.getElementById('memo-panel');
+  if (!panel) return;
+  const isOpen = panel.style.display !== 'none';
+  panel.style.display = isOpen ? 'none' : 'flex';
+  localStorage.setItem(MEMO_OPEN_KEY, String(!isOpen));
+  document.querySelectorAll('.btn-memo-toggle').forEach(btn => {
+    btn.classList.toggle('active', !isOpen);
+  });
+  if (!isOpen) renderMemoList();
+  // Re-fit active terminal after layout change
+  const active = activeSessionId && terminalCache.get(activeSessionId);
+  if (active && active.opened) {
+    setTimeout(() => { try { active.fitAddon.fit(); } catch {} }, 50);
+  }
+}
+
+// Memo panel event delegation (runs once on DOMContentLoaded)
+function initMemoPanel() {
+  const addBtn = document.getElementById('memo-add-btn');
+  const input = document.getElementById('memo-input');
+  const clearBtn = document.getElementById('memo-clear-btn');
+  const listEl = document.getElementById('memo-list');
+  if (!addBtn || !input) return;
+
+  // Prevent keyboard events from reaching xterm
+  input.addEventListener('keydown', e => e.stopPropagation());
+  input.addEventListener('keypress', e => e.stopPropagation());
+  input.addEventListener('keyup', e => e.stopPropagation());
+
+  addBtn.addEventListener('click', () => {
+    addMemoItem(input.value);
+    input.value = '';
+    input.focus();
+  });
+
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      addMemoItem(input.value);
+      input.value = '';
+    }
+  });
+
+  clearBtn.addEventListener('click', () => clearAllMemo());
+
+  listEl.addEventListener('click', e => {
+    const copyBtn = e.target.closest('.memo-copy-btn');
+    if (copyBtn) {
+      const item = copyBtn.closest('.memo-item');
+      const text = item.querySelector('.memo-item-text').textContent;
+      clipboard.writeText(text);
+      copyBtn.textContent = '✓';
+      setTimeout(() => { copyBtn.textContent = '📋'; }, 1200);
+      return;
+    }
+    const delBtn = e.target.closest('.memo-del-btn');
+    if (delBtn) {
+      const item = delBtn.closest('.memo-item');
+      deleteMemoItem(item.dataset.id);
+    }
+  });
+
+  // Restore open state
+  if (localStorage.getItem(MEMO_OPEN_KEY) === 'true') {
+    const panel = document.getElementById('memo-panel');
+    if (panel) {
+      panel.style.display = 'flex';
+      renderMemoList();
+      document.querySelectorAll('.btn-memo-toggle').forEach(btn => btn.classList.add('active'));
+    }
+  }
+}
+
+initMemoPanel();
+
 // --- Helpers ---
 function formatTime(ts) {
   return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -514,13 +653,14 @@ async function loadTeamRooms() {
   try {
     const initialized = await ipcRenderer.invoke('team:isInitialized');
     if (!initialized) { teamRooms = []; return; }
-    teamRooms = await ipcRenderer.invoke('team:loadRooms');
-    try {
-      teamRoomPreviews = await ipcRenderer.invoke('team:getRoomPreviews') || {};
-    } catch (e) { teamRoomPreviews = {}; }
-    try {
-      teamCharacters = await ipcRenderer.invoke('team:loadCharacters') || {};
-    } catch (e) { teamCharacters = {}; }
+    const [rooms, previews, chars] = await Promise.all([
+      ipcRenderer.invoke('team:loadRooms'),
+      ipcRenderer.invoke('team:getRoomPreviews').catch(() => ({})),
+      ipcRenderer.invoke('team:loadCharacters').catch(() => ({})),
+    ]);
+    teamRooms = rooms;
+    teamRoomPreviews = previews || {};
+    teamCharacters = chars || {};
     renderTeamRooms();
   } catch (e) {
     console.warn('[team] loadRooms failed:', e.message);
@@ -1695,6 +1835,7 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
 // Carries contextPct / cwd / api time / session_name per session + account-wide usage5h/usage7d.
 const accountUsage = { usage5h: null, usage7d: null };
 const agentUsage = { gemini: null, codex: null };
+let _claudeUsageLastSeen = 0;
 // Samples for quota burn-rate attribution. Per-session contextUsed history
 // (15 min ring) → tokens/min. Global 5h samples let us estimate tokens-per-pct
 // so we can project each session's burn as "% of 5h cap per hour".
@@ -1785,6 +1926,7 @@ ipcRenderer.on('status-event', (_e, payload) => {
   // Usage is account-wide — keep the latest reported values + sample for burn rate.
   if (payload.usage5h) {
     accountUsage.usage5h = payload.usage5h;
+    _claudeUsageLastSeen = Date.now();
     const now = Date.now();
     globalUsageSamples.push({ t: now, pct: payload.usage5h.pct, totalUsedTokens: aggregateUsedTokens(now) });
     pruneSamples(globalUsageSamples, now);
@@ -1987,15 +2129,36 @@ function renderAccountUsage() {
     const reset = formatResetIn(u.resetsAt);
     return `<span class="usage-pct ${pctClass(pct)}">${pct}%</span>${reset ? '<span class="usage-reset">' + reset + '</span>' : ''}`;
   };
-  const buildLine = (badgeClass, label, u5h, u7d) =>
-    `<div class="usage-line"><span class="model-badge ${badgeClass} usage-badge">${label}</span><span class="usage-slot">5h ${fmtSlot(u5h)}</span><span class="usage-sep">│</span><span class="usage-slot">7d ${fmtSlot(u7d)}</span></div>`;
+  const staleCls = (lastSeen) => {
+    if (!lastSeen) return '';
+    const age = Date.now() - lastSeen;
+    if (age > 2 * 3600 * 1000) return ' usage-stale';
+    if (age > 5 * 60 * 1000) return ' usage-aging';
+    return '';
+  };
+  const staleTitle = (lastSeen) => {
+    if (!lastSeen) return '';
+    const age = Date.now() - lastSeen;
+    if (age <= 5 * 60 * 1000) return '';
+    const mins = Math.round(age / 60000);
+    if (mins < 60) return ` title="数据来自 ${mins}m 前"`;
+    const h = Math.floor(mins / 60);
+    return ` title="数据来自 ${h}h 前"`;
+  };
+  const buildLine = (badgeClass, label, u5h, u7d, lastSeen) => {
+    const sc = staleCls(lastSeen);
+    const st = staleTitle(lastSeen);
+    return `<div class="usage-line${sc}"${st}><span class="model-badge ${badgeClass} usage-badge">${label}</span><span class="usage-slot">5h ${fmtSlot(u5h)}</span><span class="usage-sep">│</span><span class="usage-slot">7d ${fmtSlot(u7d)}</span></div>`;
+  };
   const g = agentUsage.gemini || {};
   const c = agentUsage.codex || {};
   el.innerHTML =
-    buildLine('opus', 'Claude', accountUsage.usage5h, accountUsage.usage7d) +
+    buildLine('opus', 'Claude', accountUsage.usage5h, accountUsage.usage7d, _claudeUsageLastSeen) +
     buildLine('gemini', 'Gemini', g.usage5h, g.usage7d) +
     buildLine('codex', 'Codex', c.usage5h, c.usage7d);
 }
+
+setInterval(renderAccountUsage, 60000);
 
 function pctClass(pct) {
   if (pct >= 85) return 'danger';
@@ -2593,14 +2756,18 @@ async function resumeDormantSession(hubId) {
 
 // --- Init ---
 (async () => {
-  const existing = await ipcRenderer.invoke('get-sessions');
+  const [existing, persisted, dormantMeetings, cached] = await Promise.all([
+    ipcRenderer.invoke('get-sessions'),
+    ipcRenderer.invoke('get-dormant-sessions'),
+    ipcRenderer.invoke('get-dormant-meetings').catch(() => null),
+    ipcRenderer.invoke('get-usage-cache').catch(() => null),
+  ]);
+
   for (const s of existing) sessions.set(s.id, s);
 
-  // Restore dormant sessions from persisted state.
-  const persisted = await ipcRenderer.invoke('get-dormant-sessions');
   if (persisted && Array.isArray(persisted.sessions)) {
     for (const meta of persisted.sessions) {
-      if (sessions.has(meta.hubId)) continue;  // already live (shouldn't happen on fresh boot)
+      if (sessions.has(meta.hubId)) continue;
       sessions.set(meta.hubId, {
         id: meta.hubId,
         kind: meta.kind || 'claude',
@@ -2618,32 +2785,24 @@ async function resumeDormantSession(hubId) {
       });
     }
   }
-  // Load dormant meetings BEFORE first renderSessionList — avoids race
-  // where meetings appear empty on the initial render.
-  try {
-    const dormantMeetings = await ipcRenderer.invoke('get-dormant-meetings');
-    if (Array.isArray(dormantMeetings)) {
-      for (const m of dormantMeetings) {
-        if (m.layout === 'split') m.layout = 'focus';
-        meetings[m.id] = m;
-      }
-    }
-  } catch (_) {}
 
-  // Restore cached usage data so sidebar shows account usage immediately,
-  // without waiting for a live statusline callback.
-  try {
-    const cached = await ipcRenderer.invoke('get-usage-cache');
-    if (cached) {
-      if (cached.claude && cached.claude.usage5h) {
-        accountUsage.usage5h = cached.claude.usage5h;
-        accountUsage.usage7d = cached.claude.usage7d;
-      }
-      if (cached.gemini) agentUsage.gemini = cached.gemini;
-      if (cached.codex) agentUsage.codex = cached.codex;
-      renderAccountUsage();
+  if (Array.isArray(dormantMeetings)) {
+    for (const m of dormantMeetings) {
+      if (m.layout === 'split') m.layout = 'focus';
+      meetings[m.id] = m;
     }
-  } catch (_) {}
+  }
+
+  if (cached) {
+    if (cached.claude && cached.claude.usage5h) {
+      accountUsage.usage5h = cached.claude.usage5h;
+      accountUsage.usage7d = cached.claude.usage7d;
+      if (cached.claude.ts) _claudeUsageLastSeen = cached.claude.ts;
+    }
+    if (cached.gemini) agentUsage.gemini = cached.gemini;
+    if (cached.codex) agentUsage.codex = cached.codex;
+    renderAccountUsage();
+  }
 
   renderSessionList();
 })();
