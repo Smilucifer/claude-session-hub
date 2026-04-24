@@ -206,6 +206,7 @@
       { kind: 'claude', label: 'Claude Code' },
       { kind: 'gemini', label: 'Gemini CLI' },
       { kind: 'codex', label: 'Codex CLI' },
+      { kind: 'deepseek', label: 'DeepSeek' },
       { kind: 'powershell', label: 'PowerShell' },
     ];
 

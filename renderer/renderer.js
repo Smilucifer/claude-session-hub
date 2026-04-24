@@ -1839,9 +1839,22 @@ function onTerminalOutput(sessionId, dataLen) {
 }
 
 // --- IPC event handlers ---
+const _cursorDebounce = new Map();
+
 ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
   const cached = terminalCache.get(sessionId);
-  if (cached) cached.terminal.write(data);
+  if (!cached) return;
+  const sess = sessions.get(sessionId);
+  if (sess && sess.kind === 'codex') {
+    cached.terminal.write(data);
+    cached.terminal.write('\x1b[?25l');
+    clearTimeout(_cursorDebounce.get(sessionId));
+    _cursorDebounce.set(sessionId, setTimeout(() => {
+      cached.terminal.write('\x1b[?25h');
+    }, 150));
+  } else {
+    cached.terminal.write(data);
+  }
   onTerminalOutput(sessionId, data.length);
 });
 
@@ -1965,6 +1978,7 @@ function modelClass(id) {
   if (s.includes('haiku')) return 'haiku';
   if (s.includes('gemini')) return 'gemini';
   if (s.includes('codex') || s.includes('o3') || s.includes('o4-mini')) return 'codex';
+  if (s.includes('deepseek')) return 'deepseek';
   return '';
 }
 
@@ -1980,6 +1994,7 @@ function modelShort(m) {
   if (id.includes('haiku')) return 'Haiku';
   if (id.includes('gemini')) return id.replace(/^gemini-/, 'Gemini ').replace(/-/g, ' ');
   if (id.includes('codex')) return 'Codex';
+  if (id.includes('deepseek')) return 'DS';
   return m.id || '';
 }
 
@@ -2722,7 +2737,7 @@ function schedulePersist() {
   persistDebounceTimer = setTimeout(() => {
     const list = [];
     for (const s of sessions.values()) {
-      if (!s.meetingId && s.kind !== 'claude' && s.kind !== 'claude-resume' && s.kind !== 'gemini' && s.kind !== 'codex') continue;
+      if (!s.meetingId && s.kind !== 'claude' && s.kind !== 'claude-resume' && s.kind !== 'gemini' && s.kind !== 'codex' && s.kind !== 'deepseek') continue;
       list.push({
         hubId: s.id,
         title: s.title,
@@ -2741,7 +2756,7 @@ function schedulePersist() {
       id: m.id, type: 'meeting', title: m.title, subSessions: m.subSessions,
       layout: m.layout, focusedSub: m.focusedSub, syncContext: m.syncContext,
       sendTarget: m.sendTarget, createdAt: m.createdAt, lastMessageTime: m.lastMessageTime,
-      pinned: m.pinned || false,
+      pinned: m.pinned || false, lastScene: m.lastScene || null,
     }));
     ipcRenderer.send('persist-sessions', list, meetingList);
   }, 400);
@@ -2823,7 +2838,7 @@ async function resumeDormantSession(hubId) {
 
 // Persist on relevant changes — listen at renderer-level for mutations that
 // touch persistable fields. Debounced.
-for (const ch of ['session-created', 'session-closed', 'session-updated']) {
+for (const ch of ['session-created', 'session-closed', 'session-updated', 'meeting-created', 'meeting-updated', 'meeting-closed']) {
   ipcRenderer.on(ch, () => schedulePersist());
 }
 

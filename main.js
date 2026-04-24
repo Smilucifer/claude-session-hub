@@ -4,7 +4,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const http = require('http');
 const os = require('os');
-const QRCode = require('qrcode');
+let QRCode = null;
 const { SessionManager } = require('./core/session-manager.js');
 const { TeamSessionManager } = require('./core/team-session-manager.js');
 const stateStore = require('./core/state-store.js');
@@ -34,7 +34,7 @@ function ensureHooksDeployed() {
     ? path.join(process.resourcesPath, 'scripts')
     : path.join(__dirname, 'scripts');
 
-  const scriptFiles = ['session-hub-hook.py', 'claude-hub-statusline.js'];
+  const scriptFiles = ['session-hub-hook.py', 'claude-hub-statusline.js', 'deepseek_repl.py'];
   for (const file of scriptFiles) {
     const dest = path.join(scriptsDir, file);
     const src = path.join(srcDir, file);
@@ -312,8 +312,12 @@ sessionManager.onData = (sessionId, data) => {
   sendToRenderer('terminal-data', { sessionId, data });
 };
 
-sessionManager.onSessionClosed = (sessionId) => {
+sessionManager.onSessionClosed = (sessionId, meetingId) => {
   sendToRenderer('session-closed', { sessionId });
+  if (meetingId) {
+    const updated = meetingManager.removeSubSession(meetingId, sessionId);
+    if (updated) sendToRenderer('meeting-updated', { meeting: updated });
+  }
 };
 
 ipcMain.handle('create-session', (_e, arg) => {
@@ -499,14 +503,16 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
 ipcMain.handle('resume-session', (_e, meta) => {
   if (!meta || !meta.hubId) return null;
   const isClaude = (meta.kind === 'claude' || meta.kind === 'claude-resume');
+  const isDeepSeek = (meta.kind === 'deepseek');
+  const isClaudeCliResumable = isClaude || isDeepSeek;
   const isGeminiOrCodex = (meta.kind === 'gemini' || meta.kind === 'codex');
   const session = sessionManager.createSession(meta.kind || 'claude', {
     id: meta.hubId,
     title: meta.title,
     cwd: meta.cwd,
     meetingId: meta.meetingId || null,
-    resumeCCSessionId: isClaude ? (meta.ccSessionId || undefined) : undefined,
-    useContinue: isClaude && !meta.ccSessionId,
+    resumeCCSessionId: isClaudeCliResumable ? (meta.ccSessionId || undefined) : undefined,
+    useContinue: isClaudeCliResumable && !meta.ccSessionId,
     useResume: isGeminiOrCodex,
     lastMessageTime: meta.lastMessageTime,
     lastOutputPreview: meta.lastOutputPreview,
@@ -612,6 +618,7 @@ ipcMain.handle('mobile:create-pairing', async (_e, { addresses, deviceName }) =>
   const scheme = first.startsWith('http://') || first.startsWith('https://') ? '' : 'http://';
   const host = first.replace(/^https?:\/\//, '');
   const pairUrl = `${scheme}${host}/pair?token=${token}&addresses=${payload}&name=${encodeURIComponent(deviceName || 'Phone')}`;
+  if (!QRCode) QRCode = require('qrcode');
   const qrDataUrl = await QRCode.toDataURL(pairUrl, { margin: 1, width: 360 });
   return { token, pairUrl, qrDataUrl };
 });
@@ -812,9 +819,83 @@ function parseCodexUsage(plain) {
   return result;
 }
 
-// Token-based rolling-window tracker for Gemini/Codex.
-// Accumulates tokens over 5h and 7d windows, estimates usage% against known limits.
-// Known rate limits (tokens per window) — conservative estimates for paid plans.
+// --- Codex JSONL-based usage scanner ---
+// Codex CLI writes authoritative rate_limits to ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl.
+// Each file contains token_count events with primary (5h) and secondary (7d) windows.
+let _codexJsonlLastScan = 0;
+let _codexJsonlCached = null;
+const CODEX_JSONL_THROTTLE_MS = 30_000;
+
+function scanCodexJsonlUsage() {
+  const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
+  const sessionsDir = path.join(home, '.codex', 'sessions');
+  try {
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const datePaths = [];
+    datePaths.push(path.join(sessionsDir, String(now.getFullYear()), pad(now.getMonth() + 1), pad(now.getDate())));
+    const yesterday = new Date(now.getTime() - 86400000);
+    datePaths.push(path.join(sessionsDir, String(yesterday.getFullYear()), pad(yesterday.getMonth() + 1), pad(yesterday.getDate())));
+
+    let newestEntry = null;
+    for (const dir of datePaths) {
+      let files;
+      try { files = fs.readdirSync(dir).filter(f => f.startsWith('rollout-') && f.endsWith('.jsonl')); } catch { continue; }
+      const withStats = files.map(f => {
+        const fp = path.join(dir, f);
+        try { return { path: fp, mtime: fs.statSync(fp).mtimeMs }; } catch { return null; }
+      }).filter(Boolean);
+      withStats.sort((a, b) => b.mtime - a.mtime);
+      for (const file of withStats.slice(0, 3)) {
+        const entry = extractCodexRateLimits(file.path);
+        if (entry) { newestEntry = entry; break; }
+      }
+      if (newestEntry) break;
+    }
+    return newestEntry;
+  } catch { return null; }
+}
+
+function extractCodexRateLimits(filePath) {
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const stat = fs.fstatSync(fd);
+    const tailSize = Math.min(stat.size, 4096);
+    const buf = Buffer.alloc(tailSize);
+    fs.readSync(fd, buf, 0, tailSize, stat.size - tailSize);
+    fs.closeSync(fd);
+    const lines = buf.toString('utf8').split('\n').reverse();
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const obj = JSON.parse(line);
+        if (obj.type === 'event_msg' && obj.payload && obj.payload.type === 'token_count' && obj.payload.rate_limits) {
+          const rl = obj.payload.rate_limits;
+          const toMs = (t) => (typeof t === 'number' && t < 1e12) ? t * 1000 : t;
+          const result = {};
+          if (rl.primary && typeof rl.primary.used_percent === 'number') {
+            result.usage5h = { pct: Math.round(rl.primary.used_percent), resetsAt: toMs(rl.primary.resets_at) };
+          }
+          if (rl.secondary && typeof rl.secondary.used_percent === 'number') {
+            result.usage7d = { pct: Math.round(rl.secondary.used_percent), resetsAt: toMs(rl.secondary.resets_at) };
+          }
+          if (result.usage5h || result.usage7d) return result;
+        }
+      } catch { /* skip malformed lines */ }
+    }
+    return null;
+  } catch { return null; }
+}
+
+function scanCodexJsonlUsageThrottled() {
+  const now = Date.now();
+  if (now - _codexJsonlLastScan < CODEX_JSONL_THROTTLE_MS && _codexJsonlCached) return _codexJsonlCached;
+  _codexJsonlLastScan = now;
+  _codexJsonlCached = scanCodexJsonlUsage();
+  return _codexJsonlCached;
+}
+
+// Token-based rolling-window tracker for Gemini/Codex (fallback).
 const AGENT_LIMITS = {
   gemini: { tokens5h: 2_000_000, tokens7d: 50_000_000 },
   codex:  { tokens5h: 1_000_000, tokens7d: 10_000_000 },
@@ -866,7 +947,7 @@ function scanAgentSessions() {
     if (parsed.quotaPct != null) {
       const now = Date.now();
       const H5 = 5 * 3600 * 1000;
-      const usageObj = { usage5h: { pct: parsed.quotaPct, resetsAt: now + H5 } };
+      const usageObj = { usage5h: { pct: parsed.quotaPct, resetsAt: now + H5 }, _ts: now };
       _agentQuota.gemini = usageObj;
     }
     if (!parsed.model && !parsed.tokensUsed && parsed.contextPct == null && parsed.quotaPct == null) continue;
@@ -881,19 +962,38 @@ function scanAgentSessions() {
     if (parsed.model) payload.model = parsed.model;
     sendToRenderer('status-event', payload);
   }
-  // Build and broadcast per-provider usage from real quota data or token estimates
-  const agentData = {};
+  // Expire stale _agentQuota entries (no fresh CLI data for >10 min)
+  const now = Date.now();
   for (const kind of ['gemini', 'codex']) {
-    if (_agentQuota[kind]) {
-      agentData[kind] = _agentQuota[kind];
-      cacheAgentUsage(kind, _agentQuota[kind]);
-    } else {
-      const usage = calcAgentUsage(kind);
-      if (usage) {
-        agentData[kind] = usage;
-        cacheAgentUsage(kind, usage);
-      }
+    if (_agentQuota[kind] && _agentQuota[kind]._ts && now - _agentQuota[kind]._ts > 10 * 60 * 1000) {
+      _agentQuota[kind] = null;
     }
+  }
+  // Build and broadcast per-provider usage.
+  // Priority: Codex JSONL (authoritative) > ring buffer quota > token estimates.
+  const agentData = {};
+  // Codex: try JSONL first
+  const codexJsonl = scanCodexJsonlUsageThrottled();
+  if (codexJsonl) {
+    agentData.codex = codexJsonl;
+    cacheAgentUsage('codex', codexJsonl);
+  } else if (_agentQuota.codex) {
+    agentData.codex = _agentQuota.codex;
+    cacheAgentUsage('codex', _agentQuota.codex);
+  } else {
+    const usage = calcAgentUsage('codex');
+    if (usage) { agentData.codex = usage; cacheAgentUsage('codex', usage); }
+  }
+  // Gemini: quota from CLI footer > token estimates
+  if (_agentQuota.gemini) {
+    const gemData = { usage5h: _agentQuota.gemini.usage5h };
+    const tokenUsage = calcAgentUsage('gemini');
+    if (tokenUsage && tokenUsage.usage7d) gemData.usage7d = tokenUsage.usage7d;
+    agentData.gemini = gemData;
+    cacheAgentUsage('gemini', gemData);
+  } else {
+    const usage = calcAgentUsage('gemini');
+    if (usage) { agentData.gemini = usage; cacheAgentUsage('gemini', usage); }
   }
   if (Object.keys(agentData).length > 0) sendToRenderer('agent-usage', agentData);
 }
@@ -916,10 +1016,9 @@ app.whenReady().then(async () => {
   } else {
     console.warn('[hub] hook server failed to bind — falling back to silence detection');
   }
-  // Start mobile server — awaited so that CLAUDE_HUB_MOBILE_PORT is set before
-  // any PTY session is created (dormant restore, etc.). Failure is logged but
-  // not fatal: global.__mobileSrv stays null and session-manager falls back to
-  // port 3470 as a best-effort default.
+  createWindow();
+  startAgentScanner();
+  // Mobile server starts after window — no need to block UI for phone pairing.
   try {
     mobileSrv = await createMobileServer({
       sessionManager,
@@ -932,8 +1031,6 @@ app.whenReady().then(async () => {
     console.error('[mobile] failed to start:', e);
     global.__mobileSrv = null;
   }
-  createWindow();
-  startAgentScanner();
   // Push status to renderer after window is ready
   if (mainWindow) {
     mainWindow.webContents.on('did-finish-load', () => {
@@ -949,8 +1046,8 @@ const teamBridge = new TeamBridge();
 // (see app.whenReady). teamBridge._teamSessionManager is set there too.
 
 ipcMain.handle('team:isInitialized', () => teamBridge.isInitialized());
-ipcMain.handle('team:loadRooms', () => teamBridge.loadRooms());
-ipcMain.handle('team:loadCharacters', () => teamBridge.loadCharacters());
+ipcMain.handle('team:loadRooms', () => teamBridge._getCachedRooms());
+ipcMain.handle('team:loadCharacters', () => teamBridge._getCachedCharacters());
 ipcMain.handle('team:warm', (_, roomId) => teamBridge.warmRoom(roomId));
 ipcMain.handle('team:getEvents', (_, roomId, limit) => teamBridge.getEvents(roomId, limit));
 ipcMain.handle('team:getWiki', (_, roomId) => teamBridge.getWiki(roomId));

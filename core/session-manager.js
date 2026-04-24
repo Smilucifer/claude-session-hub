@@ -1,4 +1,5 @@
 const pty = require('node-pty');
+const path = require('path');
 const { v4: uuid } = require('uuid');
 const { EventEmitter } = require('events');
 
@@ -6,6 +7,15 @@ const RING_BUFFER_BYTES = 16384;
 
 // Default proxy for Claude sessions. Change if your proxy differs.
 const CLAUDE_PROXY = 'http://127.0.0.1:7890';
+
+function loadDeepSeekApiKey() {
+  try {
+    const content = require('fs').readFileSync('C:\\LinDangAgent\\secrets.toml', 'utf8');
+    const match = content.match(/DEEPSEEK_API_KEY\s*=\s*["']([^"']+)["']/);
+    return match ? match[1] : '';
+  } catch { return ''; }
+}
+const DEEPSEEK_API_KEY = loadDeepSeekApiKey();
 
 class SessionManager extends EventEmitter {
   sessions = new Map();
@@ -38,13 +48,15 @@ class SessionManager extends EventEmitter {
     const isClaude = kind === 'claude' || kind === 'claude-resume';
     const isGemini = kind === 'gemini';
     const isCodex = kind === 'codex';
-    const isAgent = isClaude || isGemini || isCodex;
+    const isDeepSeek = kind === 'deepseek';
+    const isAgent = isClaude || isGemini || isCodex || isDeepSeek;
     let title;
     if (opts.title) title = opts.title;
     else if (kind === 'claude') title = `Claude ${++this.claudeCounter}`;
     else if (kind === 'claude-resume') title = `Claude Resume ${++this.resumeCounter}`;
     else if (kind === 'gemini') { this.geminiCounter = (this.geminiCounter || 0) + 1; title = `Gemini ${this.geminiCounter}`; }
     else if (kind === 'codex') { this.codexCounter = (this.codexCounter || 0) + 1; title = `Codex ${this.codexCounter}`; }
+    else if (kind === 'deepseek') { this.deepseekCounter = (this.deepseekCounter || 0) + 1; title = `DeepSeek ${this.deepseekCounter}`; }
     else title = `PowerShell ${++this.psCounter}`;
 
     const sessionEnv = { ...process.env };
@@ -76,6 +88,25 @@ class SessionManager extends EventEmitter {
       sessionEnv.HTTP_PROXY = CLAUDE_PROXY;
       sessionEnv.HTTPS_PROXY = CLAUDE_PROXY;
       sessionEnv.NO_PROXY = 'localhost,127.0.0.1';
+    } else if (isDeepSeek) {
+      // DeepSeek API 国内直连，不走代理
+      delete sessionEnv.HTTP_PROXY;
+      delete sessionEnv.HTTPS_PROXY;
+      delete sessionEnv.NO_PROXY;
+      // 让 Claude Code CLI 连接 DeepSeek 的 Anthropic 兼容端点
+      sessionEnv.ANTHROPIC_BASE_URL = 'https://api.deepseek.com/anthropic';
+      sessionEnv.ANTHROPIC_AUTH_TOKEN = DEEPSEEK_API_KEY;
+      // 清除可能继承的 Anthropic 认证，防止冲突
+      delete sessionEnv.ANTHROPIC_API_KEY;
+      delete sessionEnv.ANTHROPIC_API_BASE_URL;
+      // Hub hook 集成
+      sessionEnv.CLAUDE_HUB_SESSION_ID = id;
+      if (this.hookPort) sessionEnv.CLAUDE_HUB_PORT = String(this.hookPort);
+      if (this.hookToken) sessionEnv.CLAUDE_HUB_TOKEN = this.hookToken;
+      sessionEnv.CLAUDE_HUB_MOBILE_PORT = String((global.__mobileSrv && global.__mobileSrv.port) || 3470);
+      if (process.env.CLAUDE_HUB_DATA_DIR) {
+        sessionEnv.CLAUDE_HUB_DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR;
+      }
     }
 
     // Merge extra env vars (used by TeamSessionManager for MCP config etc.)
@@ -112,6 +143,9 @@ class SessionManager extends EventEmitter {
       currentModel = { id: mid, displayName: SessionManager.geminiDisplayName(mid) };
     } else if (isCodex) {
       currentModel = { id: 'codex', displayName: 'Codex' };
+    } else if (isDeepSeek) {
+      const mid = opts.model || 'deepseek-v4-pro';
+      currentModel = { id: mid, displayName: mid === 'deepseek-v4-pro' ? 'DS V4 Pro' : 'DS V4 Flash' };
     }
 
     const now = Date.now();
@@ -139,7 +173,12 @@ class SessionManager extends EventEmitter {
       this.emit('output', { sessionId: id, seq: this._outputSeq, data });
     });
 
-    ptyProcess.onExit(() => { this.sessions.delete(id); this.onSessionClosed(id); });
+    ptyProcess.onExit(() => {
+      const entry = this.sessions.get(id);
+      const mid = entry && entry.info ? entry.info.meetingId : null;
+      this.sessions.delete(id);
+      this.onSessionClosed(id, mid);
+    });
 
     if (kind === 'powershell') {
       ptyProcess.write('Set-PSReadLineOption -PredictionViewStyle ListView 2>$null; clear\r\n');
@@ -222,6 +261,40 @@ class SessionManager extends EventEmitter {
 
     if (isCodex) {
       let cmd = opts.useResume ? ' codex resume --last --full-auto' : ' codex --full-auto';
+      cmd += '\r\n';
+      let sent = false;
+      let debounceTimer = null;
+      const watcher = ptyProcess.onData(() => {
+        if (sent) return;
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          if (sent) return;
+          sent = true;
+          watcher.dispose();
+          const s = this.sessions.get(id);
+          if (s) s.pty.write(cmd);
+        }, 200);
+      });
+      const safetyTimer = setTimeout(() => {
+        if (sent) return;
+        sent = true;
+        watcher.dispose();
+        if (debounceTimer) clearTimeout(debounceTimer);
+        const s = this.sessions.get(id);
+        if (s) s.pty.write(cmd);
+      }, 3000);
+      pendingTimers.push(safetyTimer);
+    }
+
+    if (isDeepSeek) {
+      let cmd;
+      if (opts.resumeCCSessionId) {
+        cmd = ` claude --resume ${opts.resumeCCSessionId}`;
+      } else if (opts.useContinue) {
+        cmd = ' claude --continue';
+      } else {
+        cmd = ` claude --model ${opts.model || 'deepseek-v4-pro'}`;
+      }
       cmd += '\r\n';
       let sent = false;
       let debounceTimer = null;

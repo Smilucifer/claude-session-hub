@@ -8,7 +8,7 @@ const path = require('path');
 const http = require('http');
 const os = require('os');
 
-const THROTTLE_MS = 60 * 1000;
+const THROTTLE_MS = 15 * 1000;
 // Honor CLAUDE_HUB_DATA_DIR so isolated test Hubs don't collide with the
 // production cache. Hub (session-manager.js) forwards this env var when set.
 // Default fallback uses os.homedir() to stay consistent with core/data-dir.js.
