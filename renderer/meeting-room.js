@@ -118,6 +118,7 @@
         <button class="mr-header-btn ${meeting.layout === 'focus' ? 'active' : ''}" id="mr-btn-focus">Focus</button>
         <button class="mr-header-btn ${meeting.layout === 'blackboard' ? 'active' : ''}" id="mr-btn-blackboard">Blackboard</button>
         <button class="mr-header-btn" id="mr-btn-add-sub" title="添加子会话">+ 添加</button>
+        <button class="btn-zoom btn-memo-toggle ${typeof localStorage !== 'undefined' && localStorage.getItem('claude-hub-memo-open') === 'true' ? 'active' : ''}" id="mr-btn-memo" title="Toggle memo panel"><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M2 3.5A1.5 1.5 0 013.5 2h9A1.5 1.5 0 0114 3.5v9a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 12.5v-9zM4 5h8M4 8h8M4 11h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" fill="none"/></svg></button>
         <button class="btn-zoom" id="mr-btn-zoom-out" title="Shrink UI">A−</button>
         <button class="btn-zoom" id="mr-btn-zoom-in" title="Enlarge UI">A+</button>
         <button class="btn-close-session" id="mr-btn-close" title="关闭会议室" aria-label="Close meeting"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg></button>
@@ -127,6 +128,7 @@
     document.getElementById('mr-btn-focus').addEventListener('click', () => setLayout(meeting.id, 'focus'));
     document.getElementById('mr-btn-blackboard').addEventListener('click', () => setLayout(meeting.id, 'blackboard'));
     document.getElementById('mr-btn-add-sub').addEventListener('click', () => showAddSubMenu(meeting.id));
+    document.getElementById('mr-btn-memo').addEventListener('click', () => { if (typeof toggleMemoPanel === 'function') toggleMemoPanel(); });
     document.getElementById('mr-btn-zoom-out').addEventListener('click', () => { if (typeof applyZoom === 'function') applyZoom(currentZoom - 1); });
     document.getElementById('mr-btn-zoom-in').addEventListener('click', () => { if (typeof applyZoom === 'function') applyZoom(currentZoom + 1); });
     document.getElementById('mr-btn-close').addEventListener('click', async () => {
