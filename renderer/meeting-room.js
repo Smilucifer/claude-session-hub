@@ -264,7 +264,10 @@
     if (!cached.container.querySelector('.xterm-screen')) {
       cached.terminal.open(cached.container);
       cached.opened = true;
+      if (typeof loadGpuRenderer === 'function') loadGpuRenderer(cached);
     }
+    cached.terminal.refresh(0, cached.terminal.rows - 1);
+    cached.terminal.scrollToBottom();
   }
 
   function subModelBadgeHtml(session) {
