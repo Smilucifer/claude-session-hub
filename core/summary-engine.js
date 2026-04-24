@@ -82,6 +82,19 @@ class SummaryEngine {
     return this.extractMarker(rawBuffer, sessionId);
   }
 
+  async compressContext(content, maxChars = 1000) {
+    if (!content || content.length <= maxChars) return content;
+    const system = '你是一个协作上下文压缩助手。将内容压缩到指定字符数以内，保留关键结论、数据点和具体建议，压缩论证过程和重复内容。';
+    const prompt = `将以下 AI 回答压缩到 ${maxChars} 字符以内。\n要求：保留关键结论、数据点和具体建议，压缩论证过程和重复内容。\n\n原文：\n${content}`;
+    try {
+      const compressed = await this._callGeminiPipe(system, prompt);
+      return compressed || content.slice(0, maxChars);
+    } catch (err) {
+      console.error('[summary-engine] compressContext failed:', err.message);
+      return content.slice(0, maxChars);
+    }
+  }
+
   async deepSummary(rawBuffer, options = {}) {
     const { agentName = 'AI', question = '', scene = 'free_discussion' } = options;
 

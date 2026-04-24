@@ -388,6 +388,10 @@ ipcMain.handle('get-marker-instruction', () => {
   return summaryEngine.getMarkerInstruction();
 });
 
+ipcMain.handle('compress-context', async (_e, { content, maxChars }) => {
+  return await summaryEngine.compressContext(content, maxChars || 1000);
+});
+
 ipcMain.handle('deep-summary', async (_e, { sessionId, scene, question, agentName }) => {
   const raw = sessionManager.getSessionBuffer(sessionId);
   if (!raw) return '';
