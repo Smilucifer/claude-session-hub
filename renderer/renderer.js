@@ -320,15 +320,22 @@ function applyZoom(level) {
 applyZoom(currentZoom);
 
 // --- Global Memo Panel ---
-const MEMO_KEY = 'claude-hub-memo-items';
 const MEMO_OPEN_KEY = 'claude-hub-memo-open';
+const _memoFs = require('fs');
+const _memoPath = require('path');
+const _memoFile = _memoPath.join(
+  require('../core/data-dir').getHubDataDir(), 'memo.json'
+);
 
 function loadMemoItems() {
-  try { return JSON.parse(localStorage.getItem(MEMO_KEY)) || []; }
+  try { return JSON.parse(_memoFs.readFileSync(_memoFile, 'utf8')); }
   catch { return []; }
 }
 function saveMemoItems(items) {
-  localStorage.setItem(MEMO_KEY, JSON.stringify(items));
+  try {
+    _memoFs.mkdirSync(_memoPath.dirname(_memoFile), { recursive: true });
+    _memoFs.writeFileSync(_memoFile, JSON.stringify(items, null, 2), 'utf8');
+  } catch (e) { console.error('[memo] save failed:', e.message); }
 }
 
 function formatMemoTime(ts) {
