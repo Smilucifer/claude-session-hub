@@ -283,6 +283,7 @@ function createWindow() {
     backgroundColor: '#0d1117',
     icon: winIcon,
     show: false,
+    autoHideMenuBar: true,
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
