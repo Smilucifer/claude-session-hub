@@ -6,9 +6,9 @@ const { stripAnsi } = require('./ansi-utils');
 
 const DEFAULT_TEMPLATES_PATH = path.join(__dirname, '..', 'config', 'summary-templates.json');
 
-const START_MARKER = 'HSUMMARY_START';
-const END_MARKER = 'HSUMMARY_END';
-const MARKER_INSTRUCTION = '\n\n[回答末尾用 HSUMMARY_START 和 HSUMMARY_END 包裹100-300字核心摘要。复杂内容可写入.md文件,标记内注明路径]';
+const START_MARKER = 'SM-START';
+const END_MARKER = 'SM-END';
+const MARKER_INSTRUCTION = '\n\n[用SM-START和SM-END包裹回答内容]';
 
 class SummaryEngine {
   constructor(config = {}) {
