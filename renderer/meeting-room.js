@@ -463,27 +463,12 @@
       return;
     }
 
-    let optionsHtml = '<option value="all">全部</option>';
-    for (const sid of meeting.subSessions) {
-      const session = sessions ? sessions.get(sid) : null;
-      const label = session ? (session.title || session.kind || sid) : sid;
-      const sel = meeting.sendTarget === sid ? ' selected' : '';
-      optionsHtml += `<option value="${sid}"${sel}>${escapeHtml(label)}</option>`;
-    }
-
     el.innerHTML = `
-      <label>发送到: <select class="mr-target-select" id="mr-target-select">${optionsHtml}</select></label>
       <button class="mr-header-btn" id="mr-sync-btn">⟳ 同步</button>
       <div class="mr-sync-toggle ${meeting.syncContext ? 'active' : ''}" id="mr-sync-toggle">
         <span>自动同步: ${meeting.syncContext ? '开' : '关'}</span>
       </div>
     `;
-
-    document.getElementById('mr-target-select').addEventListener('change', (e) => {
-      meeting.sendTarget = e.target.value;
-      ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { sendTarget: meeting.sendTarget } });
-      renderTerminals(meeting);
-    });
 
     document.getElementById('mr-sync-toggle').addEventListener('click', () => {
       meeting.syncContext = !meeting.syncContext;
