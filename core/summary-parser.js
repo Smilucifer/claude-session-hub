@@ -30,4 +30,41 @@ function applySchema(obj) {
   return { result, warnings };
 }
 
-module.exports = { tryParseJson, applySchema };
+function validateBusiness(data, presentAIs) {
+  const isValidAI = (s) => typeof s === 'string' && presentAIs.has(s);
+  const out = {
+    consensus: data.consensus
+      .filter(c => c && typeof c.text === 'string' && Array.isArray(c.supporters))
+      .map(c => ({ ...c, supporters: c.supporters.filter(isValidAI) }))
+      .filter(c => c.supporters.length > 0),
+    disagreements: data.disagreements
+      .filter(d => d && typeof d.topic === 'string' && Array.isArray(d.positions))
+      .map(d => ({
+        ...d,
+        positions: d.positions
+          .filter(p => p && typeof p.view === 'string' && isValidAI(p.by)),
+      }))
+      .filter(d => d.positions.length > 0),
+    decisions: data.decisions
+      .filter(dec => dec && typeof dec.text === 'string'),
+    open_questions: data.open_questions
+      .filter(q => typeof q === 'string' && q.length > 0),
+  };
+  return out;
+}
+
+function parse(rawOutput, presentAIs) {
+  const obj = tryParseJson(rawOutput);
+  if (!obj) {
+    return { status: 'failed', raw_output: rawOutput, warnings: ['解析 JSON 失败'] };
+  }
+  const { result, warnings } = applySchema(obj);
+  const validated = validateBusiness(result, presentAIs);
+  return {
+    status: warnings.length > 0 ? 'partial' : 'ok',
+    data: validated,
+    warnings,
+  };
+}
+
+module.exports = { tryParseJson, applySchema, validateBusiness, parse };

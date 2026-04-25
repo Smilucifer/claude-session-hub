@@ -65,5 +65,74 @@ test('字段类型错误（不是数组）→ 视为缺失', () => {
   assert.deepStrictEqual(r.result.consensus, []);
 });
 
+const { validateBusiness, parse } = require('../core/summary-parser.js');
+
+console.log('\nvalidateBusiness:');
+test('过滤 supporters 中不存在的 AI', () => {
+  const data = {
+    consensus: [{ text: 'x', supporters: ['claude', 'codex', 'ghost'] }],
+    disagreements: [], decisions: [], open_questions: [],
+  };
+  const r = validateBusiness(data, new Set(['claude', 'codex', 'user']));
+  assert.deepStrictEqual(r.consensus[0].supporters, ['claude', 'codex']);
+});
+test('共识全员失效 → 整条记录被剔除', () => {
+  const data = {
+    consensus: [
+      { text: 'a', supporters: ['ghost1', 'ghost2'] },
+      { text: 'b', supporters: ['claude'] },
+    ],
+    disagreements: [], decisions: [], open_questions: [],
+  };
+  const r = validateBusiness(data, new Set(['claude', 'user']));
+  assert.strictEqual(r.consensus.length, 1);
+  assert.strictEqual(r.consensus[0].text, 'b');
+});
+test('disagreements positions.by 失效 → 整条 position 剔除', () => {
+  const data = {
+    consensus: [],
+    disagreements: [{
+      topic: 't',
+      positions: [
+        { by: 'claude', view: 'A' },
+        { by: 'ghost', view: 'B' },
+      ],
+    }],
+    decisions: [], open_questions: [],
+  };
+  const r = validateBusiness(data, new Set(['claude', 'user']));
+  assert.strictEqual(r.disagreements[0].positions.length, 1);
+});
+test('open_questions 非字符串 → 过滤掉', () => {
+  const data = {
+    consensus: [], disagreements: [], decisions: [],
+    open_questions: ['ok', null, 42, 'also ok'],
+  };
+  const r = validateBusiness(data, new Set(['user']));
+  assert.deepStrictEqual(r.open_questions, ['ok', 'also ok']);
+});
+
+console.log('\nparse (总编排):');
+test('完整路径:坏 JSON → null → status=failed', () => {
+  const r = parse('not json at all', new Set(['claude']));
+  assert.strictEqual(r.status, 'failed');
+  assert.ok(r.raw_output);
+});
+test('完整路径:合法 JSON → status=ok', () => {
+  const raw = JSON.stringify({
+    consensus: [{ text: 'x', supporters: ['claude'] }],
+    disagreements: [], decisions: [], open_questions: [],
+  });
+  const r = parse(raw, new Set(['claude', 'user']));
+  assert.strictEqual(r.status, 'ok');
+  assert.strictEqual(r.data.consensus.length, 1);
+});
+test('完整路径:缺字段 → status=partial + warnings', () => {
+  const raw = JSON.stringify({ consensus: [] });
+  const r = parse(raw, new Set(['claude', 'user']));
+  assert.strictEqual(r.status, 'partial');
+  assert.ok(r.warnings.length >= 1);
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);
