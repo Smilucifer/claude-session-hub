@@ -1,4 +1,5 @@
 const { v4: uuid } = require('uuid');
+const meetingStore = require('./meeting-store');
 
 class MeetingRoomManager {
   constructor() {
@@ -91,6 +92,7 @@ class MeetingRoomManager {
     if (!m) return null;
     const subIds = [...m.subSessions];
     this.meetings.delete(meetingId);
+    meetingStore.deleteMeetingFile(meetingId);
     return subIds;
   }
 
@@ -107,6 +109,20 @@ class MeetingRoomManager {
     const num = parseInt((meetingData.title || '').replace(/\D/g, ''), 10);
     if (num && num >= this._counter) this._counter = num;
   }
+
+  loadTimelineLazy(meetingId) {
+    const m = this.meetings.get(meetingId);
+    if (!m) return false;
+    // Already loaded?
+    if (m._timeline.length > 0 || m._nextIdx > 0) return true;
+    const data = meetingStore.loadMeetingFile(meetingId);
+    if (!data) return false;
+    m._timeline = Array.isArray(data._timeline) ? data._timeline : [];
+    m._cursors = (data._cursors && typeof data._cursors === 'object') ? data._cursors : {};
+    m._nextIdx = typeof data._nextIdx === 'number' ? data._nextIdx : m._timeline.length;
+    return true;
+  }
+
   appendTurn(meetingId, sid, text, ts) {
     const m = this.meetings.get(meetingId);
     if (!m) return null;
@@ -130,6 +146,7 @@ class MeetingRoomManager {
     const turn = { idx: m._nextIdx++, sid, text: safeText, ts: resolvedTs };
     m._timeline.push(turn);
     m.lastMessageTime = resolvedTs;
+    meetingStore.markDirty(meetingId, { _timeline: m._timeline, _cursors: m._cursors, _nextIdx: m._nextIdx });
     return { ...turn };
   }
 
@@ -153,6 +170,7 @@ class MeetingRoomManager {
     if (newPos < m._cursors[sid]) return false; // monotonic
     if (newPos > m._timeline.length) newPos = m._timeline.length;
     m._cursors[sid] = newPos;
+    meetingStore.markDirty(meetingId, { _timeline: m._timeline, _cursors: m._cursors, _nextIdx: m._nextIdx });
     return true;
   }
 
@@ -170,6 +188,7 @@ class MeetingRoomManager {
       .filter(t => t.sid !== targetSid)
       .map(t => ({ ...t }));
     m._cursors[targetSid] = m._timeline.length;
+    meetingStore.markDirty(meetingId, { _timeline: m._timeline, _cursors: m._cursors, _nextIdx: m._nextIdx });
     return { turns: newTurns, advancedTo: m._cursors[targetSid] };
   }
 }

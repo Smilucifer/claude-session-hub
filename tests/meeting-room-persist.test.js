@@ -1,0 +1,46 @@
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const assert = require('assert');
+
+const TEMP = fs.mkdtempSync(path.join(os.tmpdir(), 'mroom-'));
+process.env.CLAUDE_HUB_DATA_DIR = TEMP;
+
+// IMPORTANT: invalidate require cache so meeting-store sees new env
+delete require.cache[require.resolve('../core/data-dir')];
+delete require.cache[require.resolve('../core/meeting-store')];
+delete require.cache[require.resolve('../core/meeting-room')];
+
+const { MeetingRoomManager } = require('../core/meeting-room');
+const { loadMeetingFile, flushAll } = require('../core/meeting-store');
+
+(async () => {
+  const mgr = new MeetingRoomManager();
+  const m = mgr.createMeeting();
+  mgr.addSubSession(m.id, 'sid-A');
+  mgr.appendTurn(m.id, 'sid-A', 'hello world', 1000);
+  mgr.appendTurn(m.id, 'user', 'reply', 2000);
+
+  await flushAll();
+
+  const persisted = loadMeetingFile(m.id);
+  assert.ok(persisted, 'meeting file persisted');
+  assert.strictEqual(persisted._timeline.length, 2, 'timeline length 2');
+  assert.strictEqual(persisted._timeline[0].text, 'hello world');
+  assert.strictEqual(persisted._timeline[1].text, 'reply');
+  assert.strictEqual(persisted._nextIdx, 2);
+  console.log('PASS T2.1 mutation triggers persist');
+
+  // T2.2: loadTimelineLazy populates in-memory
+  const mgr2 = new MeetingRoomManager();
+  mgr2.restoreMeeting({ id: m.id, title: 'recover', subSessions: ['sid-A'], layout: 'focus' });
+  const before = mgr2.getTimeline(m.id);
+  assert.strictEqual(before.length, 0, 'restoreMeeting starts empty');
+  mgr2.loadTimelineLazy(m.id);
+  const after = mgr2.getTimeline(m.id);
+  assert.strictEqual(after.length, 2, 'loadTimelineLazy fills timeline');
+  console.log('PASS T2.2 loadTimelineLazy');
+
+  console.log('ALL meeting-room-persist tests PASS');
+  fs.rmSync(TEMP, { recursive: true, force: true });
+})().catch(e => { console.error('FAIL:', e); process.exit(1); });
