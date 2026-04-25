@@ -714,6 +714,21 @@ ipcMain.handle('get-dormant-sessions', () => ({
 
 ipcMain.on('persist-sessions', (_e, list, meetingList) => {
   if (!Array.isArray(list)) return;
+  // Preserve resume meta fields (codexSid/geminiChatId/geminiProjectHash/geminiProjectRoot)
+  // that renderer is unaware of. Without this merge, every renderer schedulePersist
+  // would silently wipe these fields populated by transcript-tap session-bound handler.
+  const RESUME_META_FIELDS = ['codexSid', 'geminiChatId', 'geminiProjectHash', 'geminiProjectRoot'];
+  const oldByHubId = new Map(lastPersistedSessions.map(s => [s.hubId, s]));
+  for (const newSession of list) {
+    if (!newSession || !newSession.hubId) continue;
+    const oldSession = oldByHubId.get(newSession.hubId);
+    if (!oldSession) continue;
+    for (const field of RESUME_META_FIELDS) {
+      if (newSession[field] === undefined && oldSession[field] != null) {
+        newSession[field] = oldSession[field];
+      }
+    }
+  }
   lastPersistedSessions = list;
   stateStore.save({
     version: 1,
