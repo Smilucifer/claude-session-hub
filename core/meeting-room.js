@@ -155,6 +155,20 @@ class MeetingRoomManager {
     m._cursors[sid] = newPos;
     return true;
   }
+
+  incrementalContext(meetingId, targetSid) {
+    const m = this.meetings.get(meetingId);
+    if (!m || !(targetSid in m._cursors)) {
+      return { turns: [], advancedTo: 0 };
+    }
+    const fromIdx = m._cursors[targetSid];
+    const newTurns = m._timeline
+      .slice(fromIdx)
+      .filter(t => t.sid !== targetSid)
+      .map(t => ({ ...t }));
+    m._cursors[targetSid] = m._timeline.length;
+    return { turns: newTurns, advancedTo: m._cursors[targetSid] };
+  }
 }
 
 module.exports = { MeetingRoomManager };

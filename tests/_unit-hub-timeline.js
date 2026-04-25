@@ -181,3 +181,68 @@ test('advanceCursor rejects backward moves and does not mutate', () => {
   assert.equal(same, true, 'same-position advance is a no-op success');
   assert.equal(m.getCursor(meeting.id, 'sub-A'), 2);
 });
+
+test('incrementalContext returns turns since cursor, excluding target self', () => {
+  const m = new MeetingRoomManager();
+  const meeting = m.createMeeting();
+  m.addSubSession(meeting.id, 'sub-A');
+  m.addSubSession(meeting.id, 'sub-B');
+  m.appendTurn(meeting.id, 'user', 'Q1', 1);
+  m.appendTurn(meeting.id, 'sub-A', 'R1_A', 2);
+  m.appendTurn(meeting.id, 'sub-B', 'R1_B', 3);
+
+  // First call for sub-A: gets all timeline minus its own turns
+  const result = m.incrementalContext(meeting.id, 'sub-A');
+  assert.equal(result.turns.length, 2); // user + sub-B (sub-A self excluded)
+  assert.equal(result.turns[0].sid, 'user');
+  assert.equal(result.turns[1].sid, 'sub-B');
+  assert.equal(result.advancedTo, 3);
+});
+
+test('incrementalContext advances cursor', () => {
+  const m = new MeetingRoomManager();
+  const meeting = m.createMeeting();
+  m.addSubSession(meeting.id, 'sub-A');
+  m.appendTurn(meeting.id, 'user', 'Q', 1);
+  m.appendTurn(meeting.id, 'sub-B', 'R', 2);
+
+  m.incrementalContext(meeting.id, 'sub-A');
+  assert.equal(m.getCursor(meeting.id, 'sub-A'), 2);
+
+  // Second call: nothing new
+  const second = m.incrementalContext(meeting.id, 'sub-A');
+  assert.equal(second.turns.length, 0);
+});
+
+test('incrementalContext on unknown sub returns empty', () => {
+  const m = new MeetingRoomManager();
+  const meeting = m.createMeeting();
+  m.appendTurn(meeting.id, 'user', 'Q', 1);
+  const result = m.incrementalContext(meeting.id, 'sub-not-added');
+  assert.deepEqual(result, { turns: [], advancedTo: 0 });
+});
+
+test('incrementalContext respects user turns inserted between AI turns', () => {
+  const m = new MeetingRoomManager();
+  const meeting = m.createMeeting();
+  m.addSubSession(meeting.id, 'sub-A');
+  m.appendTurn(meeting.id, 'user', 'Q1', 1);
+  m.appendTurn(meeting.id, 'sub-B', 'R1_B', 2);
+  m.advanceCursor(meeting.id, 'sub-A', 2); // sub-A consumed up to here
+  m.appendTurn(meeting.id, 'user', 'Q2', 3);
+  m.appendTurn(meeting.id, 'sub-B', 'R2_B', 4);
+
+  const result = m.incrementalContext(meeting.id, 'sub-A');
+  assert.equal(result.turns.length, 2);
+  assert.equal(result.turns[0].text, 'Q2');
+  assert.equal(result.turns[1].text, 'R2_B');
+});
+
+test('incrementalContext does NOT advance cursor when meeting/sub missing', () => {
+  const m = new MeetingRoomManager();
+  const meeting = m.createMeeting();
+  // No sub added
+  const r = m.incrementalContext(meeting.id, 'sub-not-added');
+  assert.equal(r.advancedTo, 0);
+  assert.equal(m.getCursor(meeting.id, 'sub-not-added'), null);
+});
