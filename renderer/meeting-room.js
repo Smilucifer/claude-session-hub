@@ -577,18 +577,36 @@
         })
       : [current.sendTarget];
 
-    // NOTE: SM-START/SM-END marker instruction no longer injected. Each CLI's
-    // own transcript file (Claude JSONL / Codex rollout / Gemini chats JSONL)
-    // is read via transcript-tap for authoritative answer extraction. Marker
-    // extraction in summary-engine remains as a fallback path but we stop
-    // polluting user prompts with marker instructions.
+    // Defensive filter: only keep targets that are currently in the meeting's
+    // subSessions list and are not dormant (handles stale single-target refs).
+    const validTargets = targets.filter(sid => {
+      if (!current.subSessions.includes(sid)) return false;
+      const s = sessions ? sessions.get(sid) : null;
+      return s && s.status !== 'dormant';
+    });
+    if (validTargets.length === 0) {
+      console.warn('[meeting-room] handleMeetingSend: no valid targets, skipping');
+      return;
+    }
 
-    for (const sessionId of targets) {
+    // Step 1: Append user turn to meeting timeline (regardless of syncContext —
+    // user turns are always part of the conversation history for Feed UI).
+    await ipcRenderer.invoke('meeting-append-user-turn', { meetingId: meeting.id, text });
+
+    for (const sessionId of validTargets) {
       let payload = text;
+
+      // Step 2: If syncContext is ON, prepend incremental context for this target.
       if (meeting.syncContext) {
-        const context = await buildContextSummary(meeting, sessionId);
-        payload = context + payload;
+        const result = await ipcRenderer.invoke('meeting-incremental-context', {
+          meetingId: meeting.id, targetSid: sessionId,
+        });
+        if (result && result.turns && result.turns.length > 0) {
+          const formatted = formatIncrementalContext(result.turns, sessions);
+          payload = formatted + text;
+        }
       }
+
       ipcRenderer.send('terminal-input', { sessionId, data: payload });
       const session = sessions ? sessions.get(sessionId) : null;
       const enterDelay = session && session.kind === 'codex' ? 300 : 80;
@@ -604,6 +622,28 @@
     _divergenceHash = '';
     const divBar = document.getElementById('mr-divergence-bar');
     if (divBar) divBar.remove();
+  }
+
+  // Format incremental-context turns as a clear "meeting sync" prefix the AI can
+  // recognize as not being from the user. Format:
+  //   [会议室协作同步]
+  //   【你】Q2 follow-up
+  //   【Codex】R2_X content...
+  //   ---
+  function formatIncrementalContext(turns, sessions) {
+    const lines = ['[会议室协作同步]'];
+    for (const t of turns) {
+      let label;
+      if (t.sid === 'user') {
+        label = '你';
+      } else {
+        const s = sessions ? sessions.get(t.sid) : null;
+        label = s ? (s.title || s.kind || 'AI') : 'AI';
+      }
+      lines.push(`【${label}】${t.text}`);
+    }
+    lines.push('---', '');
+    return lines.join('\n');
   }
 
   const _contextCompressCache = new Map();
