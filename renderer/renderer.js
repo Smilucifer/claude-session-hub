@@ -1271,7 +1271,8 @@ function mountMinimap(sessionId, termContainer, terminal) {
   }
 
   let promptMarkerLayer = null;
-  let activeLine = -1;
+  const initCache = terminalCache.get(sessionId);
+  let activeLine = (initCache && typeof initCache._activePromptLine === 'number') ? initCache._activePromptLine : -1;
 
   function ensureMarkerLayer() {
     if (promptMarkerLayer) return promptMarkerLayer;
@@ -1358,8 +1359,16 @@ function mountMinimap(sessionId, termContainer, terminal) {
     const buf = terminal.buffer.active;
     const hasActive = activeLine >= 0;
     let cur;
-    if (hasActive) cur = activeLine;
-    else if (direction === 'up') cur = buf.viewportY + terminal.rows;
+    if (hasActive) {
+      // If user scrolled far from the last-jumped prompt, fall back to viewport
+      // anchor so the next jump starts near where the user is actually looking.
+      const viewY = buf.viewportY;
+      if (activeLine < viewY || activeLine >= viewY + terminal.rows) {
+        cur = direction === 'up' ? viewY + terminal.rows : viewY;
+      } else {
+        cur = activeLine;
+      }
+    } else if (direction === 'up') cur = buf.viewportY + terminal.rows;
     else cur = buf.viewportY;
     if (direction === 'up') {
       for (let i = ticks.length - 1; i >= 0; i--) {
@@ -1443,11 +1452,15 @@ function mountPromptNavButtons(sessionId, termContainer, minimap) {
     e.stopPropagation();
     minimap.navPrev();
     refreshState();
+    const c = terminalCache.get(sessionId);
+    if (c && c.terminal) c.terminal.focus();
   });
   btnDown.addEventListener('click', (e) => {
     e.stopPropagation();
     minimap.navNext();
     refreshState();
+    const c = terminalCache.get(sessionId);
+    if (c && c.terminal) c.terminal.focus();
   });
 
   // Initial call: ticks array is empty until the rAF scan in mountMinimap
@@ -2902,12 +2915,12 @@ document.addEventListener('keydown', (e) => {
   // 委派 minimap.navPrev/navNext —— 和 xterm-level keydown handler (renderer.js:~941)
   // 共用同一份跳转实现。stopPropagation 阻止后续 xterm handler 重复跳，避免双触发。
   if (!e.shiftKey && !e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+    if (e.defaultPrevented) return; // xterm-level handler already handled this event
     const c = terminalCache.get(activeSessionId);
     if (!c || !c._minimap) return;
     const moved = e.key === 'ArrowUp' ? c._minimap.navPrev() : c._minimap.navNext();
     if (moved) {
       e.preventDefault();
-      e.stopPropagation();
     }
     return;
   }
