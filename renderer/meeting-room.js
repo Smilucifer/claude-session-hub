@@ -570,43 +570,44 @@
 
   async function handleMeetingSend(text, meeting) {
     const current = meetingData[meeting.id] || meeting;
-    const targets = current.sendTarget === 'all'
-      ? current.subSessions.filter(sid => {
-          const s = sessions ? sessions.get(sid) : null;
-          return s && s.status !== 'dormant';
-        })
-      : [current.sendTarget];
+    const targets = current.sendTarget === 'all' ? current.subSessions : [current.sendTarget];
 
-    // Defensive filter: only keep targets that are currently in the meeting's
-    // subSessions list and are not dormant (handles stale single-target refs).
+    // Single defensive filter: only sub-sessions still in the meeting and not dormant.
     const validTargets = targets.filter(sid => {
       if (!current.subSessions.includes(sid)) return false;
       const s = sessions ? sessions.get(sid) : null;
       return s && s.status !== 'dormant';
     });
-    if (validTargets.length === 0) {
-      console.warn('[meeting-room] handleMeetingSend: no valid targets, skipping');
-      return;
-    }
 
-    // Step 1: Append user turn to meeting timeline (regardless of syncContext —
-    // user turns are always part of the conversation history for Feed UI).
-    await ipcRenderer.invoke('meeting-append-user-turn', { meetingId: meeting.id, text });
-
-    for (const sessionId of validTargets) {
-      let payload = text;
-
-      // Step 2: If syncContext is ON, prepend incremental context for this target.
-      if (meeting.syncContext) {
+    // Phase A: compute incremental context BEFORE appending user turn.
+    // This way the just-typed user message does NOT leak into its own injection.
+    // Cursor advance here uses the pre-append timeline state.
+    const contextBySid = {};
+    if (meeting.syncContext) {
+      for (const sessionId of validTargets) {
         const result = await ipcRenderer.invoke('meeting-incremental-context', {
           meetingId: meeting.id, targetSid: sessionId,
         });
         if (result && result.turns && result.turns.length > 0) {
-          const formatted = formatIncrementalContext(result.turns, sessions);
-          payload = formatted + text;
+          contextBySid[sessionId] = formatIncrementalContext(result.turns, sessions);
         }
       }
+    }
 
+    // Phase B: append user turn to timeline. Always do this (even when no valid
+    // targets) so Feed UI history is complete.
+    await ipcRenderer.invoke('meeting-append-user-turn', { meetingId: meeting.id, text });
+
+    if (validTargets.length === 0) {
+      console.warn('[meeting-room] handleMeetingSend: no valid targets, message recorded in timeline only');
+      meeting.lastMessageTime = Date.now();
+      ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { lastMessageTime: meeting.lastMessageTime } });
+      return;
+    }
+
+    // Phase C: send to each target.
+    for (const sessionId of validTargets) {
+      const payload = (contextBySid[sessionId] || '') + text;
       ipcRenderer.send('terminal-input', { sessionId, data: payload });
       const session = sessions ? sessions.get(sessionId) : null;
       const enterDelay = session && session.kind === 'codex' ? 300 : 80;
