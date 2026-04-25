@@ -337,7 +337,12 @@ class SessionManager extends EventEmitter {
     if (!session) return;
     for (const t of session.pendingTimers) clearTimeout(t);
     session.pty.kill();
-    this.sessions.delete(sessionId);
+    // Do NOT delete from this.sessions here — the onExit handler does it.
+    // The guard in onExit (entry.pty !== ptyProcess) requires the entry to
+    // still be present so it can confirm the dying pty owns the entry.
+    // Deleting early makes onExit see entry=undefined and return early, so
+    // onSessionClosed never fires and the renderer never receives
+    // `session-closed` — which is exactly the "X button does nothing" bug.
   }
 
   renameSession(sessionId, title) {
