@@ -14,6 +14,8 @@ const { getHubDataDir } = require('./core/data-dir.js');
 const { MeetingRoomManager } = require('./core/meeting-room.js');
 const { SummaryEngine } = require('./core/summary-engine');
 const summaryEngine = new SummaryEngine();
+const { TranscriptTap } = require('./core/transcript-tap');
+const transcriptTap = new TranscriptTap();
 
 // Isolate Chromium userData when CLAUDE_HUB_DATA_DIR is set (parallel test
 // instances). Must run before app.whenReady(). Production Hub unaffected
@@ -315,12 +317,22 @@ sessionManager.onData = (sessionId, data) => {
 };
 
 sessionManager.onSessionClosed = (sessionId, meetingId) => {
+  try { transcriptTap.unregisterSession(sessionId); } catch {}
   sendToRenderer('session-closed', { sessionId });
   if (meetingId) {
     const updated = meetingManager.removeSubSession(meetingId, sessionId);
     if (updated) sendToRenderer('meeting-updated', { meeting: updated });
   }
 };
+
+// Register a freshly-spawned session with the transcript tap so the appropriate
+// backend starts watching its CLI-native transcript file. No-op for kinds
+// without a backend (powershell/deepseek).
+function registerSessionForTap(session) {
+  if (!session || !session.id) return;
+  try { transcriptTap.registerSession(session.id, session.kind, { cwd: session.cwd }); }
+  catch {}
+}
 
 ipcMain.handle('create-session', (_e, arg) => {
   // Back-compat: legacy callers pass just a `kind` string. New callers pass
@@ -330,6 +342,7 @@ ipcMain.handle('create-session', (_e, arg) => {
   else if (arg && typeof arg === 'object') { kind = arg.kind; opts = arg.opts || {}; }
   else { kind = 'powershell'; opts = {}; }
   const session = sessionManager.createSession(kind, opts);
+  registerSessionForTap(session);
   sendToRenderer('session-created', { session });
   return session;
 });
@@ -350,6 +363,7 @@ ipcMain.handle('add-meeting-sub', (_e, { meetingId, kind }) => {
     sessionManager.closeSession(session.id);
     return null;
   }
+  registerSessionForTap(session);
   sendToRenderer('session-created', { session });
   sendToRenderer('meeting-updated', { meeting: updated });
   return { session, meeting: updated };
@@ -377,6 +391,12 @@ ipcMain.handle('get-ring-buffer', (_e, sessionId) => {
 });
 
 ipcMain.handle('quick-summary', (_e, sessionId) => {
+  // Authoritative-first: transcript tap (Stop hook / rollout / chats JSONL).
+  // Falls back to marker scan from PTY ring buffer when tap has no value.
+  // This makes buildContextSummary / checkDivergence pick up transcript-tap
+  // content without changing each call site.
+  const tapped = transcriptTap.getLastAssistantText(sessionId);
+  if (tapped && tapped.trim()) return tapped;
   const raw = sessionManager.getSessionBuffer(sessionId);
   return summaryEngine.quickSummary(raw || '', sessionId);
 });
@@ -390,13 +410,25 @@ ipcMain.handle('get-marker-instruction', () => {
   return summaryEngine.getMarkerInstruction();
 });
 
+// Read the authoritative last-assistant text captured by the transcript tap.
+// Returns null if no tap backend has fired for this session yet (CLI hasn't
+// finished a turn, hook hasn't triggered, or file path couldn't be resolved).
+// Renderer falls back to marker-based extraction when null.
+ipcMain.handle('get-last-assistant-text', (_e, sessionId) => {
+  return transcriptTap.getLastAssistantText(sessionId);
+});
+
 function collectAgentOutputs(meetingId) {
   const meeting = meetingManager.getMeeting(meetingId);
   if (!meeting) return null;
   const outputs = {};
   for (const sid of meeting.subSessions) {
-    const raw = sessionManager.getSessionBuffer(sid);
-    const content = summaryEngine.extractMarker(raw || '', sid);
+    // Authoritative-first: transcript tap, then marker scan fallback.
+    let content = transcriptTap.getLastAssistantText(sid);
+    if (!content || !content.trim()) {
+      const raw = sessionManager.getSessionBuffer(sid);
+      content = summaryEngine.extractMarker(raw || '', sid);
+    }
     if (content) {
       const session = sessionManager.getSession(sid);
       const label = session ? (session.kind || 'AI') : 'AI';
@@ -417,7 +449,17 @@ ipcMain.handle('detect-divergence', async (_e, { meetingId }) => {
 });
 
 ipcMain.handle('deep-summary', async (_e, { sessionId, scene, question, agentName }) => {
-  const raw = sessionManager.getSessionBuffer(sessionId);
+  // Prefer authoritative transcript-tap content; fall back to PTY ring buffer
+  // (which feeds extractMarker inside deepSummary). When tap has content we
+  // synthesize a marker-wrapped string so deepSummary's existing extractMarker
+  // path picks it up without changing the summary-engine API.
+  const tapped = transcriptTap.getLastAssistantText(sessionId);
+  let raw;
+  if (tapped && tapped.trim()) {
+    raw = `\nSM-START\n${tapped}\nSM-END\n`;
+  } else {
+    raw = sessionManager.getSessionBuffer(sessionId) || '';
+  }
   if (!raw) return '';
   return await summaryEngine.deepSummary(raw, { agentName, question, scene });
 });
@@ -545,6 +587,7 @@ ipcMain.handle('resume-session', (_e, meta) => {
     lastMessageTime: meta.lastMessageTime,
     lastOutputPreview: meta.lastOutputPreview,
   });
+  registerSessionForTap(session);
   sendToRenderer('session-created', { session });
   return session;
 });
@@ -558,6 +601,7 @@ ipcMain.handle('restart-session', (_e, sessionId) => {
   // don't emit it a second time here.
   sessionManager.closeSession(sessionId);
   const fresh = sessionManager.createSession(old.kind);
+  registerSessionForTap(fresh);
   sendToRenderer('session-created', { session: fresh });
   return fresh;
 });
@@ -726,6 +770,14 @@ const hookServer = http.createServer((req, res) => {
           latestUserMessage = parsed.prompt;
         } else if (parsed.transcriptPath) {
           latestUserMessage = await readLastUserMessage(parsed.transcriptPath);
+        }
+        // Feed the Claude transcript tap so the meeting-room blackboard gets
+        // the authoritative final assistant turn (replaces SM-START/END markers).
+        // Only fire on Stop events — UserPromptSubmit fires before the assistant
+        // has responded, so the transcript tail's last-assistant entry would be
+        // the previous turn and immediately trigger a stale update.
+        if (event === 'stop' && parsed.transcriptPath) {
+          transcriptTap.notifyClaudeStop(parsed.sessionId, parsed.transcriptPath).catch(() => {});
         }
         sendToRenderer('hook-event', {
           event,

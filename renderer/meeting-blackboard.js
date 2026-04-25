@@ -10,6 +10,24 @@
   let _bbFocusedTab = null;
   let _syncing = false;
 
+  // Authoritative-first resolver: try transcript tap (Claude Stop hook / Codex
+  // rollout task_complete / Gemini JSONL gemini-message), fall back to the
+  // legacy marker-based extractor. Returns { text, source } where source is
+  // 'transcript' | 'marker' | 'none'. Empty text is treated as miss.
+  async function resolveSummary(sessionId) {
+    let transcriptText = null;
+    try { transcriptText = await ipcRenderer.invoke('get-last-assistant-text', sessionId); } catch {}
+    if (transcriptText && transcriptText.trim()) {
+      return { text: transcriptText.trim(), source: 'transcript' };
+    }
+    let markerText = '';
+    try { markerText = await ipcRenderer.invoke('quick-summary', sessionId); } catch {}
+    if (markerText && markerText.trim()) {
+      return { text: markerText.trim(), source: 'marker' };
+    }
+    return { text: '', source: 'none' };
+  }
+
   function escapeHtml(str) {
     if (!str) return '';
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -58,19 +76,19 @@
     contentEl.className = 'mr-bb-content';
     container.appendChild(contentEl);
 
-    // Fetch summary + marker status for focused tab
-    let summary = '';
+    // Fetch summary (transcript-first, marker fallback) + marker status
+    let resolved = { text: '', source: 'none' };
     let markerStatus = 'none';
     try {
-      [summary, markerStatus] = await Promise.all([
-        ipcRenderer.invoke('quick-summary', focused),
+      [resolved, markerStatus] = await Promise.all([
+        resolveSummary(focused),
         ipcRenderer.invoke('marker-status', focused),
       ]);
     } catch {}
-    _summaryCache[focused] = { quick: summary || '', deep: (_summaryCache[focused] || {}).deep || '' };
+    _summaryCache[focused] = { quick: resolved.text, deep: (_summaryCache[focused] || {}).deep || '', source: resolved.source };
     const displayText = _summaryCache[focused].deep || _summaryCache[focused].quick || '';
 
-    // Info header with model badge + ctx + marker status + time
+    // Info header with model badge + ctx + content status + time
     const session = getSession(focused);
     const infoHtml = [];
     if (session && session.currentModel) {
@@ -82,8 +100,13 @@
       const cls = typeof pctClass === 'function' ? pctClass(session.contextPct) : 'ok';
       infoHtml.push('<span class="ctx-badge ' + cls + '">Ctx ' + session.contextPct + '%</span>');
     }
-    if (markerStatus === 'done') infoHtml.push('<span class="mr-marker-status done">✓ 摘要就绪</span>');
-    else if (markerStatus === 'streaming') infoHtml.push('<span class="mr-marker-status streaming">⏳ 输出中</span>');
+    if (resolved.source === 'transcript') {
+      infoHtml.push('<span class="mr-marker-status done">✓ Transcript</span>');
+    } else if (resolved.source === 'marker') {
+      infoHtml.push('<span class="mr-marker-status done">✓ 摘要</span>');
+    } else if (markerStatus === 'streaming') {
+      infoHtml.push('<span class="mr-marker-status streaming">⏳ 输出中</span>');
+    }
     infoHtml.push('<span class="mr-bb-time">最后更新 ' + new Date().toLocaleTimeString() + '</span>');
 
     // Content: marker-based display
@@ -196,7 +219,8 @@
           }
 
           if (!summary) {
-            summary = await ipcRenderer.invoke('quick-summary', otherId);
+            const res = await resolveSummary(otherId);
+            summary = res.text || '';
           }
 
           return summary ? { label, summary } : null;
@@ -240,8 +264,8 @@
         const otherIds = meeting.subSessions.filter(id => id !== targetId);
         const summaryResults = await Promise.all(otherIds.map(async (otherId) => {
           const label = getLabel(otherId);
-          const summary = await ipcRenderer.invoke('quick-summary', otherId);
-          return summary ? { label, summary } : null;
+          const res = await resolveSummary(otherId);
+          return res.text ? { label, summary: res.text } : null;
         }));
         const summaries = summaryResults.filter(Boolean);
         if (summaries.length > 0) {

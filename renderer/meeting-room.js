@@ -577,10 +577,14 @@
         })
       : [current.sendTarget];
 
-    const markerInstruction = await ipcRenderer.invoke('get-marker-instruction');
+    // NOTE: SM-START/SM-END marker instruction no longer injected. Each CLI's
+    // own transcript file (Claude JSONL / Codex rollout / Gemini chats JSONL)
+    // is read via transcript-tap for authoritative answer extraction. Marker
+    // extraction in summary-engine remains as a fallback path but we stop
+    // polluting user prompts with marker instructions.
 
     for (const sessionId of targets) {
-      let payload = text + markerInstruction;
+      let payload = text;
       if (meeting.syncContext) {
         const context = await buildContextSummary(meeting, sessionId);
         payload = context + payload;
