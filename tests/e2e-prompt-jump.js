@@ -239,6 +239,49 @@ async function run() {
 
   await shot('05-after-ctrl-down-2.png');
 
+  // --- Test 6: navPrev() method directly triggers flashPromptLine ---
+  log('Test 6: minimap.navPrev() exists and triggers highlight');
+
+  await evalJs(`terminalCache.get(activeSessionId).terminal.scrollToBottom()`);
+  await sleep(200);
+
+  // 先把 highlight 元素清掉，避免上一轮残留
+  await evalJs(`
+    (function() {
+      const c = terminalCache.get(activeSessionId);
+      const container = c.terminal.element.closest('.terminal-container');
+      const h = container && container.querySelector('.prompt-highlight');
+      if (h) h.style.display = 'none';
+    })()
+  `);
+  await sleep(100);
+
+  const navPrevExists = await evalJs(`
+    (function() {
+      const c = terminalCache.get(activeSessionId);
+      return !!(c && c._minimap && typeof c._minimap.navPrev === 'function');
+    })()
+  `);
+  record('minimap.navPrev() method exists', navPrevExists === true, String(navPrevExists));
+
+  if (navPrevExists) {
+    const navResult = await evalJs(`terminalCache.get(activeSessionId)._minimap.navPrev()`);
+    record('navPrev() returns true on success', navResult === true, String(navResult));
+    await sleep(300);
+
+    const flashAfterNav = await evalJs(`
+      (function() {
+        const c = terminalCache.get(activeSessionId);
+        const container = c.terminal.element.closest('.terminal-container');
+        const h = container && container.querySelector('.prompt-highlight');
+        return h ? h.style.display !== 'none' : false;
+      })()
+    `);
+    record('navPrev() triggers flashPromptLine', flashAfterNav === true, String(flashAfterNav));
+  }
+
+  await shot('06-after-navPrev.png');
+
   // --- Summary ---
   console.log('\n=== RESULTS ===');
   let pass = 0, fail = 0;

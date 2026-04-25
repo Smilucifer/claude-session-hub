@@ -1366,10 +1366,48 @@ function mountMinimap(sessionId, termContainer, terminal) {
   // Initial scan (wait a frame so buffer is populated).
   requestAnimationFrame(() => { scanBuffer(); render(); });
 
+  // --- nav helpers (shared by Ctrl+Up/Down keyboard and ▲▼ buttons) ---
+  function findNavTarget(direction) {
+    if (!ticks.length) return null;
+    const buf = terminal.buffer.active;
+    const hasActive = activeLine >= 0;
+    let cur;
+    if (hasActive) cur = activeLine;
+    else if (direction === 'up') cur = buf.viewportY + terminal.rows;
+    else cur = buf.viewportY;
+    if (direction === 'up') {
+      for (let i = ticks.length - 1; i >= 0; i--) {
+        if (ticks[i].line < cur) return ticks[i];
+      }
+    } else {
+      for (let i = 0; i < ticks.length; i++) {
+        if (ticks[i].line > cur) return ticks[i];
+      }
+    }
+    return null;
+  }
+
+  function navTo(direction) {
+    const target = findNavTarget(direction);
+    if (!target) return false;
+    try { terminal.scrollToLine(target.line); } catch {}
+    activeLine = target.line;
+    flashPromptLine(terminal, target.line);
+    render();
+    // Sync external state field (kept for backward compat with any reader)
+    const cache = terminalCache.get(sessionId);
+    if (cache) cache._activePromptLine = target.line;
+    return true;
+  }
+
   return {
     invalidate,
     getTicks() { return ticks; },
     setActiveLine(line) { activeLine = line; render(); },
+    navPrev() { return navTo('up'); },
+    navNext() { return navTo('down'); },
+    canNavPrev() { return findNavTarget('up') !== null; },
+    canNavNext() { return findNavTarget('down') !== null; },
     dispose() {
       disposed = true;
       if (scanTimer) clearTimeout(scanTimer);
