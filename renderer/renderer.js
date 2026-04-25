@@ -1214,6 +1214,7 @@ function mountMinimap(sessionId, termContainer, terminal) {
 
   let ticks = []; // [{line, text}]
   let scanTimer = null;
+  let maxDebounceTimer = null;
   let disposed = false;
 
   function scanBuffer() {
@@ -1240,7 +1241,19 @@ function mountMinimap(sessionId, termContainer, terminal) {
   function invalidate() {
     if (disposed) return;
     if (scanTimer) clearTimeout(scanTimer);
-    scanTimer = setTimeout(scanBuffer, 250);
+    scanTimer = setTimeout(() => {
+      if (maxDebounceTimer) { clearTimeout(maxDebounceTimer); maxDebounceTimer = null; }
+      scanBuffer();
+    }, 250);
+    // Force a scan within 2s even if writes keep coming (prevents starvation
+    // during continuous AI streaming).
+    if (!maxDebounceTimer) {
+      maxDebounceTimer = setTimeout(() => {
+        maxDebounceTimer = null;
+        if (scanTimer) { clearTimeout(scanTimer); scanTimer = null; }
+        scanBuffer();
+      }, 2000);
+    }
   }
 
   function render() {
@@ -1294,6 +1307,7 @@ function mountMinimap(sessionId, termContainer, terminal) {
     dispose() {
       disposed = true;
       if (scanTimer) clearTimeout(scanTimer);
+      if (maxDebounceTimer) clearTimeout(maxDebounceTimer);
       try { scrollSub.dispose(); } catch {}
       try { renderSub.dispose(); } catch {}
       if (strip.parentNode) strip.parentNode.removeChild(strip);

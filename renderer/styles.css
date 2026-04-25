@@ -692,7 +692,7 @@ body.theme-light .session-time {
   right: 0;
   top: 4px;
   bottom: 4px;
-  width: 8px;
+  width: 10px;
   background: rgba(139, 148, 158, 0.06);
   cursor: pointer;
   border-left: 1px solid var(--border);
@@ -710,13 +710,14 @@ body.theme-light .session-time {
   position: absolute;
   left: 0;
   right: 0;
-  height: 2px;
+  height: 4px;
   background: var(--accent-orange, #d29922);
   pointer-events: auto;
   cursor: pointer;
-  opacity: 0.75;
+  opacity: 0.95;
+  box-shadow: 0 0 3px rgba(210, 153, 34, 0.6);
 }
-.minimap-tick:hover { opacity: 1; height: 3px; }
+.minimap-tick:hover { opacity: 1; height: 6px; background: #ff9d3a; }
 
 .minimap-viewport {
   position: absolute;
