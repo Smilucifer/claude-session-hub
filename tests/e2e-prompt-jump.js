@@ -282,6 +282,61 @@ async function run() {
 
   await shot('06-after-navPrev.png');
 
+  // --- Test 7: CSS visual strength ---
+  log('Test 7: prompt-line-marker has strong contrast and minimap-tick is bold');
+
+  const markerStyle = await evalJs(`
+    (function() {
+      const m = document.querySelector('.prompt-line-marker');
+      if (!m) return null;
+      const cs = getComputedStyle(m);
+      return {
+        borderLeftWidth: cs.borderLeftWidth,
+        backgroundColor: cs.backgroundColor,
+      };
+    })()
+  `);
+  record('prompt-line-marker exists in DOM', markerStyle !== null, JSON.stringify(markerStyle));
+
+  if (markerStyle) {
+    record(
+      'prompt-line-marker border-left is 5px',
+      markerStyle.borderLeftWidth === '5px',
+      markerStyle.borderLeftWidth
+    );
+    // 22% alpha = 0.22, computed style returns "rgba(210, 153, 34, 0.219...)" or similar
+    const bgMatch = /rgba\(210,\s*153,\s*34,\s*0\.2[12]/.test(markerStyle.backgroundColor);
+    record(
+      'prompt-line-marker background ~0.22 alpha',
+      bgMatch,
+      markerStyle.backgroundColor
+    );
+  }
+
+  const tickStyle = await evalJs(`
+    (function() {
+      const t = document.querySelector('.minimap-tick');
+      if (!t) return null;
+      const cs = getComputedStyle(t);
+      return { height: cs.height, backgroundColor: cs.backgroundColor };
+    })()
+  `);
+  record('minimap-tick exists in DOM', tickStyle !== null, JSON.stringify(tickStyle));
+
+  if (tickStyle) {
+    record(
+      'minimap-tick height is 6px',
+      tickStyle.height === '6px',
+      tickStyle.height
+    );
+    // #ffb84d = rgb(255, 184, 77)
+    record(
+      'minimap-tick color is bright orange #ffb84d',
+      tickStyle.backgroundColor === 'rgb(255, 184, 77)',
+      tickStyle.backgroundColor
+    );
+  }
+
   // --- Summary ---
   console.log('\n=== RESULTS ===');
   let pass = 0, fail = 0;
