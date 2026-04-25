@@ -116,7 +116,7 @@ const AI_MARKERS_RE = /[⏺●◉◐◑◒◓◔◕]/;
 const ABS_PATH_RE = /[A-Za-z]:[\\/](?:[^\\/:*?"<>|\r\n\s]+[\\/])*[^\\/:*?"<>|\r\n\s]+\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9])/g;
 // Image-only subset of ABS_PATH_RE for hover-preview detection.
 const IMAGE_PATH_RE = /[A-Za-z]:[\\/](?:[^\\/:*?"<>|\r\n\s]+[\\/])*[^\\/:*?"<>|\r\n\s]+\.(?:png|jpe?g|gif|webp|bmp)(?![A-Za-z0-9])/gi;
-const PREVIEW_PATH_RE = /\.(?:html?|md|markdown|png|jpe?g|gif|webp|bmp)$/i;
+const PREVIEW_PATH_RE = /\.(?:html?|md|markdown|png|jpe?g|gif|webp|bmp|svg|pdf|csv|tsv|json|jsonl|js|ts|jsx|tsx|mjs|cjs|py|go|rs|java|c|cpp|h|hpp|cs|txt|log|ya?ml|toml|ini|cfg|conf|sh|bat|ps1|xml|sql|r|rb|php|swift|kt|lua|zig|asm|css|scss|less)$/i;
 // Our own clipboard-image directory. Stripped from sidebar preview: paste
 // injects the path before the user's typed text and would otherwise eat the
 // entire 60-char preview.
@@ -1842,11 +1842,57 @@ async function openPreviewPanel(filePath) {
     previewBodyEl.style.alignItems = 'flex-start';
     previewBodyEl.style.justifyContent = 'flex-start';
     previewBodyEl.innerHTML = `<div class="preview-markdown">${html}</div>`;
-  } else {
+  } else if (ext === '.svg' || ext === '.png' || ext === '.jpg' || ext === '.jpeg' || ext === '.gif' || ext === '.webp' || ext === '.bmp') {
     const fileUrl = 'file:///' + filePath.replace(/\\/g, '/');
     previewBodyEl.style.alignItems = 'center';
     previewBodyEl.style.justifyContent = 'center';
     previewBodyEl.innerHTML = `<img src="${fileUrl}" class="preview-image">`;
+  } else if (ext === '.pdf') {
+    const wv = document.createElement('webview');
+    wv.src = 'file:///' + filePath.replace(/\\/g, '/');
+    wv.style.cssText = 'width:100%;height:100%;border:none;';
+    previewBodyEl.style.alignItems = 'stretch';
+    previewBodyEl.style.justifyContent = 'stretch';
+    previewBodyEl.appendChild(wv);
+  } else if (ext === '.csv' || ext === '.tsv') {
+    const result = await ipcRenderer.invoke('read-file', filePath);
+    if (result.error) {
+      previewBodyEl.innerHTML = `<div class="preview-markdown" style="color:var(--text-secondary)">Failed to load: ${result.error}</div>`;
+      return;
+    }
+    const sep = ext === '.tsv' ? '\t' : ',';
+    const rows = result.content.split(/\r?\n/).filter(l => l.trim());
+    let tableHtml = '<div class="preview-csv-wrap"><table class="preview-csv"><thead><tr>';
+    if (rows.length > 0) {
+      for (const cell of rows[0].split(sep)) tableHtml += `<th>${cell.replace(/</g, '&lt;')}</th>`;
+      tableHtml += '</tr></thead><tbody>';
+      for (let i = 1; i < rows.length; i++) {
+        tableHtml += '<tr>';
+        for (const cell of rows[i].split(sep)) tableHtml += `<td>${cell.replace(/</g, '&lt;')}</td>`;
+        tableHtml += '</tr>';
+      }
+      tableHtml += '</tbody>';
+    }
+    tableHtml += '</table></div>';
+    previewBodyEl.style.alignItems = 'flex-start';
+    previewBodyEl.style.justifyContent = 'flex-start';
+    previewBodyEl.innerHTML = tableHtml;
+  } else {
+    const result = await ipcRenderer.invoke('read-file', filePath);
+    if (result.error) {
+      previewBodyEl.innerHTML = `<div class="preview-markdown" style="color:var(--text-secondary)">Failed to load: ${result.error}</div>`;
+      return;
+    }
+    let content = result.content;
+    if (ext === '.json' || ext === '.jsonl') {
+      try { content = JSON.stringify(JSON.parse(content), null, 2); } catch {}
+    }
+    const escaped = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const lines = escaped.split('\n');
+    const numbered = lines.map((line, i) => `<span class="preview-line-num">${i + 1}</span>${line}`).join('\n');
+    previewBodyEl.style.alignItems = 'flex-start';
+    previewBodyEl.style.justifyContent = 'flex-start';
+    previewBodyEl.innerHTML = `<pre class="preview-code">${numbered}</pre>`;
   }
 }
 

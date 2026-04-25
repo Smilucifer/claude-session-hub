@@ -663,10 +663,18 @@ ipcMain.handle('open-path', async (_e, filePath) => {
   }
 });
 
+const READ_FILE_EXTS = new Set([
+  '.md', '.markdown', '.csv', '.tsv', '.json', '.jsonl',
+  '.js', '.ts', '.jsx', '.tsx', '.mjs', '.cjs',
+  '.py', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.hpp', '.cs',
+  '.txt', '.log', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf',
+  '.sh', '.bat', '.ps1', '.xml', '.sql', '.r', '.rb', '.php',
+  '.swift', '.kt', '.lua', '.zig', '.asm', '.css', '.scss', '.less',
+]);
 ipcMain.handle('read-file', async (_e, filePath) => {
   if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) return { error: 'invalid path' };
   const ext = path.extname(filePath).toLowerCase();
-  if (!['.md', '.markdown'].includes(ext)) return { error: 'unsupported extension' };
+  if (!READ_FILE_EXTS.has(ext)) return { error: 'unsupported extension' };
   try {
     const stat = await fs.promises.stat(filePath);
     if (stat.size > 5 * 1024 * 1024) return { error: 'file too large (>5MB)' };

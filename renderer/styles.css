@@ -1447,3 +1447,68 @@ body.theme-light .session-time {
   object-fit: contain;
   border-radius: 4px;
 }
+
+/* ── Preview: CSV table ──────────────────────────────── */
+
+.preview-csv-wrap {
+  width: 100%;
+  padding: 16px;
+  overflow: auto;
+  align-self: flex-start;
+}
+
+.preview-csv {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.preview-csv th,
+.preview-csv td {
+  border: 1px solid var(--border);
+  padding: 6px 12px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.preview-csv th {
+  background: var(--bg-secondary);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.preview-csv tbody tr:nth-child(even) {
+  background: rgba(255,255,255,0.02);
+}
+
+.preview-csv tbody tr:hover {
+  background: rgba(88,166,255,0.08);
+}
+
+/* ── Preview: Code / text / JSON ─────────────────────── */
+
+.preview-code {
+  width: 100%;
+  margin: 0;
+  padding: 16px 16px 16px 0;
+  background: var(--bg-primary);
+  color: #d8dee9;
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre;
+  overflow: auto;
+  tab-size: 4;
+}
+
+.preview-line-num {
+  display: inline-block;
+  width: 48px;
+  text-align: right;
+  padding-right: 16px;
+  color: #4a5568;
+  user-select: none;
+}
