@@ -262,6 +262,24 @@ let teamSessionManager = null; // set after hookPort is known
 let mainWindow;
 const sessionManager = new SessionManager();
 const meetingManager = new MeetingRoomManager();
+
+// Wire TranscriptTap → MeetingRoomManager timeline.
+// When a sub-session's CLI finishes a turn, append the AI text to its
+// meeting's timeline (if the sub-session belongs to a meeting).
+transcriptTap.on('turn-complete', ({ hubSessionId, text, completedAt }) => {
+  const session = sessionManager.getSession(hubSessionId);
+  if (!session || !session.meetingId) return;
+  const turn = meetingManager.appendTurn(
+    session.meetingId,
+    hubSessionId,
+    text,
+    completedAt || Date.now(),
+  );
+  if (turn) {
+    sendToRenderer('meeting-timeline-updated', { meetingId: session.meetingId, turn });
+  }
+});
+
 sessionManager.hookToken = HOOK_TOKEN;  // port set after listen
 
 // NOTE: Don't call app.setAppUserModelId here. Setting an AUMID without also
