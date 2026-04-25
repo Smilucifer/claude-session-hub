@@ -3260,6 +3260,11 @@ function schedulePersist() {
         lastOutputPreview: s.lastOutputPreview || '',
         unreadCount: s.unreadCount || 0,
         currentModel: s.currentModel || null,
+        // T10: include resume-meta in persist payload so main.js merge has the latest
+        codexSid: s.codexSid || null,
+        geminiChatId: s.geminiChatId || null,
+        geminiProjectHash: s.geminiProjectHash || null,
+        geminiProjectRoot: s.geminiProjectRoot || null,
       });
     }
     const meetingList = Object.values(meetings).map(m => ({
@@ -3287,6 +3292,11 @@ async function resumeDormantSession(hubId) {
     meetingId: dormant.meetingId || null,
     lastMessageTime: dormant.lastMessageTime,
     lastOutputPreview: dormant.lastOutputPreview,
+    // T10: pass resume-meta so main.js Codex/Gemini precise resume works
+    codexSid: dormant.codexSid || null,
+    geminiChatId: dormant.geminiChatId || null,
+    geminiProjectHash: dormant.geminiProjectHash || null,
+    geminiProjectRoot: dormant.geminiProjectRoot || null,
   });
   // session-created handler will replace the dormant entry. Clear unread now.
   const s = sessions.get(hubId);
@@ -3321,6 +3331,11 @@ async function resumeDormantSession(hubId) {
         ccSessionId: meta.ccSessionId || null,
         meetingId: meta.meetingId || null,
         currentModel: meta.currentModel || null,
+        // T10: preserve resume-meta for precise resume (codex/gemini)
+        codexSid: meta.codexSid || null,
+        geminiChatId: meta.geminiChatId || null,
+        geminiProjectHash: meta.geminiProjectHash || null,
+        geminiProjectRoot: meta.geminiProjectRoot || null,
       });
     }
   }
