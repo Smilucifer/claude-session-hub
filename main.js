@@ -502,6 +502,9 @@ ipcMain.handle('meeting-append-user-turn', (_e, { meetingId, text }) => {
 
 // Hub Timeline IPC: full snapshot of meeting timeline (for Feed UI rerender).
 ipcMain.handle('meeting-get-timeline', (_e, meetingId) => {
+  // T11 fix: ensure timeline loaded from disk for restored (dormant) meetings;
+  // loadTimelineLazy is idempotent (early-returns when already loaded).
+  if (meetingId) meetingManager.loadTimelineLazy(meetingId);
   return meetingManager.getTimeline(meetingId);
 });
 
@@ -510,6 +513,9 @@ ipcMain.handle('meeting-get-timeline', (_e, meetingId) => {
 // Renderer calls this in handleMeetingSend when syncContext is ON.
 ipcMain.handle('meeting-incremental-context', (_e, { meetingId, targetSid }) => {
   if (!meetingId || !targetSid) return { turns: [], advancedTo: 0 };
+  // T11 fix: ensure timeline loaded from disk before computing context
+  // (otherwise restored meetings always return empty turns).
+  meetingManager.loadTimelineLazy(meetingId);
   // Surface misconfiguration: cursor not registered for this target means
   // the sub-session was never added (or already removed) — silent empty
   // return would mask wrong meetingId / sid bugs in callers.
@@ -596,6 +602,9 @@ ipcMain.handle('get-meetings', () => {
 // summary). Returns the full service result envelope (status / data / _meta).
 ipcMain.handle('generate-meeting-summary', async (_event, meetingId) => {
   try {
+    // T11 fix: ensure timeline loaded from disk (otherwise restored meetings
+    // produce summaries from 0 turns).
+    if (meetingId) meetingManager.loadTimelineLazy(meetingId);
     const meeting = meetingManager.getMeeting(meetingId);
     if (!meeting) {
       return {

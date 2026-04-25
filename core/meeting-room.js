@@ -64,6 +64,8 @@ class MeetingRoomManager {
       m._cursors[sessionId] = 0; // new join: see full history
     }
     m.lastMessageTime = Date.now();
+    // T11 fix: persist cursor change so membership/cursors survive restart.
+    meetingStore.markDirty(meetingId, { _timeline: m._timeline, _cursors: m._cursors, _nextIdx: m._nextIdx });
     return { ...m, subSessions: [...m.subSessions], _timeline: [...m._timeline], _cursors: { ...m._cursors } };
   }
 
@@ -74,6 +76,8 @@ class MeetingRoomManager {
     delete m._cursors[sessionId];
     if (m.focusedSub === sessionId) m.focusedSub = m.subSessions[0] || null;
     if (m.sendTarget === sessionId) m.sendTarget = 'all';
+    // T11 fix: persist cursor removal so stale cursors don't reappear after restart.
+    meetingStore.markDirty(meetingId, { _timeline: m._timeline, _cursors: m._cursors, _nextIdx: m._nextIdx });
     return { ...m, subSessions: [...m.subSessions], _timeline: [...m._timeline], _cursors: { ...m._cursors } };
   }
 
