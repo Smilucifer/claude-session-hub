@@ -1295,6 +1295,10 @@ body.theme-light .session-time {
   min-width: 0;
 }
 
+.preview-panel.preview-split {
+  border-left: 1px solid var(--border);
+}
+
 .preview-header {
   padding: 8px 16px;
   border-bottom: 1px solid var(--border);

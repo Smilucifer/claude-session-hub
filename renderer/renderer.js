@@ -1783,6 +1783,7 @@ const previewTitleEl = document.getElementById('preview-title');
 const previewBodyEl = document.getElementById('preview-body');
 let previewSourcePanel = null;
 let currentPreviewPath = null;
+let previewIsFullscreen = false;
 
 async function openPreviewPanel(filePath) {
   currentPreviewPath = filePath;
@@ -1804,10 +1805,13 @@ async function openPreviewPanel(filePath) {
   }
 
   const src = document.getElementById(previewSourcePanel);
-  if (src) src.style.display = 'none';
+  if (previewIsFullscreen) {
+    if (src) src.style.display = 'none';
+  }
   const emptyEl = document.getElementById('empty-state');
   if (emptyEl) emptyEl.style.display = 'none';
   previewPanelEl.style.display = 'flex';
+  previewPanelEl.classList.toggle('preview-split', !previewIsFullscreen);
 
   previewBodyEl.innerHTML = '';
 
@@ -1898,7 +1902,9 @@ async function openPreviewPanel(filePath) {
 
 function closePreviewPanel() {
   previewPanelEl.style.display = 'none';
+  previewPanelEl.classList.remove('preview-split');
   currentPreviewPath = null;
+  previewIsFullscreen = false;
 
   if (previewSourcePanel) {
     const src = document.getElementById(previewSourcePanel);
@@ -1907,7 +1913,30 @@ function closePreviewPanel() {
   }
 }
 
+function togglePreviewLayout() {
+  previewIsFullscreen = !previewIsFullscreen;
+  const btn = document.getElementById('preview-toggle-layout');
+  if (previewIsFullscreen) {
+    btn.textContent = '◫';
+    btn.title = '并列预览';
+    previewPanelEl.classList.remove('preview-split');
+    if (previewSourcePanel) {
+      const src = document.getElementById(previewSourcePanel);
+      if (src) src.style.display = 'none';
+    }
+  } else {
+    btn.textContent = '□';
+    btn.title = '全屏预览';
+    previewPanelEl.classList.add('preview-split');
+    if (previewSourcePanel) {
+      const src = document.getElementById(previewSourcePanel);
+      if (src) src.style.display = previewSourcePanel === 'terminal-panel' ? '' : 'flex';
+    }
+  }
+}
+
 document.getElementById('preview-close').addEventListener('click', closePreviewPanel);
+document.getElementById('preview-toggle-layout').addEventListener('click', togglePreviewLayout);
 document.getElementById('preview-open-external').addEventListener('click', async () => {
   if (currentPreviewPath) {
     if (/^https?:\/\//i.test(currentPreviewPath)) {
