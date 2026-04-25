@@ -15,6 +15,13 @@ function load() {
       return defaultState();
     }
     if (!Array.isArray(parsed.sessions)) parsed.sessions = [];
+    // Normalize new resume-meta fields (added in 2026-04-26 for meeting persistence T4)
+    for (const s of parsed.sessions) {
+      if (s.codexSid === undefined) s.codexSid = null;
+      if (s.geminiChatId === undefined) s.geminiChatId = null;
+      if (s.geminiProjectHash === undefined) s.geminiProjectHash = null;
+      if (s.geminiProjectRoot === undefined) s.geminiProjectRoot = null;
+    }
     if (!Array.isArray(parsed.meetings)) parsed.meetings = [];
     return parsed;
   } catch {
