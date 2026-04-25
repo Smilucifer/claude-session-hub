@@ -109,3 +109,41 @@ test('appendTurn handles ts=0 (epoch) correctly, not substituted with Date.now()
   const t = m.appendTurn(meeting.id, 'sub-A', 'R', 0);
   assert.equal(t.ts, 0, 'ts=0 must be preserved, not replaced by Date.now()');
 });
+
+test('addSubSession initializes cursor to 0 (sees full history)', () => {
+  const m = new MeetingRoomManager();
+  const meeting = m.createMeeting();
+  m.appendTurn(meeting.id, 'user', 'Q1', 1);
+  m.appendTurn(meeting.id, 'sub-A', 'R1', 2);
+
+  const updated = m.addSubSession(meeting.id, 'sub-B');
+  assert.notEqual(updated, null);
+  assert.equal(m.getCursor(meeting.id, 'sub-B'), 0);
+});
+
+test('addSubSession idempotent: existing session keeps its cursor', () => {
+  const m = new MeetingRoomManager();
+  const meeting = m.createMeeting();
+  m.addSubSession(meeting.id, 'sub-A');
+  m.appendTurn(meeting.id, 'user', 'Q', 1);
+  m.appendTurn(meeting.id, 'sub-A', 'R', 2);
+  m.advanceCursor(meeting.id, 'sub-A', 2);
+  // Re-add same sub: cursor must NOT reset
+  m.addSubSession(meeting.id, 'sub-A');
+  assert.equal(m.getCursor(meeting.id, 'sub-A'), 2);
+});
+
+test('removeSubSession clears cursor', () => {
+  const m = new MeetingRoomManager();
+  const meeting = m.createMeeting();
+  m.addSubSession(meeting.id, 'sub-A');
+  m.removeSubSession(meeting.id, 'sub-A');
+  assert.equal(m.getCursor(meeting.id, 'sub-A'), null);
+});
+
+test('getCursor returns null for unknown meeting/session', () => {
+  const m = new MeetingRoomManager();
+  assert.equal(m.getCursor('nope', 'sub-X'), null);
+  const meeting = m.createMeeting();
+  assert.equal(m.getCursor(meeting.id, 'sub-not-added'), null);
+});

@@ -54,19 +54,26 @@ class MeetingRoomManager {
     const m = this.meetings.get(meetingId);
     if (!m) return null;
     if (m.subSessions.length >= 3) return null;
-    if (m.subSessions.includes(sessionId)) return null;
+    if (m.subSessions.includes(sessionId)) {
+      // Already a member: cursor must NOT reset (idempotent)
+      return { ...m, subSessions: [...m.subSessions], _timeline: [...m._timeline], _cursors: { ...m._cursors } };
+    }
     m.subSessions.push(sessionId);
+    if (!(sessionId in m._cursors)) {
+      m._cursors[sessionId] = 0; // new join: see full history
+    }
     m.lastMessageTime = Date.now();
-    return { ...m, subSessions: [...m.subSessions] };
+    return { ...m, subSessions: [...m.subSessions], _timeline: [...m._timeline], _cursors: { ...m._cursors } };
   }
 
   removeSubSession(meetingId, sessionId) {
     const m = this.meetings.get(meetingId);
     if (!m) return null;
     m.subSessions = m.subSessions.filter(id => id !== sessionId);
+    delete m._cursors[sessionId];
     if (m.focusedSub === sessionId) m.focusedSub = m.subSessions[0] || null;
     if (m.sendTarget === sessionId) m.sendTarget = 'all';
-    return { ...m, subSessions: [...m.subSessions] };
+    return { ...m, subSessions: [...m.subSessions], _timeline: [...m._timeline], _cursors: { ...m._cursors } };
   }
 
   updateMeeting(meetingId, fields) {
@@ -130,6 +137,23 @@ class MeetingRoomManager {
     const m = this.meetings.get(meetingId);
     if (!m) return [];
     return m._timeline.map(t => ({ ...t }));
+  }
+
+  getCursor(meetingId, sid) {
+    const m = this.meetings.get(meetingId);
+    if (!m) return null;
+    if (!(sid in m._cursors)) return null;
+    return m._cursors[sid];
+  }
+
+  advanceCursor(meetingId, sid, newPos) {
+    const m = this.meetings.get(meetingId);
+    if (!m) return false;
+    if (!(sid in m._cursors)) return false;
+    if (newPos < m._cursors[sid]) return false; // monotonic
+    if (newPos > m._timeline.length) newPos = m._timeline.length;
+    m._cursors[sid] = newPos;
+    return true;
   }
 }
 
