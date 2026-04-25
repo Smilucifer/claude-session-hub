@@ -492,3 +492,84 @@
 .mr-div-ask:hover { background: var(--accent); color: #fff; }
 .mr-div-consensus { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 0; }
 .mr-div-consensus-item { font-size: 11px; padding: 2px 8px; background: rgba(34,197,94,0.1); border-radius: 10px; color: var(--text-secondary); }
+
+/* ===== Hub Timeline Feed UI (replaces tabbed blackboard) ===== */
+
+.mr-feed-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  overflow-y: auto;
+  height: 100%;
+  background: var(--bg-primary, #181818);
+}
+
+.mr-feed-turn {
+  background: var(--bg-secondary, #232323);
+  border-radius: 6px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--border-default, #444);
+  font-size: 13px;
+}
+
+.mr-feed-turn.mr-feed-kind-user {
+  background: #1a2332;
+  border-left-color: #6b7280;
+}
+.mr-feed-turn.mr-feed-kind-claude { border-left-color: #d97706; }
+.mr-feed-turn.mr-feed-kind-codex { border-left-color: #059669; }
+.mr-feed-turn.mr-feed-kind-gemini { border-left-color: #7c3aed; }
+.mr-feed-turn.mr-feed-kind-deepseek { border-left-color: #2563eb; }
+
+.mr-feed-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: var(--text-secondary, #888);
+}
+
+.mr-feed-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  color: #fff;
+  font-weight: 600;
+}
+.mr-feed-badge-user { background: #6b7280; }
+.mr-feed-badge-claude { background: #d97706; }
+.mr-feed-badge-codex { background: #059669; }
+.mr-feed-badge-gemini { background: #7c3aed; }
+.mr-feed-badge-deepseek { background: #2563eb; }
+.mr-feed-badge-unknown { background: #444; }
+
+.mr-feed-time { color: var(--text-secondary, #888); }
+.mr-feed-idx { color: var(--text-tertiary, #555); margin-left: auto; font-family: monospace; }
+
+.mr-feed-body {
+  color: var(--text-primary, #e5e5e5);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  word-break: break-word;
+}
+
+.mr-feed-ellipsis { color: var(--text-secondary, #888); }
+
+.mr-feed-toggle {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 8px;
+  font-size: 11px;
+  background: transparent;
+  border: 1px solid var(--border-default, #444);
+  color: var(--text-secondary, #aaa);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.mr-feed-toggle:hover {
+  background: var(--bg-tertiary, #2a2a2a);
+}
