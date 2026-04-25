@@ -373,8 +373,8 @@ ipcMain.handle('create-meeting', () => {
   return meeting;
 });
 
-ipcMain.handle('add-meeting-sub', (_e, { meetingId, kind }) => {
-  const session = sessionManager.createSession(kind, { meetingId });
+ipcMain.handle('add-meeting-sub', (_e, { meetingId, kind, opts }) => {
+  const session = sessionManager.createSession(kind, { ...(opts || {}), meetingId });
   if (!session) return null;
   const updated = meetingManager.addSubSession(meetingId, session.id);
   if (!updated) {
