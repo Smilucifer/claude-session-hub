@@ -42,6 +42,17 @@ const { saveMeetingFile, loadMeetingFile, markDirty, flushAll, listMeetingFiles,
   assert.strictEqual(after._timeline.length, 1, 'flushAll wrote pending dirty');
   console.log('PASS T1.5 markDirty + flushAll');
 
+  // T1.6: cancelDirty prevents ghost file resurrection
+  saveMeetingFile('m3', { id: 'm3', _timeline: [], _cursors: {}, _nextIdx: 0 });
+  markDirty('m3', { id: 'm3', _timeline: [{ idx: 0, sid: 'a', text: 'pending', ts: 99 }], _cursors: {}, _nextIdx: 1 });
+  // Simulate close: cancel dirty, then delete file
+  const { cancelDirty } = require('../core/meeting-store');
+  cancelDirty('m3');
+  deleteMeetingFile('m3');
+  await flushAll();  // would resurrect file if cancelDirty didn't work
+  assert.strictEqual(loadMeetingFile('m3'), null, 'ghost file not resurrected after cancelDirty + delete');
+  console.log('PASS T1.6 cancelDirty prevents ghost file');
+
   console.log('ALL meeting-store tests PASS');
   // cleanup
   fs.rmSync(TEMP, { recursive: true, force: true });

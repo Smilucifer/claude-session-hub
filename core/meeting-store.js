@@ -88,12 +88,21 @@ async function flushAll() {
   _dirty.clear();
 }
 
+function cancelDirty(id) {
+  if (_timers.has(id)) {
+    clearTimeout(_timers.get(id));
+    _timers.delete(id);
+  }
+  _dirty.delete(id);
+}
+
 module.exports = {
   saveMeetingFile,
   loadMeetingFile,
   listMeetingFiles,
   deleteMeetingFile,
   markDirty,
+  cancelDirty,
   flushAll,
   SCHEMA_VERSION,
   DEBOUNCE_MS,

@@ -96,6 +96,9 @@ class MeetingRoomManager {
     if (!m) return null;
     const subIds = [...m.subSessions];
     this.meetings.delete(meetingId);
+    // T12 fix: cancel any pending dirty flush before deleting file,
+    // otherwise the 5s timer would resurrect the deleted file as a "ghost"
+    meetingStore.cancelDirty(meetingId);
     meetingStore.deleteMeetingFile(meetingId);
     return subIds;
   }
