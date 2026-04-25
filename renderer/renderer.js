@@ -1410,6 +1410,9 @@ function mountMinimap(sessionId, termContainer, terminal) {
 // with mountMinimap: created by attachTerminalToPanel after mountMinimap,
 // disposed when the terminalCache entry's _minimap is disposed (we attach
 // our dispose to the same chain via the returned object).
+//
+// `sessionId` is reserved for symmetry with mountMinimap and potential future
+// use (e.g., per-session button state); not currently used in the body.
 function mountPromptNavButtons(sessionId, termContainer, minimap) {
   const wrap = document.createElement('div');
   wrap.className = 'prompt-nav-buttons';
@@ -1436,6 +1439,7 @@ function mountPromptNavButtons(sessionId, termContainer, minimap) {
   }
 
   btnUp.addEventListener('click', (e) => {
+    // stopPropagation: prevent termContainer's focus-on-click listener from firing
     e.stopPropagation();
     minimap.navPrev();
     refreshState();
@@ -1446,6 +1450,9 @@ function mountPromptNavButtons(sessionId, termContainer, minimap) {
     refreshState();
   });
 
+  // Initial call: ticks array is empty until the rAF scan in mountMinimap
+  // completes, so buttons start disabled. mountMinimap's render() then calls
+  // refreshState() after the first scan and will re-enable them.
   refreshState();
 
   return {
