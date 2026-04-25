@@ -649,7 +649,11 @@ ipcMain.handle('restart-session', (_e, sessionId) => {
   // closeSession triggers the onExit callback which emits session-closed;
   // don't emit it a second time here.
   sessionManager.closeSession(sessionId);
-  const fresh = sessionManager.createSession(old.kind);
+  const fresh = sessionManager.createSession(old.kind, {
+    id: old.id,
+    cwd: old.cwd,
+    meetingId: old.meetingId || undefined,
+  });
   registerSessionForTap(fresh);
   sendToRenderer('session-created', { session: fresh });
   return fresh;
