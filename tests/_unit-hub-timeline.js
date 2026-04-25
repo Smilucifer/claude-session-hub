@@ -246,3 +246,34 @@ test('incrementalContext does NOT advance cursor when meeting/sub missing', () =
   assert.equal(r.advancedTo, 0);
   assert.equal(m.getCursor(meeting.id, 'sub-not-added'), null);
 });
+
+test('incrementalContext on empty timeline: cursor stays at 0, returns empty', () => {
+  const m = new MeetingRoomManager();
+  const meeting = m.createMeeting();
+  m.addSubSession(meeting.id, 'sub-A');
+  // No turns appended yet
+  const r = m.incrementalContext(meeting.id, 'sub-A');
+  assert.deepEqual(r, { turns: [], advancedTo: 0 });
+  assert.equal(m.getCursor(meeting.id, 'sub-A'), 0, 'cursor must remain at 0');
+});
+
+test('incrementalContext when all slice turns belong to target self: cursor advances, turns empty', () => {
+  const m = new MeetingRoomManager();
+  const meeting = m.createMeeting();
+  m.addSubSession(meeting.id, 'sub-A');
+  // 3 turns ALL from sub-A — nothing for sub-A to "see" but cursor must advance
+  m.appendTurn(meeting.id, 'sub-A', 'R1', 1);
+  m.appendTurn(meeting.id, 'sub-A', 'R2', 2);
+  m.appendTurn(meeting.id, 'sub-A', 'R3', 3);
+
+  const r = m.incrementalContext(meeting.id, 'sub-A');
+  assert.equal(r.turns.length, 0, 'all turns are self-authored, filtered out');
+  assert.equal(r.advancedTo, 3, 'cursor MUST advance to timeline.length even when filter empties result');
+  assert.equal(m.getCursor(meeting.id, 'sub-A'), 3, 'cursor reflects "consumed up to here"');
+
+  // Now another sub posts — sub-A's next call sees only that
+  m.appendTurn(meeting.id, 'sub-B', 'R1_B', 4);
+  const r2 = m.incrementalContext(meeting.id, 'sub-A');
+  assert.equal(r2.turns.length, 1);
+  assert.equal(r2.turns[0].sid, 'sub-B');
+});

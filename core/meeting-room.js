@@ -164,6 +164,9 @@ class MeetingRoomManager {
     const fromIdx = m._cursors[targetSid];
     const newTurns = m._timeline
       .slice(fromIdx)
+      // 'user' is a reserved literal sid; hubSessionIds are UUIDs — no collision
+      // possible, so filtering on sid !== targetSid correctly excludes only the
+      // target's own AI turns and never accidentally drops user turns.
       .filter(t => t.sid !== targetSid)
       .map(t => ({ ...t }));
     m._cursors[targetSid] = m._timeline.length;
