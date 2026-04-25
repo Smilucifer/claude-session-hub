@@ -112,9 +112,96 @@
   }
 
   function renderCards(result) {
-    // 详细在 Task 11 实现; 这里先占位让单元能运行
     const body = ensureModal().querySelector('.mr-summary-body');
-    body.innerHTML = '<div>[cards placeholder — Task 11]</div>';
+    const data = result && result.data ? result.data : {};
+    const warnings = result && result.warnings ? result.warnings : [];
+
+    const sections = [];
+    if (warnings.length > 0) {
+      sections.push(`
+        <div class="mr-summary-warning">
+          ⚠️ 部分字段不完整: ${escapeHtml(warnings.join(', '))}
+        </div>
+      `);
+    }
+
+    // 共识
+    sections.push(renderSection({
+      title: `✓ 共识 (${data.consensus.length})`,
+      cssClass: 'consensus',
+      items: data.consensus.map(c => `
+        <div class="mr-summary-card mr-summary-card-consensus">
+          <div class="mr-summary-card-text">${escapeHtml(c.text)}</div>
+          <div class="mr-summary-supporters">
+            ${c.supporters.map(s =>
+              `<span class="mr-summary-pill mr-summary-pill-${escapeHtml(s)}">${escapeHtml(s)}</span>`
+            ).join('')}
+          </div>
+        </div>
+      `),
+      emptyText: '本次会议暂无明确共识',
+    }));
+
+    // 决策
+    sections.push(renderSection({
+      title: `★ 决策 (${data.decisions.length})`,
+      cssClass: 'decisions',
+      items: data.decisions.map(d => `
+        <div class="mr-summary-card mr-summary-card-decision">
+          <div class="mr-summary-card-text">${escapeHtml(d.text)}</div>
+          ${Array.isArray(d.confirmed_by) && d.confirmed_by.length > 0
+            ? `<div class="mr-summary-confirm">由 ${escapeHtml(d.confirmed_by.join(', '))} 确认</div>`
+            : ''}
+        </div>
+      `),
+      emptyText: '尚无明确决策',
+    }));
+
+    // 分歧
+    sections.push(renderSection({
+      title: `⚡ 分歧 (${data.disagreements.length})`,
+      cssClass: 'disagreements',
+      items: data.disagreements.map(d => `
+        <div class="mr-summary-card mr-summary-card-disagree">
+          <div class="mr-summary-card-topic">${escapeHtml(d.topic)}</div>
+          <div class="mr-summary-positions">
+            ${d.positions.map(p => `
+              <div class="mr-summary-position">
+                <span class="mr-summary-who mr-summary-who-${escapeHtml(p.by)}">${escapeHtml(p.by)}</span>
+                <span class="mr-summary-view">${escapeHtml(p.view)}</span>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `),
+      emptyText: '各方立场一致,暂无分歧',
+    }));
+
+    // 未决
+    sections.push(renderSection({
+      title: `? 未决 (${data.open_questions.length})`,
+      cssClass: 'open',
+      items: data.open_questions.map(q => `
+        <div class="mr-summary-card mr-summary-card-open">
+          <div class="mr-summary-card-text">${escapeHtml(q)}</div>
+        </div>
+      `),
+      emptyText: '所有问题均已讨论',
+    }));
+
+    body.innerHTML = sections.join('');
+  }
+
+  function renderSection({ title, cssClass, items, emptyText }) {
+    const inner = items.length > 0
+      ? items.join('')
+      : `<div class="mr-summary-empty">${escapeHtml(emptyText)}</div>`;
+    return `
+      <div class="mr-summary-section mr-summary-section-${cssClass}">
+        <div class="mr-summary-section-title">${escapeHtml(title)}</div>
+        ${inner}
+      </div>
+    `;
   }
 
   function renderMeta(result) {
