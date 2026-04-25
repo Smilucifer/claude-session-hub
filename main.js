@@ -410,6 +410,37 @@ ipcMain.handle('get-marker-instruction', () => {
   return summaryEngine.getMarkerInstruction();
 });
 
+// Hub Timeline IPC: append a user turn to the meeting timeline.
+// Renderer calls this when user submits a message in meeting room before
+// the message goes to PTY(s).
+ipcMain.handle('meeting-append-user-turn', (_e, { meetingId, text }) => {
+  if (!meetingId || typeof text !== 'string' || !text) return null;
+  const turn = meetingManager.appendTurn(meetingId, 'user', text, Date.now());
+  if (turn) {
+    sendToRenderer('meeting-timeline-updated', { meetingId, turn });
+  }
+  return turn;
+});
+
+// Hub Timeline IPC: full snapshot of meeting timeline (for Feed UI rerender).
+ipcMain.handle('meeting-get-timeline', (_e, meetingId) => {
+  return meetingManager.getTimeline(meetingId);
+});
+
+// Hub Timeline IPC: compute incremental context for a target sub-session.
+// Returns { turns: [...], advancedTo: int }. Side effect: cursor advanced.
+// Renderer calls this in handleMeetingSend when syncContext is ON.
+ipcMain.handle('meeting-incremental-context', (_e, { meetingId, targetSid }) => {
+  if (!meetingId || !targetSid) return { turns: [], advancedTo: 0 };
+  // Surface misconfiguration: cursor not registered for this target means
+  // the sub-session was never added (or already removed) — silent empty
+  // return would mask wrong meetingId / sid bugs in callers.
+  if (meetingManager.getCursor(meetingId, targetSid) === null) {
+    console.warn(`[meeting-ipc] incremental-context called with unregistered targetSid=${targetSid} in meetingId=${meetingId}`);
+  }
+  return meetingManager.incrementalContext(meetingId, targetSid);
+});
+
 // Read the authoritative last-assistant text captured by the transcript tap.
 // Returns null if no tap backend has fired for this session yet (CLI hasn't
 // finished a turn, hook hasn't triggered, or file path couldn't be resolved).
