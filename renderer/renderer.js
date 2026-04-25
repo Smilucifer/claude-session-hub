@@ -189,7 +189,10 @@ function setupImageHover(terminal, container) {
 }
 
 function getTerminalCoords(terminal, container, mouseEvent) {
-  const rect = container.getBoundingClientRect();
+  // Prefer .xterm-screen for pixel-perfect coordinate mapping — the
+  // outer container may have padding/margins that shift the origin.
+  const screenEl = container.querySelector('.xterm-screen');
+  const rect = (screenEl || container).getBoundingClientRect();
   const renderer = terminal._core._renderService;
   if (!renderer || !renderer.dimensions) return null;
 
@@ -202,6 +205,42 @@ function getTerminalCoords(terminal, container, mouseEvent) {
 
   if (col < 0 || row < 0 || col >= terminal.cols) return null;
   return { col, row };
+}
+
+// --- Word-like input-line editing helpers ---
+
+function getInputLineSelection(terminal) {
+  const pos = terminal.getSelectionPosition();
+  if (!pos) return null;
+
+  const buf = terminal.buffer.active;
+  const cursorRow = buf.baseY + buf.cursorY;
+  // xterm internals are 0-based despite IBufferCellPosition docs saying 1-based
+  if (pos.start.y !== cursorRow || pos.end.y !== cursorRow) return null;
+
+  const text = terminal.getSelection();
+  if (!text) return null;
+
+  return { startCol: pos.start.x, endCol: pos.end.x, text };
+}
+
+function deleteInputSelection(terminal, sessionId, insertAfter) {
+  const sel = getInputLineSelection(terminal);
+  if (!sel || sel.text.length === 0) return false;
+
+  const buf = terminal.buffer.active;
+  let data = '';
+
+  const toEnd = sel.endCol - buf.cursorX;
+  if (toEnd > 0) data += '\x1b[C'.repeat(toEnd);
+  else if (toEnd < 0) data += '\x1b[D'.repeat(-toEnd);
+
+  data += '\x7f'.repeat(sel.text.length);
+  if (insertAfter) data += insertAfter;
+
+  terminal.clearSelection();
+  ipcRenderer.send('terminal-input', { sessionId, data });
+  return true;
 }
 
 function showPreview(filePath, mouseX, mouseY) {
@@ -824,7 +863,7 @@ function getOrCreateTerminal(sessionId) {
   terminal.loadAddon(fitAddon);
   terminal.loadAddon(new Unicode11Addon());
   terminal.loadAddon(searchAddon);
-  terminal.loadAddon(new WebLinksAddon((e, uri) => { shell.openExternal(uri); }));
+  terminal.loadAddon(new WebLinksAddon((e, uri) => { openPreviewPanel(uri); }));
   registerLocalPathLinks(terminal);
   terminal.unicode.activeVersion = '11';
 
@@ -866,6 +905,36 @@ function getOrCreateTerminal(sessionId) {
   // doesn't fire paste events on xterm's helper textarea for real keystrokes.
   terminal.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
+
+    // --- Word-like selection editing on the input line ---
+    if (terminal.hasSelection()) {
+      const inputSel = getInputLineSelection(terminal);
+      if (inputSel && inputSel.text.length > 0) {
+        if (e.key === 'Backspace' || e.key === 'Delete') {
+          e.preventDefault();
+          deleteInputSelection(terminal, sessionId);
+          return false;
+        }
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'x' || e.key === 'X')) {
+          e.preventDefault();
+          clipboard.writeText(inputSel.text);
+          deleteInputSelection(terminal, sessionId);
+          return false;
+        }
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'v' || e.key === 'V')) {
+          e.preventDefault();
+          deleteInputSelection(terminal, sessionId);
+          handlePasteForSession(sessionId);
+          return false;
+        }
+        if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          e.preventDefault();
+          deleteInputSelection(terminal, sessionId, e.key);
+          return false;
+        }
+      }
+    }
+
     const mod = e.ctrlKey || e.metaKey;
     if (!mod || e.altKey) return true;
 
@@ -927,6 +996,36 @@ function getOrCreateTerminal(sessionId) {
     const delta = e.deltaY < 0 ? 1 : -1;
     setFontSize(currentFontSize + delta);
   }, { passive: true });
+
+  // Click-to-position: clicking on the cursor's row sends arrow-key
+  // sequences so the PTY moves the cursor to the clicked column.
+  // We track where we last sent the cursor so rapid successive clicks
+  // don't misfire when the PTY is still redrawing the input line
+  // (cursorX briefly passes through 0 during redraws).
+  let sentCursorCol = null;
+  let sentCursorTimer = null;
+
+  container.addEventListener('click', (e) => {
+    if (terminal.hasSelection()) return;
+    const coords = getTerminalCoords(terminal, container, e);
+    if (!coords) return;
+
+    const buf = terminal.buffer.active;
+    const cursorAbsRow = buf.baseY + buf.cursorY;
+    if (coords.row !== cursorAbsRow) return;
+
+    const cursorCol = sentCursorCol ?? buf.cursorX;
+    const diff = coords.col - cursorCol;
+    if (diff === 0) { sentCursorCol = null; return; }
+
+    sentCursorCol = coords.col;
+    clearTimeout(sentCursorTimer);
+    sentCursorTimer = setTimeout(() => { sentCursorCol = null; }, 300);
+
+    const arrow = diff > 0 ? '\x1b[C' : '\x1b[D';
+    const seq = arrow.repeat(Math.abs(diff));
+    ipcRenderer.send('terminal-input', { sessionId, data: seq });
+  });
 
   const cached = {
     terminal, fitAddon, searchAddon, container, opened: false,
@@ -1687,7 +1786,8 @@ let currentPreviewPath = null;
 
 async function openPreviewPanel(filePath) {
   currentPreviewPath = filePath;
-  const fileName = filePath.replace(/^.*[\\/]/, '');
+  const isUrl = /^https?:\/\//i.test(filePath);
+  const fileName = isUrl ? filePath.replace(/^https?:\/\//i, '').split(/[/?#]/)[0] : filePath.replace(/^.*[\\/]/, '');
   previewTitleEl.textContent = fileName;
   previewTitleEl.title = filePath;
 
@@ -1710,6 +1810,16 @@ async function openPreviewPanel(filePath) {
   previewPanelEl.style.display = 'flex';
 
   previewBodyEl.innerHTML = '';
+
+  if (isUrl) {
+    const wv = document.createElement('webview');
+    wv.src = filePath;
+    wv.style.cssText = 'width:100%;height:100%;border:none;';
+    previewBodyEl.style.alignItems = 'stretch';
+    previewBodyEl.style.justifyContent = 'stretch';
+    previewBodyEl.appendChild(wv);
+    return;
+  }
 
   const ext = filePath.replace(/^.*\./, '.').toLowerCase();
 
@@ -1754,8 +1864,12 @@ function closePreviewPanel() {
 document.getElementById('preview-close').addEventListener('click', closePreviewPanel);
 document.getElementById('preview-open-external').addEventListener('click', async () => {
   if (currentPreviewPath) {
-    const err = await ipcRenderer.invoke('open-path', currentPreviewPath);
-    if (err) console.warn('[hub] open-path for preview failed:', currentPreviewPath, '→', err);
+    if (/^https?:\/\//i.test(currentPreviewPath)) {
+      shell.openExternal(currentPreviewPath);
+    } else {
+      const err = await ipcRenderer.invoke('open-path', currentPreviewPath);
+      if (err) console.warn('[hub] open-path for preview failed:', currentPreviewPath, '→', err);
+    }
   }
 });
 document.addEventListener('keydown', (e) => {
