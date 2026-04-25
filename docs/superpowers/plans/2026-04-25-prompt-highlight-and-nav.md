@@ -61,7 +61,7 @@
 打开 PowerShell 在 Hub 项目根目录跑：
 
 ```powershell
-$env:CLAUDE_HUB_DATA_DIR = "C:\temp\hub-prompt-nav-test"
+$env:CLAUDE_HUB_DATA_DIR = "C:\Users\lintian\hub-prompt-nav-data"
 .\node_modules\electron\dist\electron.exe . --remote-debugging-port=9229
 ```
 
@@ -829,7 +829,7 @@ timeout 6 ./node_modules/electron/dist/electron.exe . 2>&1 | Select-Object -Firs
 - [ ] **Step 3: 跑完整 E2E 最后一次**
 
 ```powershell
-$env:CLAUDE_HUB_DATA_DIR = "C:\temp\hub-prompt-nav-test"
+$env:CLAUDE_HUB_DATA_DIR = "C:\Users\lintian\hub-prompt-nav-data"
 .\node_modules\electron\dist\electron.exe . --remote-debugging-port=9229
 ```
 
@@ -844,7 +844,7 @@ node tests/e2e-prompt-jump.js 9229
 - [ ] **Step 4: 关闭测试 Hub，清理 env data**
 
 ```powershell
-Remove-Item -Recurse -Force C:\temp\hub-prompt-nav-test -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force C:\Users\lintian\hub-prompt-nav-data -ErrorAction SilentlyContinue
 ```
 
 - [ ] **Step 5: 最终 commit（如有截图）+ git status 检查**
