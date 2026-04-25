@@ -729,6 +729,21 @@ body.theme-light .session-time {
   pointer-events: none;
 }
 
+.prompt-marker-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.prompt-line-marker {
+  position: absolute;
+  left: 0;
+  right: 12px;
+  background: rgba(210, 153, 34, 0.08);
+  border-left: 3px solid var(--accent-orange, #d29922);
+}
+
 .prompt-highlight {
   position: absolute;
   left: 0;

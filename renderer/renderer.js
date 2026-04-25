@@ -1256,6 +1256,16 @@ function mountMinimap(sessionId, termContainer, terminal) {
     }
   }
 
+  let promptMarkerLayer = null;
+
+  function ensureMarkerLayer() {
+    if (promptMarkerLayer) return promptMarkerLayer;
+    promptMarkerLayer = document.createElement('div');
+    promptMarkerLayer.className = 'prompt-marker-layer';
+    termContainer.appendChild(promptMarkerLayer);
+    return promptMarkerLayer;
+  }
+
   function render() {
     if (disposed) return;
     const buf = terminal.buffer.active;
@@ -1282,6 +1292,26 @@ function mountMinimap(sessionId, termContainer, terminal) {
     const height = Math.max(6, (terminal.rows / total) * stripH);
     viewport.style.top = Math.round(top) + 'px';
     viewport.style.height = Math.round(height) + 'px';
+
+    // Prompt line markers (left bar + background) for visible ticks
+    const layer = ensureMarkerLayer();
+    layer.innerHTML = '';
+    const ren = terminal._core._renderService;
+    if (!ren || !ren.dimensions) return;
+    const cellH = ren.dimensions.css.cell.height;
+    const viewY = buf.viewportY;
+    const rows = terminal.rows;
+    const markerFrag = document.createDocumentFragment();
+    for (const t of ticks) {
+      if (t.line < viewY || t.line >= viewY + rows) continue;
+      const topPx = (t.line - viewY) * cellH;
+      const marker = document.createElement('div');
+      marker.className = 'prompt-line-marker';
+      marker.style.top = topPx + 'px';
+      marker.style.height = cellH + 'px';
+      markerFrag.appendChild(marker);
+    }
+    layer.appendChild(markerFrag);
   }
 
   // Strip click (outside ticks) → scroll to proportional line.
@@ -1311,6 +1341,7 @@ function mountMinimap(sessionId, termContainer, terminal) {
       try { scrollSub.dispose(); } catch {}
       try { renderSub.dispose(); } catch {}
       if (strip.parentNode) strip.parentNode.removeChild(strip);
+      if (promptMarkerLayer && promptMarkerLayer.parentNode) promptMarkerLayer.parentNode.removeChild(promptMarkerLayer);
     },
   };
 }
