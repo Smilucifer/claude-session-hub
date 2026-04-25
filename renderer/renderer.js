@@ -102,10 +102,10 @@ const { CanvasAddon } = require('@xterm/addon-canvas');
 //
 // Claude Code's user-input prompt line, e.g. "❯ text" or "│ ❯ text │".
 // Deliberately excludes ASCII '>' — matched assistant markdown/list content.
-const PROMPT_LINE_RE = /^[\s│╭─╮╰╯]*[❯›]\s+(.+?)(?:\s*[│╯╰╭╮]+\s*)?$/;
+const PROMPT_LINE_RE = /^[\s│╭─╮╰╯]*[❯›>]\s+(.+?)(?:\s*[│╯╰╭╮]+\s*)?$/;
 // Just the prompt prefix — no capture group. Used when we only need to skip
 // prompt lines rather than parse them.
-const PROMPT_PREFIX_RE = /^[\s│╭─╮╰╯]*[❯›]\s+/;
+const PROMPT_PREFIX_RE = /^[\s│╭─╮╰╯]*[❯›>]\s+/;
 // Emoji Claude Code uses at the start of an AI-reply block. A safety net: if
 // we ever mis-match a user prompt line, this filters out lines that are
 // clearly assistant output.

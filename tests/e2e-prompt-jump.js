@@ -146,13 +146,13 @@ async function run() {
       const c = terminalCache.get(activeSessionId);
       if (!c) return 'no cache';
       const t = c.terminal;
-      t.write('\\r\\n❯ first test question\\r\\n');
+      t.write('\\r\\n❯ first test question (using ❯)\\r\\n');
       t.write('⏺ AI answering first question...\\r\\n');
       for (let i = 0; i < 30; i++) t.write('  Line ' + i + ' of AI response.\\r\\n');
-      t.write('\\r\\n❯ second test question\\r\\n');
+      t.write('\\r\\n> second test question (using > ASCII)\\r\\n');
       t.write('⏺ AI answering second question...\\r\\n');
       for (let i = 0; i < 30; i++) t.write('  Line ' + i + ' of more output.\\r\\n');
-      t.write('\\r\\n❯ third test question\\r\\n');
+      t.write('\\r\\n> third test question (also using >)\\r\\n');
       t.write('⏺ AI answering third...\\r\\n');
       for (let i = 0; i < 20; i++) t.write('  Line ' + i + ' of third response.\\r\\n');
       return 'injected';
