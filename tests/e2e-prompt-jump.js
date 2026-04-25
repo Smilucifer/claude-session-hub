@@ -381,6 +381,39 @@ async function run() {
 
   await shot('08-after-button-up.png');
 
+  // --- Test 9: Boundary disabled state ---
+  log('Test 9: nav buttons disabled at top/bottom boundary');
+
+  // 跳到最上一条 prompt（多按几次 ▲ 直到不动）
+  for (let i = 0; i < 10; i++) {
+    await evalJs(`
+      (function() {
+        const c = terminalCache.get(activeSessionId);
+        if (c && c._minimap) c._minimap.navPrev();
+      })()
+    `);
+  }
+  await sleep(300);
+
+  const upDisabledAtTop = await evalJs(`document.querySelector('.prompt-nav-btn[data-dir="up"]').disabled`);
+  record('▲ disabled at first prompt', upDisabledAtTop === true, String(upDisabledAtTop));
+
+  // 跳到最下一条
+  for (let i = 0; i < 10; i++) {
+    await evalJs(`
+      (function() {
+        const c = terminalCache.get(activeSessionId);
+        if (c && c._minimap) c._minimap.navNext();
+      })()
+    `);
+  }
+  await sleep(300);
+
+  const downDisabledAtBottom = await evalJs(`document.querySelector('.prompt-nav-btn[data-dir="down"]').disabled`);
+  record('▼ disabled at last prompt', downDisabledAtBottom === true, String(downDisabledAtBottom));
+
+  await shot('09-boundary-disabled.png');
+
   // --- Summary ---
   console.log('\n=== RESULTS ===');
   let pass = 0, fail = 0;
