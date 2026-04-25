@@ -12,8 +12,6 @@
 
   let _currentMeetingId = null;
   let _feedListenerAttached = false;
-  let _renderRequested = false;
-
   function escapeHtml(str) {
     if (str == null) return '';
     return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -40,18 +38,19 @@
   function renderTurnCard(turn) {
     const kind = getSessionKind(turn.sid);
     const label = getSessionLabel(turn.sid);
+    const text = typeof turn.text === 'string' ? turn.text : '';
     const longThreshold = 500;
-    const isLong = turn.text.length > longThreshold;
-    const preview = isLong ? turn.text.slice(0, longThreshold) : turn.text;
+    const isLong = text.length > longThreshold;
+    const preview = isLong ? text.slice(0, longThreshold) : text;
     const previewHtml = escapeHtml(preview);
-    const fullHtml = escapeHtml(turn.text);
+    const fullHtml = escapeHtml(text);
     const foldId = `mr-feed-fold-${turn.idx}`;
 
-    return `<div class="mr-feed-turn mr-feed-kind-${escapeHtml(kind)}" data-idx="${turn.idx}">
+    return `<div class="mr-feed-turn mr-feed-kind-${escapeHtml(kind)}" data-idx="${escapeHtml(String(turn.idx))}">
     <div class="mr-feed-meta">
       <span class="mr-feed-badge mr-feed-badge-${escapeHtml(kind)}">${escapeHtml(label)}</span>
       <span class="mr-feed-time">${escapeHtml(formatTime(turn.ts))}</span>
-      <span class="mr-feed-idx">#${turn.idx}</span>
+      <span class="mr-feed-idx">#${escapeHtml(String(turn.idx))}</span>
     </div>
     <div class="mr-feed-body">${
       isLong
