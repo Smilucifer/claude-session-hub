@@ -175,7 +175,13 @@ class SessionManager extends EventEmitter {
 
     ptyProcess.onExit(() => {
       const entry = this.sessions.get(id);
-      const mid = entry && entry.info ? entry.info.meetingId : null;
+      // Guard against id reuse: if a fresh session has already taken this id
+      // (e.g., via restart-session reusing old.id), the entry's pty will be
+      // the new one, NOT this ptyProcess. In that case the new session is
+      // alive — we must not delete its Map entry or fire onSessionClosed
+      // for the new session.
+      if (!entry || entry.pty !== ptyProcess) return;
+      const mid = entry.info ? entry.info.meetingId : null;
       this.sessions.delete(id);
       this.onSessionClosed(id, mid);
     });
