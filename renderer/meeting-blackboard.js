@@ -10,6 +10,79 @@
   let _bbFocusedTab = null;
   let _syncing = false;
 
+  let _currentMeetingId = null;
+  let _feedListenerAttached = false;
+  let _renderRequested = false;
+
+  function escapeHtml(str) {
+    if (str == null) return '';
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function getSessionLabel(sid) {
+    if (sid === 'user') return '你';
+    const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
+    if (!s) return '已离开';
+    return s.title || s.kind || 'AI';
+  }
+
+  function getSessionKind(sid) {
+    if (sid === 'user') return 'user';
+    const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
+    return s ? s.kind : 'unknown';
+  }
+
+  function formatTime(ts) {
+    const d = new Date(ts);
+    return d.toLocaleTimeString();
+  }
+
+  function renderTurnCard(turn) {
+    const kind = getSessionKind(turn.sid);
+    const label = getSessionLabel(turn.sid);
+    const longThreshold = 500;
+    const isLong = turn.text.length > longThreshold;
+    const preview = isLong ? turn.text.slice(0, longThreshold) : turn.text;
+    const previewHtml = escapeHtml(preview);
+    const fullHtml = escapeHtml(turn.text);
+    const foldId = `mr-feed-fold-${turn.idx}`;
+
+    return `<div class="mr-feed-turn mr-feed-kind-${escapeHtml(kind)}" data-idx="${turn.idx}">
+    <div class="mr-feed-meta">
+      <span class="mr-feed-badge mr-feed-badge-${escapeHtml(kind)}">${escapeHtml(label)}</span>
+      <span class="mr-feed-time">${escapeHtml(formatTime(turn.ts))}</span>
+      <span class="mr-feed-idx">#${turn.idx}</span>
+    </div>
+    <div class="mr-feed-body">${
+      isLong
+        ? `<span id="${foldId}-preview">${previewHtml}<span class="mr-feed-ellipsis">…</span></span>
+           <span id="${foldId}-full" style="display:none">${fullHtml}</span>
+           <button class="mr-feed-toggle" data-fold-id="${foldId}">展开</button>`
+        : fullHtml
+    }</div>
+  </div>`;
+  }
+
+  function attachFoldHandler(container) {
+    container.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('.mr-feed-toggle');
+      if (!btn) return;
+      const foldId = btn.getAttribute('data-fold-id');
+      const preview = document.getElementById(foldId + '-preview');
+      const full = document.getElementById(foldId + '-full');
+      if (!preview || !full) return;
+      if (full.style.display === 'none') {
+        preview.style.display = 'none';
+        full.style.display = 'inline';
+        btn.textContent = '收起';
+      } else {
+        preview.style.display = 'inline';
+        full.style.display = 'none';
+        btn.textContent = '展开';
+      }
+    });
+  }
+
   // Authoritative-first resolver: try transcript tap (Claude Stop hook / Codex
   // rollout task_complete / Gemini JSONL gemini-message), fall back to the
   // legacy marker-based extractor. Returns { text, source } where source is
@@ -44,87 +117,34 @@
 
   async function renderBlackboard(meeting, container) {
     container.innerHTML = '';
-    container.className = 'mr-terminals mr-blackboard';
-    const subs = meeting.subSessions || [];
-    if (subs.length === 0) {
+    container.className = 'mr-terminals mr-blackboard mr-feed';
+    _currentMeetingId = meeting.id;
+
+    if (!meeting.subSessions || meeting.subSessions.length === 0) {
       container.innerHTML = '<div class="mr-bb-empty">暂无子会话，请先添加 AI</div>';
       return;
     }
 
-    const focused = _bbFocusedTab && subs.includes(_bbFocusedTab) ? _bbFocusedTab : subs[0];
-    _bbFocusedTab = focused;
+    const feedEl = document.createElement('div');
+    feedEl.className = 'mr-feed-list';
+    container.appendChild(feedEl);
 
-    // Tab bar
-    const tabBar = document.createElement('div');
-    tabBar.className = 'mr-bb-tabs';
-    for (const sid of subs) {
-      const label = getLabel(sid);
-      const btn = document.createElement('button');
-      btn.className = 'mr-bb-tab' + (sid === focused ? ' active' : '');
-      btn.dataset.sid = sid;
-      btn.textContent = label;
-      btn.addEventListener('click', () => {
-        _bbFocusedTab = sid;
-        renderBlackboard(meeting, container);
+    const timeline = await ipcRenderer.invoke('meeting-get-timeline', meeting.id);
+    const reversed = timeline.slice().reverse();
+    feedEl.innerHTML = reversed.map(renderTurnCard).join('');
+    attachFoldHandler(feedEl);
+
+    if (!_feedListenerAttached) {
+      _feedListenerAttached = true;
+      ipcRenderer.on('meeting-timeline-updated', (_event, { meetingId, turn }) => {
+        if (meetingId !== _currentMeetingId) return;
+        const list = document.querySelector('.mr-feed-list');
+        if (!list) return;
+        const card = document.createElement('div');
+        card.innerHTML = renderTurnCard(turn);
+        const node = card.firstElementChild;
+        list.insertBefore(node, list.firstChild);
       });
-      tabBar.appendChild(btn);
-    }
-    container.appendChild(tabBar);
-
-    // Content area
-    const contentEl = document.createElement('div');
-    contentEl.className = 'mr-bb-content';
-    container.appendChild(contentEl);
-
-    // Fetch summary (transcript-first, marker fallback) + marker status
-    let resolved = { text: '', source: 'none' };
-    let markerStatus = 'none';
-    try {
-      [resolved, markerStatus] = await Promise.all([
-        resolveSummary(focused),
-        ipcRenderer.invoke('marker-status', focused),
-      ]);
-    } catch {}
-    _summaryCache[focused] = { quick: resolved.text, deep: (_summaryCache[focused] || {}).deep || '', source: resolved.source };
-    const displayText = _summaryCache[focused].deep || _summaryCache[focused].quick || '';
-
-    // Info header with model badge + ctx + content status + time
-    const session = getSession(focused);
-    const infoHtml = [];
-    if (session && session.currentModel) {
-      const cls = typeof modelClass === 'function' ? modelClass(session.currentModel.id) : '';
-      const lbl = typeof modelShort === 'function' ? modelShort(session.currentModel) : (session.currentModel.displayName || '');
-      infoHtml.push('<span class="model-badge ' + cls + '">' + escapeHtml(lbl) + '</span>');
-    }
-    if (session && typeof session.contextPct === 'number') {
-      const cls = typeof pctClass === 'function' ? pctClass(session.contextPct) : 'ok';
-      infoHtml.push('<span class="ctx-badge ' + cls + '">Ctx ' + session.contextPct + '%</span>');
-    }
-    if (resolved.source === 'transcript') {
-      infoHtml.push('<span class="mr-marker-status done">✓ Transcript</span>');
-    } else if (resolved.source === 'marker') {
-      infoHtml.push('<span class="mr-marker-status done">✓ 摘要</span>');
-    } else if (markerStatus === 'streaming') {
-      infoHtml.push('<span class="mr-marker-status streaming">⏳ 输出中</span>');
-    }
-    infoHtml.push('<span class="mr-bb-time">最后更新 ' + new Date().toLocaleTimeString() + '</span>');
-
-    // Content: marker-based display
-    if (displayText) {
-      const { marked } = require('marked');
-      const DOMPurify = require('dompurify');
-      const renderedHtml = DOMPurify.sanitize(marked.parse(displayText));
-      contentEl.innerHTML =
-        '<div class="mr-bb-info">' + infoHtml.join(' ') + '</div>' +
-        '<div class="mr-bb-markdown">' + renderedHtml + '</div>';
-    } else if (markerStatus === 'streaming') {
-      contentEl.innerHTML =
-        '<div class="mr-bb-info">' + infoHtml.join(' ') + '</div>' +
-        '<div class="mr-bb-summary" style="color:var(--text-secondary);font-style:italic">正在输出中…</div>';
-    } else {
-      contentEl.innerHTML =
-        '<div class="mr-bb-info">' + infoHtml.join(' ') + '</div>' +
-        '<div class="mr-bb-summary" style="color:var(--text-secondary);font-style:italic">未检测到摘要标记。请确认 AI 已完成回答。</div>';
     }
   }
 
