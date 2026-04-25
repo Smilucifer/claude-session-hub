@@ -43,7 +43,12 @@ class SessionManager extends EventEmitter {
   //   title:              override default title (dormant wake preserves name)
   //   cwd:                launch cwd; defaults to user home
   //   resumeCCSessionId:  when set, runs `claude --resume <id>`
-  //   useContinue:        when set and no resumeCCSessionId, runs `claude --continue`
+  //   useContinue:        when set, runs `claude --continue` (Claude fallback)
+  //   useResume:          generic resume flag for codex/gemini → uses sid/index if provided, else --last/latest
+  //   codexSid:           when set + kind=='codex' + useResume, runs `codex resume <sid>` precisely (T8 new)
+  //   geminiChatId:       Gemini 8charId from chats/session-*.json (T8 new, used for index lookup)
+  //   geminiProjectRoot:  required for Gemini list-sessions reverse-lookup (T8 new, used as cwd)
+  //   geminiResumeIndex:  resolved index from `gemini --list-sessions` (T8 new, set by main.js before spawn)
   createSession(kind = 'powershell', opts = {}) {
     const id = opts.id || uuid();
     const isClaude = kind === 'claude' || kind === 'claude-resume';
@@ -242,7 +247,15 @@ class SessionManager extends EventEmitter {
     if (isGemini) {
       let cmd = ' gemini --approval-mode yolo';
       cmd += ` --model ${opts.model || 'gemini-2.5-pro'}`;
-      if (opts.useResume) cmd += ' --resume latest';
+      if (opts.useResume) {
+        if (opts.geminiChatId && opts.geminiProjectRoot && typeof opts.geminiResumeIndex === 'number') {
+          // Level 1: precise resume by index resolved via list-sessions reverse-lookup
+          cmd += ` -r ${opts.geminiResumeIndex}`;
+        } else {
+          // Level 2 degradation: no index resolved → fall back to latest
+          cmd += ' --resume latest';
+        }
+      }
       cmd += '\r\n';
       let sent = false;
       let debounceTimer = null;
@@ -269,7 +282,16 @@ class SessionManager extends EventEmitter {
     }
 
     if (isCodex) {
-      let cmd = opts.useResume ? ' codex resume --last --full-auto' : ' codex --full-auto';
+      let cmd;
+      if (opts.useResume && opts.codexSid) {
+        // Level 1: precise resume by sid
+        cmd = ` codex resume ${opts.codexSid} --full-auto`;
+      } else if (opts.useResume) {
+        // Level 2 degradation: no sid recorded → use --last
+        cmd = ' codex resume --last --full-auto';
+      } else {
+        cmd = ' codex --full-auto';
+      }
       cmd += '\r\n';
       let sent = false;
       let debounceTimer = null;
