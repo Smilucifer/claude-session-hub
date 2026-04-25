@@ -14,4 +14,20 @@ function tryParseJson(raw) {
   return null;
 }
 
-module.exports = { tryParseJson };
+function applySchema(obj) {
+  const warnings = [];
+  const safeArray = (val, name) => {
+    if (Array.isArray(val)) return val;
+    warnings.push(`${name} 字段缺失或类型错误`);
+    return [];
+  };
+  const result = {
+    consensus: safeArray(obj && obj.consensus, 'consensus'),
+    disagreements: safeArray(obj && obj.disagreements, 'disagreements'),
+    decisions: safeArray(obj && obj.decisions, 'decisions'),
+    open_questions: safeArray(obj && obj.open_questions, 'open_questions'),
+  };
+  return { result, warnings };
+}
+
+module.exports = { tryParseJson, applySchema };
