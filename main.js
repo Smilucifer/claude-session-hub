@@ -807,6 +807,45 @@ ipcMain.handle('resume-session', (_e, meta) => {
   });
   registerSessionForTap(session);
   sendToRenderer('session-created', { session });
+
+  // Level 3 fallback: when native resume is unavailable (Level 1+2 both fail),
+  // inject transcript tail as [CONTEXT] block into PTY after spawn settles.
+  const needsLevel3 = (
+    (meta.kind === 'codex' && !meta.codexSid) ||
+    (meta.kind === 'gemini' && (!meta.geminiChatId || geminiResumeIndex == null))
+  );
+
+  if (needsLevel3) {
+    const { readTranscriptTail } = require('./core/session-manager');
+    let sourcePath = null;
+    if (meta.kind === 'gemini' && meta.geminiProjectHash && meta.geminiChatId) {
+      try {
+        const dir = require('path').join(require('os').homedir(), '.gemini', 'tmp', meta.geminiProjectHash, 'chats');
+        const f = require('fs').readdirSync(dir).find(n => n.includes(meta.geminiChatId));
+        if (f) sourcePath = require('path').join(dir, f);
+      } catch {}
+    }
+    // Note: Codex Level 3 not implemented in this PR — sourcePath stays null,
+    // so codex falls through to Level 2 (`codex resume --last`) which T8 already handles.
+    // If future need: derive from `~/.codex/sessions/<YYYY/MM/DD>/rollout-<...>-<sid>.jsonl`.
+
+    if (sourcePath) {
+      readTranscriptTail(meta.kind, sourcePath, 10).then(tail => {
+        if (!tail) return;
+        const msg = `[CONTEXT FROM PREVIOUS SESSION]\n${tail}\n\n[END CONTEXT]\n`;
+        // Wait 2s for spawn to settle before injecting
+        setTimeout(() => {
+          try {
+            sessionManager.writeToSession(session.id, msg);
+            console.log(`[hub] Level 3 fallback: injected ${tail.length}-char transcript tail to ${meta.kind} session ${session.id.slice(0,8)}`);
+          } catch (e) {
+            console.warn(`[hub] Level 3 inject failed:`, e.message);
+          }
+        }, 2000);
+      }).catch(e => console.warn('[hub] Level 3 fallback error:', e.message));
+    }
+  }
+
   return session;
 });
 

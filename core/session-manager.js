@@ -490,4 +490,57 @@ class SessionManager extends EventEmitter {
   }
 }
 
-module.exports = { SessionManager };
+// Read tail N turns from a CLI transcript file and format into a prompt-injectable
+// context block. Returns null if file unavailable or no usable turns.
+//   kind:    'claude' | 'codex' | 'gemini'
+//   sourcePath: kind-specific transcript file path
+async function readTranscriptTail(kind, sourcePath, n = 10) {
+  if (!sourcePath) return null;
+  try {
+    if (kind === 'gemini' && sourcePath.endsWith('.json') && !sourcePath.endsWith('.jsonl')) {
+      // Gemini old format: single JSON file
+      const obj = JSON.parse(require('fs').readFileSync(sourcePath, 'utf-8'));
+      const msgs = Array.isArray(obj.messages) ? obj.messages.slice(-n) : [];
+      return msgs.map(m => {
+        if (m.type === 'user') return `USER: ${(m.content||[]).map(c=>c.text).filter(Boolean).join('')}`;
+        if (m.type === 'gemini') return `ASSISTANT: ${typeof m.content==='string'?m.content:''}`;
+        return null;
+      }).filter(Boolean).join('\n\n');
+    }
+    // JSONL: tail N lines
+    const lines = require('fs').readFileSync(sourcePath, 'utf-8').trim().split('\n').slice(-n*2);
+    const out = [];
+    for (const line of lines) {
+      let obj;
+      try { obj = JSON.parse(line); } catch { continue; }
+      if (kind === 'claude') {
+        if (obj.type === 'user' && obj.message?.content) {
+          out.push(`USER: ${typeof obj.message.content === 'string' ? obj.message.content : JSON.stringify(obj.message.content)}`);
+        }
+        if (obj.type === 'assistant' && Array.isArray(obj.message?.content)) {
+          const txt = obj.message.content.filter(c => c.type === 'text').map(c => c.text).join('');
+          if (txt) out.push(`ASSISTANT: ${txt}`);
+        }
+      } else if (kind === 'codex') {
+        if (obj.type === 'event_msg' && obj.payload?.type === 'task_complete' && obj.payload?.last_agent_message) {
+          out.push(`ASSISTANT: ${obj.payload.last_agent_message}`);
+        } else if (obj.type === 'response_item' && obj.payload?.role === 'user' && obj.payload?.content) {
+          out.push(`USER: ${typeof obj.payload.content === 'string' ? obj.payload.content : JSON.stringify(obj.payload.content)}`);
+        }
+      } else if (kind === 'gemini') {
+        if (obj.type === 'user') {
+          out.push(`USER: ${(obj.content||[]).map(c => c.text).filter(Boolean).join('')}`);
+        }
+        if (obj.type === 'gemini') {
+          out.push(`ASSISTANT: ${typeof obj.content === 'string' ? obj.content : ''}`);
+        }
+      }
+    }
+    return out.slice(-n).join('\n\n');
+  } catch (e) {
+    console.warn(`[hub] readTranscriptTail(${kind}) failed:`, e.message);
+    return null;
+  }
+}
+
+module.exports = { SessionManager, readTranscriptTail };
