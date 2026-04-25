@@ -16,6 +16,10 @@ const { SummaryEngine } = require('./core/summary-engine');
 const summaryEngine = new SummaryEngine();
 const { TranscriptTap } = require('./core/transcript-tap');
 const transcriptTap = new TranscriptTap();
+const { DeepSummaryService } = require('./core/deep-summary-service.js');
+const { GeminiCliProvider } = require('./core/summary-providers/gemini-cli.js');
+const { DeepSeekProvider } = require('./core/summary-providers/deepseek-api.js');
+const { loadConfig: loadDeepSummaryConfig } = require('./core/deep-summary-config.js');
 
 // Isolate Chromium userData when CLAUDE_HUB_DATA_DIR is set (parallel test
 // instances). Must run before app.whenReady(). Production Hub unaffected
@@ -268,6 +272,27 @@ let teamSessionManager = null; // set after hookPort is known
 let mainWindow;
 const sessionManager = new SessionManager();
 const meetingManager = new MeetingRoomManager();
+
+// Deep-summary service singleton: instantiated from config-driven fallback chain.
+// Providers tried in order; first one with a parseable response wins.
+const _deepSummaryConfig = loadDeepSummaryConfig();
+function _buildDeepSummaryProviders() {
+  const providers = [];
+  for (const name of _deepSummaryConfig.fallback_chain) {
+    if (name === 'gemini-cli') {
+      providers.push(new GeminiCliProvider(_deepSummaryConfig.gemini_cli));
+    } else if (name === 'deepseek-api') {
+      providers.push(new DeepSeekProvider(_deepSummaryConfig.deepseek_api));
+    } else {
+      console.warn('[deep-summary] unknown provider in fallback_chain:', name);
+    }
+  }
+  if (providers.length === 0) {
+    throw new Error('deep-summary fallback_chain produced 0 providers');
+  }
+  return providers;
+}
+const deepSummaryService = new DeepSummaryService({ providers: _buildDeepSummaryProviders() });
 
 // Wire TranscriptTap → MeetingRoomManager timeline.
 // When a sub-session's CLI finishes a turn, append the AI text to its
@@ -535,6 +560,41 @@ ipcMain.on('update-meeting', (_e, { meetingId, fields }) => {
 ipcMain.handle('get-meetings', () => {
   return meetingManager.getAllMeetings();
 });
+
+// Deep-summary IPC: generate structured meeting summary from full timeline via
+// config-driven provider fallback chain (gemini-cli → deepseek-api). This is
+// distinct from the older `'deep-summary'` channel above (single-session marker
+// summary). Returns the full service result envelope (status / data / _meta).
+ipcMain.handle('generate-meeting-summary', async (_event, meetingId) => {
+  try {
+    const meeting = meetingManager.getMeeting(meetingId);
+    if (!meeting) {
+      return {
+        status: 'failed',
+        _meta: { last_error: `meeting not found: ${meetingId}`, parse_status: 'failed' },
+      };
+    }
+    const timeline = meetingManager.getTimeline(meetingId);
+    const labelMap = new Map();
+    const presentAIs = new Set(['user']);
+    for (const sid of meeting.subSessions) {
+      const s = sessionManager.sessions.get(sid);
+      if (s && s.info) {
+        labelMap.set(sid, { label: s.info.title || s.info.kind || 'AI', kind: s.info.kind });
+        if (s.info.kind) presentAIs.add(s.info.kind);
+      }
+    }
+    return await deepSummaryService.generate(timeline, presentAIs, labelMap);
+  } catch (e) {
+    console.error('[generate-meeting-summary] error:', e);
+    return {
+      status: 'failed',
+      _meta: { last_error: e.message, parse_status: 'failed' },
+    };
+  }
+});
+
+ipcMain.handle('get-deep-summary-config', async () => _deepSummaryConfig.ui);
 
 // Archive scanner: enumerate past Claude Code sessions for the Resume picker.
 const sessionArchive = require('./core/session-archive.js');
