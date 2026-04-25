@@ -118,7 +118,7 @@ async function sendMessage(meetingId, text) {
             lines.push('【' + lbl + '】' + t.text);
           }
           lines.push('---', '');
-          ctxBySid[sid] = lines.join('\n');
+          ctxBySid[sid] = lines.join('\\n');
         }
       }
 
@@ -126,11 +126,16 @@ async function sendMessage(meetingId, text) {
       await ipcRenderer.invoke('meeting-append-user-turn', { meetingId: '${meetingId}', text: ${JSON.stringify(text)} });
 
       // Phase C: send to each sub
+      // Get session kinds so we can use codex-specific enter delay (300ms)
+      const sessions = await ipcRenderer.invoke('get-sessions').catch(() => []);
+      const kindBySid = {};
+      for (const s of (sessions || [])) kindBySid[s.id] = s.kind;
       for (const sid of subs) {
         const payload = (ctxBySid[sid] || '') + ${JSON.stringify(text)};
         ipcRenderer.send('terminal-input', { sessionId: sid, data: payload });
-        await new Promise(r => setTimeout(r, 80));
-        ipcRenderer.send('terminal-input', { sessionId: sid, data: '\r' });
+        const enterDelay = kindBySid[sid] === 'codex' ? 300 : 80;
+        await new Promise(r => setTimeout(r, enterDelay));
+        ipcRenderer.send('terminal-input', { sessionId: sid, data: '\\r' });
       }
     })()
   `);
@@ -211,7 +216,14 @@ async function scenarioA() {
   })()`);
   console.log('  cursor state:', cursors);
 
-  const pass = tl2.length >= 8 && Object.values(cursors).every(c => c.newTurns === 0);
+  // Pass criteria: timeline has >= 8 turns AND every cursor advanced to timeline length.
+  // Note: cursor advances during Phase A of sendMessage to (old) timeline.length,
+  // before new AI turns arrive. So immediately after sendMessage, a fresh
+  // incremental-context call will advance cursor to NEW timeline length but
+  // returns the new AI turns it just consumed. The right invariant is
+  // advancedTo === current timeline length (cursor caught up).
+  const pass = tl2.length >= 8
+    && Object.values(cursors).every(c => c.advancedTo === tl2.length);
   console.log(pass ? '  ✓ PASS Scenario A' : '  ✗ FAIL Scenario A');
   return pass;
 }
