@@ -147,3 +147,37 @@ test('getCursor returns null for unknown meeting/session', () => {
   const meeting = m.createMeeting();
   assert.equal(m.getCursor(meeting.id, 'sub-not-added'), null);
 });
+
+test('addSubSession idempotent when room is at full capacity (3 subs)', () => {
+  const m = new MeetingRoomManager();
+  const meeting = m.createMeeting();
+  m.addSubSession(meeting.id, 'sub-A');
+  m.addSubSession(meeting.id, 'sub-B');
+  m.addSubSession(meeting.id, 'sub-C');
+  m.advanceCursor(meeting.id, 'sub-A', 0); // place a verifiable cursor state
+  // Sanity: room is at capacity
+  assert.equal(m.getMeeting(meeting.id).subSessions.length, 3);
+  // Re-add an existing member while full — must not return null
+  const result = m.addSubSession(meeting.id, 'sub-A');
+  assert.notEqual(result, null, 'must not return null for existing member even when room is full');
+  assert.equal(m.getCursor(meeting.id, 'sub-A'), 0, 'cursor must be preserved');
+});
+
+test('advanceCursor rejects backward moves and does not mutate', () => {
+  const m = new MeetingRoomManager();
+  const meeting = m.createMeeting();
+  m.addSubSession(meeting.id, 'sub-A');
+  m.appendTurn(meeting.id, 'user', 'Q1', 1);
+  m.appendTurn(meeting.id, 'user', 'Q2', 2);
+  m.advanceCursor(meeting.id, 'sub-A', 2);
+  assert.equal(m.getCursor(meeting.id, 'sub-A'), 2);
+
+  const ok = m.advanceCursor(meeting.id, 'sub-A', 1); // backward
+  assert.equal(ok, false, 'backward advance must return false');
+  assert.equal(m.getCursor(meeting.id, 'sub-A'), 2, 'cursor must not change');
+
+  // Same-position no-op should succeed
+  const same = m.advanceCursor(meeting.id, 'sub-A', 2);
+  assert.equal(same, true, 'same-position advance is a no-op success');
+  assert.equal(m.getCursor(meeting.id, 'sub-A'), 2);
+});

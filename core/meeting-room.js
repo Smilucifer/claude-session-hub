@@ -53,11 +53,11 @@ class MeetingRoomManager {
   addSubSession(meetingId, sessionId) {
     const m = this.meetings.get(meetingId);
     if (!m) return null;
-    if (m.subSessions.length >= 3) return null;
     if (m.subSessions.includes(sessionId)) {
-      // Already a member: cursor must NOT reset (idempotent)
+      // Already a member: idempotent, cursor preserved (regardless of capacity)
       return { ...m, subSessions: [...m.subSessions], _timeline: [...m._timeline], _cursors: { ...m._cursors } };
     }
+    if (m.subSessions.length >= 3) return null;
     m.subSessions.push(sessionId);
     if (!(sessionId in m._cursors)) {
       m._cursors[sessionId] = 0; // new join: see full history
