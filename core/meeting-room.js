@@ -33,13 +33,20 @@ class MeetingRoomManager {
 
   getMeeting(id) {
     const m = this.meetings.get(id);
-    return m ? { ...m, subSessions: [...m.subSessions] } : null;
+    return m ? {
+      ...m,
+      subSessions: [...m.subSessions],
+      _timeline: [...m._timeline],
+      _cursors: { ...m._cursors },
+    } : null;
   }
 
   getAllMeetings() {
     return Array.from(this.meetings.values()).map(m => ({
       ...m,
       subSessions: [...m.subSessions],
+      _timeline: [...m._timeline],
+      _cursors: { ...m._cursors },
     }));
   }
 
@@ -112,9 +119,10 @@ class MeetingRoomManager {
       return null;
     }
 
-    const turn = { idx: m._nextIdx++, sid, text: safeText, ts: ts || Date.now() };
+    const resolvedTs = ts != null ? ts : Date.now();
+    const turn = { idx: m._nextIdx++, sid, text: safeText, ts: resolvedTs };
     m._timeline.push(turn);
-    m.lastMessageTime = ts || Date.now();
+    m.lastMessageTime = resolvedTs;
     return { ...turn };
   }
 

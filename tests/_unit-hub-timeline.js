@@ -73,3 +73,39 @@ test('appendTurn dedupes same sid+text within 2s window', () => {
   assert.notEqual(t3, null);
   assert.equal(m.getTimeline(meeting.id).length, 3);
 });
+
+test('getMeeting returns deep-copied _timeline + _cursors (no reference leak)', () => {
+  const m = new MeetingRoomManager();
+  const meeting = m.createMeeting();
+  m.appendTurn(meeting.id, 'user', 'Q1', 1);
+
+  const view = m.getMeeting(meeting.id);
+  // Mutate the returned view; internal state must NOT change
+  view._timeline.push({ idx: 999, sid: 'fake', text: 'no', ts: 0 });
+  view._cursors.injected = 999;
+
+  const fresh = m.getMeeting(meeting.id);
+  assert.equal(fresh._timeline.length, 1, 'internal _timeline must not be polluted');
+  assert.equal('injected' in fresh._cursors, false, 'internal _cursors must not be polluted');
+});
+
+test('getAllMeetings returns deep-copied _timeline + _cursors (no reference leak)', () => {
+  const m = new MeetingRoomManager();
+  const meeting = m.createMeeting();
+  m.appendTurn(meeting.id, 'user', 'Q1', 1);
+
+  const all = m.getAllMeetings();
+  all[0]._timeline.push({ idx: 999, sid: 'fake', text: 'no', ts: 0 });
+  all[0]._cursors.injected = 999;
+
+  const fresh = m.getAllMeetings();
+  assert.equal(fresh[0]._timeline.length, 1);
+  assert.equal('injected' in fresh[0]._cursors, false);
+});
+
+test('appendTurn handles ts=0 (epoch) correctly, not substituted with Date.now()', () => {
+  const m = new MeetingRoomManager();
+  const meeting = m.createMeeting();
+  const t = m.appendTurn(meeting.id, 'sub-A', 'R', 0);
+  assert.equal(t.ts, 0, 'ts=0 must be preserved, not replaced by Date.now()');
+});
