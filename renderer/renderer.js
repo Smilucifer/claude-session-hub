@@ -941,35 +941,13 @@ function getOrCreateTerminal(sessionId) {
     // Ctrl+Up / Ctrl+Down — jump between user prompts
     if (!e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
       const c = terminalCache.get(sessionId);
-      if (!c || !c._minimap || !c._minimap.getTicks) return true;
-      const ticks = c._minimap.getTicks();
-      if (!ticks.length) return false;
-      // Anchor on the currently-active prompt if we have one. Without one, use
-      // viewport bottom for Up (so first press jumps to last visible-or-above
-      // prompt) and viewport top for Down (jumps to first below).
-      const buf = terminal.buffer.active;
-      const hasActive = typeof c._activePromptLine === 'number';
-      let cur;
-      if (hasActive) cur = c._activePromptLine;
-      else if (e.key === 'ArrowUp') cur = buf.viewportY + terminal.rows;
-      else cur = buf.viewportY;
-      let target = null;
-      if (e.key === 'ArrowUp') {
-        for (let i = ticks.length - 1; i >= 0; i--) {
-          if (ticks[i].line < cur) { target = ticks[i]; break; }
-        }
-      } else {
-        for (let i = 0; i < ticks.length; i++) {
-          if (ticks[i].line > cur) { target = ticks[i]; break; }
-        }
+      if (!c || !c._minimap) return true;
+      const moved = e.key === 'ArrowUp' ? c._minimap.navPrev() : c._minimap.navNext();
+      if (moved) {
+        e.preventDefault();
+        return false;
       }
-      if (target) {
-        terminal.scrollToLine(target.line);
-        c._activePromptLine = target.line;
-        if (c._minimap.setActiveLine) c._minimap.setActiveLine(target.line);
-      }
-      e.preventDefault();
-      return false;
+      return true;
     }
 
     // Ctrl+V — paste (text or image)
