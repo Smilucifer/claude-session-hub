@@ -312,6 +312,34 @@ transcriptTap.on('turn-complete', ({ hubSessionId, text, completedAt }) => {
   }
 });
 
+// Persist resume meta when transcript-tap binds a sub-session to its native CLI sid.
+transcriptTap.on('session-bound', (ev) => {
+  if (!ev || !ev.hubSessionId) return;
+  // Find the session in lastPersistedSessions and merge new fields.
+  const idx = lastPersistedSessions.findIndex(s => s.hubId === ev.hubSessionId);
+  if (idx < 0) return;
+  const cur = lastPersistedSessions[idx];
+  let changed = false;
+  if (ev.kind === 'codex' && ev.codexSid && cur.codexSid !== ev.codexSid) {
+    cur.codexSid = ev.codexSid;
+    changed = true;
+  }
+  if (ev.kind === 'gemini') {
+    if (ev.geminiChatId && cur.geminiChatId !== ev.geminiChatId) { cur.geminiChatId = ev.geminiChatId; changed = true; }
+    if (ev.geminiProjectHash && cur.geminiProjectHash !== ev.geminiProjectHash) { cur.geminiProjectHash = ev.geminiProjectHash; changed = true; }
+    if (ev.geminiProjectRoot && cur.geminiProjectRoot !== ev.geminiProjectRoot) { cur.geminiProjectRoot = ev.geminiProjectRoot; changed = true; }
+  }
+  if (changed) {
+    stateStore.save({
+      version: 1,
+      cleanShutdown: false,
+      sessions: lastPersistedSessions,
+      meetings: meetingManager.getAllMeetings(),
+    });
+    console.log(`[hub] persisted resume meta for ${ev.kind} session ${ev.hubSessionId.slice(0,8)}`);
+  }
+});
+
 sessionManager.hookToken = HOOK_TOKEN;  // port set after listen
 
 // NOTE: Don't call app.setAppUserModelId here. Setting an AUMID without also
