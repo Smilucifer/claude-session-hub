@@ -12,6 +12,7 @@ const { createMobileServer } = require('./core/mobile-server.js');
 const mobileAuth = require('./core/mobile-auth.js');
 const { getHubDataDir } = require('./core/data-dir.js');
 const { MeetingRoomManager } = require('./core/meeting-room.js');
+const meetingStore = require('./core/meeting-store.js');
 const { SummaryEngine } = require('./core/summary-engine');
 const summaryEngine = new SummaryEngine();
 const { TranscriptTap } = require('./core/transcript-tap');
@@ -665,6 +666,18 @@ for (const m of bootMeetings) {
 stateStore.save({ version: 1, cleanShutdown: false, sessions: lastPersistedSessions, meetings: bootMeetings }, { sync: true });
 
 ipcMain.handle('get-dormant-meetings', () => meetingManager.getAllMeetings());
+
+// Lazy load timeline for a restored meeting (called when user opens the meeting view).
+// Idempotent: safe to call multiple times; second+ call returns same in-memory state.
+ipcMain.handle('meeting-load-timeline', (_e, meetingId) => {
+  if (!meetingId) return { ok: false, reason: 'missing meetingId' };
+  const ok = meetingManager.loadTimelineLazy(meetingId);
+  if (!ok) return { ok: false, reason: 'no persisted timeline (or meeting unknown)' };
+  return {
+    ok: true,
+    timeline: meetingManager.getTimeline(meetingId),
+  };
+});
 
 ipcMain.handle('get-dormant-sessions', () => ({
   sessions: lastPersistedSessions,
@@ -1339,6 +1352,12 @@ app.on('before-quit', async () => {
   try { teamBridge.cleanup(); } catch(e) {}
   if (teamSessionManager) { try { teamSessionManager.closeAll(); } catch(e) {} }
   if (mobileSrv) { try { await mobileSrv.close(); } catch {} }
+  try {
+    await meetingStore.flushAll();
+    console.log('[hub] meeting-store flushed on quit');
+  } catch (err) {
+    console.warn('[hub] meeting-store flush failed:', err.message);
+  }
 });
 
 app.on('window-all-closed', () => {
