@@ -1208,7 +1208,9 @@ function showTerminal(sessionId, opts = { focus: true }) {
   // disposed so xterm onScroll/onRender listeners don't pile up. The new
   // minimap's DOM was already removed when terminalPanelEl.innerHTML cleared.
   if (cached._minimap) { try { cached._minimap.dispose(); } catch {} cached._minimap = null; }
+  if (cached._navButtons) { try { cached._navButtons.dispose(); } catch {} cached._navButtons = null; }
   cached._minimap = mountMinimap(sessionId, termContainer, cached.terminal);
+  cached._navButtons = mountPromptNavButtons(sessionId, termContainer, cached._minimap);
 }
 
 // Minimap: a narrow strip on the right edge of the terminal that shows prompt
@@ -1325,6 +1327,12 @@ function mountMinimap(sessionId, termContainer, terminal) {
       markerFrag.appendChild(marker);
     }
     layer.appendChild(markerFrag);
+
+    // Notify any external listeners (e.g. nav buttons) that ticks/active changed.
+    const cache = terminalCache.get(sessionId);
+    if (cache && cache._navButtons && cache._navButtons.refreshState) {
+      cache._navButtons.refreshState();
+    }
   }
 
   // Strip click (outside ticks) → scroll to proportional line.
@@ -1394,6 +1402,56 @@ function mountMinimap(sessionId, termContainer, terminal) {
       try { renderSub.dispose(); } catch {}
       if (strip.parentNode) strip.parentNode.removeChild(strip);
       if (promptMarkerLayer && promptMarkerLayer.parentNode) promptMarkerLayer.parentNode.removeChild(promptMarkerLayer);
+    },
+  };
+}
+
+// Floating ▲▼ buttons in the terminal's top-right corner. Shares lifecycle
+// with mountMinimap: created by attachTerminalToPanel after mountMinimap,
+// disposed when the terminalCache entry's _minimap is disposed (we attach
+// our dispose to the same chain via the returned object).
+function mountPromptNavButtons(sessionId, termContainer, minimap) {
+  const wrap = document.createElement('div');
+  wrap.className = 'prompt-nav-buttons';
+
+  const btnUp = document.createElement('button');
+  btnUp.className = 'prompt-nav-btn';
+  btnUp.setAttribute('data-dir', 'up');
+  btnUp.title = '上一个问题 (Ctrl+↑)';
+  btnUp.textContent = '▲';
+
+  const btnDown = document.createElement('button');
+  btnDown.className = 'prompt-nav-btn';
+  btnDown.setAttribute('data-dir', 'down');
+  btnDown.title = '下一个问题 (Ctrl+↓)';
+  btnDown.textContent = '▼';
+
+  wrap.appendChild(btnUp);
+  wrap.appendChild(btnDown);
+  termContainer.appendChild(wrap);
+
+  function refreshState() {
+    btnUp.disabled = !minimap.canNavPrev();
+    btnDown.disabled = !minimap.canNavNext();
+  }
+
+  btnUp.addEventListener('click', (e) => {
+    e.stopPropagation();
+    minimap.navPrev();
+    refreshState();
+  });
+  btnDown.addEventListener('click', (e) => {
+    e.stopPropagation();
+    minimap.navNext();
+    refreshState();
+  });
+
+  refreshState();
+
+  return {
+    refreshState,
+    dispose() {
+      if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
     },
   };
 }
@@ -3127,6 +3185,7 @@ ipcRenderer.on('session-closed', (_e, { sessionId }) => {
     // Minimap holds xterm.onScroll/onRender subscriptions — must dispose before
     // terminal.dispose() so it can cleanly unhook rather than leak listeners.
     if (cached._minimap) { try { cached._minimap.dispose(); } catch {} cached._minimap = null; }
+    if (cached._navButtons) { try { cached._navButtons.dispose(); } catch {} cached._navButtons = null; }
     cached.terminal.dispose();
     cached.container.remove();
     terminalCache.delete(sessionId);

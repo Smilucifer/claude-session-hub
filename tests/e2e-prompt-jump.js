@@ -338,6 +338,49 @@ async function run() {
     );
   }
 
+  // --- Test 8: Floating ▲▼ nav buttons ---
+  log('Test 8: prompt-nav-buttons DOM and click behavior');
+
+  const btnInfo = await evalJs(`
+    (function() {
+      const btns = document.querySelectorAll('.prompt-nav-btn');
+      if (btns.length !== 2) return { count: btns.length };
+      return {
+        count: btns.length,
+        upDir: btns[0].getAttribute('data-dir'),
+        downDir: btns[1].getAttribute('data-dir'),
+        upText: btns[0].textContent,
+        downText: btns[1].textContent,
+      };
+    })()
+  `);
+  record('Two .prompt-nav-btn elements exist', btnInfo.count === 2, JSON.stringify(btnInfo));
+  if (btnInfo.count === 2) {
+    record('First button is data-dir="up"', btnInfo.upDir === 'up', btnInfo.upDir);
+    record('Second button is data-dir="down"', btnInfo.downDir === 'down', btnInfo.downDir);
+  }
+
+  // 准备：scroll to bottom，clear active state
+  await evalJs(`
+    (function() {
+      const c = terminalCache.get(activeSessionId);
+      c.terminal.scrollToBottom();
+      if (c._minimap && c._minimap.setActiveLine) c._minimap.setActiveLine(-1);
+      delete c._activePromptLine;
+    })()
+  `);
+  await sleep(300);
+
+  const viewBeforeBtn = await evalJs(`terminalCache.get(activeSessionId).terminal.buffer.active.viewportY`);
+
+  await evalJs(`document.querySelector('.prompt-nav-btn[data-dir="up"]').click()`);
+  await sleep(300);
+
+  const viewAfterBtn = await evalJs(`terminalCache.get(activeSessionId).terminal.buffer.active.viewportY`);
+  record('Click ▲ scrolls up', viewAfterBtn < viewBeforeBtn, `${viewBeforeBtn} -> ${viewAfterBtn}`);
+
+  await shot('08-after-button-up.png');
+
   // --- Summary ---
   console.log('\n=== RESULTS ===');
   let pass = 0, fail = 0;

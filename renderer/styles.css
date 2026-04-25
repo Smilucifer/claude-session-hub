@@ -1568,3 +1568,57 @@ body.theme-light .prompt-line-marker {
   color: #4a5568;
   user-select: none;
 }
+
+/* --- Floating prompt-nav buttons (▲▼) at terminal top-right --- */
+.prompt-nav-buttons {
+  position: absolute;
+  top: 8px;
+  right: 18px;       /* minimap is 10px wide + 4px gap to its left + 4px to inner edge */
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  opacity: 0.45;
+  transition: opacity 0.15s ease;
+}
+.terminal-container:hover .prompt-nav-buttons { opacity: 1; }
+
+.prompt-nav-btn {
+  width: 28px;
+  height: 24px;
+  border: 1px solid rgba(139, 148, 158, 0.25);
+  border-radius: 4px;
+  background: rgba(48, 54, 61, 0.6);
+  color: #ffb84d;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background 0.1s ease, opacity 0.1s ease;
+}
+.prompt-nav-btn:hover:not(:disabled) {
+  background: rgba(210, 153, 34, 0.25);
+}
+.prompt-nav-btn:active:not(:disabled) {
+  background: rgba(210, 153, 34, 0.45);
+}
+.prompt-nav-btn:disabled {
+  opacity: 0.2;
+  cursor: not-allowed;
+}
+
+/* Light theme overrides — buttons must be visible on white background */
+body.theme-light .prompt-nav-btn {
+  background: rgba(245, 245, 245, 0.85);
+  color: var(--accent-orange, #bc4c00);
+  border-color: rgba(110, 118, 129, 0.3);
+}
+body.theme-light .prompt-nav-btn:hover:not(:disabled) {
+  background: rgba(188, 76, 0, 0.15);
+}
+body.theme-light .prompt-nav-btn:active:not(:disabled) {
+  background: rgba(188, 76, 0, 0.30);
+}
