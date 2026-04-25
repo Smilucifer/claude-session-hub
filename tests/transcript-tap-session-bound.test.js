@@ -19,5 +19,22 @@ const tapModule = require('../core/transcript-tap');
 
   console.log('PASS T5.1 extractCodexSidFromRolloutPath');
 
+  // T6.1: extractGeminiChatIdFromSessionPath
+  const gFn = tapModule.extractGeminiChatIdFromSessionPath;
+  assert.ok(typeof gFn === 'function', 'extractGeminiChatIdFromSessionPath exported');
+
+  assert.strictEqual(gFn('/x/y/session-2026-04-24T16-39-e6651237.jsonl'), 'e6651237');
+  assert.strictEqual(gFn('/x/y/session-2026-04-24T16-39-e6651237.json'), 'e6651237');
+  assert.strictEqual(gFn('/x/y/session-bad.jsonl'), null);
+  assert.strictEqual(gFn('/x/y/notasession.jsonl'), null);
+  console.log('PASS T6.1 extractGeminiChatIdFromSessionPath');
+
+  // T6.2: extractGeminiProjectHashFromDir
+  const pFn = tapModule.extractGeminiProjectHashFromDir;
+  assert.ok(typeof pFn === 'function');
+  assert.strictEqual(pFn('/home/u/.gemini/tmp/abc123def'), 'abc123def');
+  assert.strictEqual(pFn(null), null);
+  console.log('PASS T6.2 extractGeminiProjectHashFromDir');
+
   console.log('ALL transcript-tap-session-bound unit tests PASS');
 })().catch(e => { console.error('FAIL:', e); process.exit(1); });

@@ -521,6 +521,23 @@ class GeminiTap extends EventEmitter {
     const boundEntry = { sessionPath, tail: null, lastText: null, isJsonl, debounceTimer: null };
     this._bound.set(hubSessionId, boundEntry);
 
+    // Emit session-bound for main.js to persist resume meta.
+    // sessionPath is `<projectDir>/chats/session-...`. Walk up 2 levels for projectDir.
+    const projectDir = path.dirname(path.dirname(sessionPath));
+    let projectRoot = null;
+    try {
+      projectRoot = (await fs.promises.readFile(path.join(projectDir, '.project_root'), 'utf8')).trim();
+    } catch {}
+
+    this.emit('session-bound', {
+      hubSessionId,
+      kind: 'gemini',
+      geminiChatId: extractGeminiChatIdFromSessionPath(sessionPath),
+      geminiProjectHash: extractGeminiProjectHashFromDir(projectDir),
+      geminiProjectRoot: projectRoot,
+      sessionPath,
+    });
+
     const emitIfComplete = (content) => {
       const text = (content || '').trim();
       if (!text) return;
@@ -651,4 +668,25 @@ function extractCodexSidFromRolloutPath(rolloutPath) {
   return sid;
 }
 
-module.exports = { TranscriptTap, JsonlTail, readLastAssistantMessageFromClaudeTranscript, extractCodexSidFromRolloutPath };
+function extractGeminiChatIdFromSessionPath(sessionPath) {
+  const base = path.basename(sessionPath).replace(/\.(jsonl?|json)$/, '');
+  if (!base.startsWith('session-')) return null;
+  const parts = base.split('-');
+  const last = parts[parts.length - 1];
+  if (last && /^[0-9a-f]{8}$/i.test(last)) return last;
+  return null;
+}
+
+function extractGeminiProjectHashFromDir(projectDir) {
+  if (!projectDir) return null;
+  return path.basename(projectDir);
+}
+
+module.exports = {
+  TranscriptTap,
+  JsonlTail,
+  readLastAssistantMessageFromClaudeTranscript,
+  extractCodexSidFromRolloutPath,
+  extractGeminiChatIdFromSessionPath,
+  extractGeminiProjectHashFromDir,
+};
