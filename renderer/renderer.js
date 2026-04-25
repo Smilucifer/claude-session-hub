@@ -2833,27 +2833,16 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
-  // Ctrl+Up / Ctrl+Down: jump to previous/next user prompt
+  // Ctrl+Up / Ctrl+Down: jump to previous/next user prompt.
+  // 委派 minimap.navPrev/navNext —— 和 xterm-level keydown handler (renderer.js:~941)
+  // 共用同一份跳转实现。stopPropagation 阻止后续 xterm handler 重复跳，避免双触发。
   if (!e.shiftKey && !e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
     const c = terminalCache.get(activeSessionId);
-    if (!c || !c._minimap || !c._minimap.getTicks) return;
-    const ticks = c._minimap.getTicks();
-    if (!ticks.length) return;
-    e.preventDefault();
-    const viewY = c.terminal.buffer.active.viewportY;
-    let target = null;
-    if (e.key === 'ArrowUp') {
-      for (let i = ticks.length - 1; i >= 0; i--) {
-        if (ticks[i].line < viewY) { target = ticks[i]; break; }
-      }
-    } else {
-      for (let i = 0; i < ticks.length; i++) {
-        if (ticks[i].line > viewY) { target = ticks[i]; break; }
-      }
-    }
-    if (target) {
-      c.terminal.scrollToLine(target.line);
-      flashPromptLine(c.terminal, target.line);
+    if (!c || !c._minimap) return;
+    const moved = e.key === 'ArrowUp' ? c._minimap.navPrev() : c._minimap.navNext();
+    if (moved) {
+      e.preventDefault();
+      e.stopPropagation();
     }
     return;
   }
