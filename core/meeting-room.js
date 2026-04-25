@@ -23,6 +23,10 @@ class MeetingRoomManager {
       status: 'idle',
       lastScene: 'free_discussion',
     };
+    // Hub Timeline phase 1 (in-memory only)
+    meeting._timeline = [];
+    meeting._cursors = {};
+    meeting._nextIdx = 0;
     this.meetings.set(id, meeting);
     return { ...meeting };
   }
@@ -82,9 +86,42 @@ class MeetingRoomManager {
       ...meetingData,
       status: 'dormant',
       subSessions: meetingData.subSessions || [],
+      _timeline: [],
+      _cursors: {},
+      _nextIdx: 0,
     });
     const num = parseInt((meetingData.title || '').replace(/\D/g, ''), 10);
     if (num && num >= this._counter) this._counter = num;
+  }
+  appendTurn(meetingId, sid, text, ts) {
+    const m = this.meetings.get(meetingId);
+    if (!m) return null;
+    if (typeof text !== 'string' || !text) return null;
+
+    // Cap at 100KB to prevent OOM from runaway AI output
+    const MAX = 100 * 1024;
+    let safeText = text;
+    if (safeText.length > MAX) {
+      safeText = safeText.slice(0, MAX) + '...[truncated]';
+    }
+
+    // Dedupe: same sid+text within 2s = duplicate event from tap
+    const lastTurn = m._timeline[m._timeline.length - 1];
+    if (lastTurn && lastTurn.sid === sid && lastTurn.text === safeText
+        && (ts - lastTurn.ts) < 2000) {
+      return null;
+    }
+
+    const turn = { idx: m._nextIdx++, sid, text: safeText, ts: ts || Date.now() };
+    m._timeline.push(turn);
+    m.lastMessageTime = ts || Date.now();
+    return { ...turn };
+  }
+
+  getTimeline(meetingId) {
+    const m = this.meetings.get(meetingId);
+    if (!m) return [];
+    return m._timeline.map(t => ({ ...t }));
   }
 }
 
