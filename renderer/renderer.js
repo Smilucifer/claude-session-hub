@@ -1290,6 +1290,7 @@ function mountMinimap(sessionId, termContainer, terminal) {
 
   return {
     invalidate,
+    getTicks() { return ticks; },
     dispose() {
       disposed = true;
       if (scanTimer) clearTimeout(scanTimer);
@@ -1298,6 +1299,28 @@ function mountMinimap(sessionId, termContainer, terminal) {
       if (strip.parentNode) strip.parentNode.removeChild(strip);
     },
   };
+}
+
+function flashPromptLine(terminal, lineNumber) {
+  const container = terminal.element && terminal.element.closest('.terminal-container');
+  if (!container) return;
+  const renderer = terminal._core._renderService;
+  if (!renderer || !renderer.dimensions) return;
+  const cellH = renderer.dimensions.css.cell.height;
+  const viewY = terminal.buffer.active.viewportY;
+  const topPx = (lineNumber - viewY) * cellH;
+  let highlight = container.querySelector('.prompt-highlight');
+  if (!highlight) {
+    highlight = document.createElement('div');
+    highlight.className = 'prompt-highlight';
+    container.appendChild(highlight);
+  }
+  highlight.style.top = topPx + 'px';
+  highlight.style.height = cellH + 'px';
+  highlight.style.display = 'block';
+  highlight.style.animation = 'none';
+  highlight.offsetHeight;
+  highlight.style.animation = 'prompt-flash 0.8s ease-out forwards';
 }
 
 // Hub → Claude /rename sync. Only fires for Claude sessions after the user
@@ -2710,6 +2733,31 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     const c = terminalCache.get(activeSessionId);
     if (c) c.terminal.scrollToTop();
+    return;
+  }
+
+  // Ctrl+Up / Ctrl+Down: jump to previous/next user prompt
+  if (!e.shiftKey && !e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+    const c = terminalCache.get(activeSessionId);
+    if (!c || !c._minimap || !c._minimap.getTicks) return;
+    const ticks = c._minimap.getTicks();
+    if (!ticks.length) return;
+    e.preventDefault();
+    const viewY = c.terminal.buffer.active.viewportY;
+    let target = null;
+    if (e.key === 'ArrowUp') {
+      for (let i = ticks.length - 1; i >= 0; i--) {
+        if (ticks[i].line < viewY) { target = ticks[i]; break; }
+      }
+    } else {
+      for (let i = 0; i < ticks.length; i++) {
+        if (ticks[i].line > viewY) { target = ticks[i]; break; }
+      }
+    }
+    if (target) {
+      c.terminal.scrollToLine(target.line);
+      flashPromptLine(c.terminal, target.line);
+    }
     return;
   }
 

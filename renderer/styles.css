@@ -728,6 +728,21 @@ body.theme-light .session-time {
   pointer-events: none;
 }
 
+.prompt-highlight {
+  position: absolute;
+  left: 0;
+  right: 12px;
+  background: rgba(210, 153, 34, 0.25);
+  pointer-events: none;
+  z-index: 4;
+  display: none;
+}
+
+@keyframes prompt-flash {
+  0% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
 /* Empty state */
 .empty-state {
   flex: 1;
