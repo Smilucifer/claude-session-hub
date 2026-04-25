@@ -496,16 +496,28 @@ class SessionManager extends EventEmitter {
 //   sourcePath: kind-specific transcript file path
 async function readTranscriptTail(kind, sourcePath, n = 10) {
   if (!sourcePath) return null;
+  // T13 fix: refuse oversized transcripts (>5MB) to avoid main-process memory spike
+  // (readFileSync + split allocates ~2x file size in RAM).
+  try {
+    const stat = require('fs').statSync(sourcePath);
+    if (stat.size > 5 * 1024 * 1024) {
+      console.warn(`[hub] readTranscriptTail skipping ${sourcePath} (${(stat.size/1024/1024).toFixed(1)}MB > 5MB cap)`);
+      return null;
+    }
+  } catch { return null; }
+  // T13 fix: cap injected context at 50KB so an oversized join doesn't overflow PTY buffer.
+  const MAX_INJECT = 50 * 1024;
   try {
     if (kind === 'gemini' && sourcePath.endsWith('.json') && !sourcePath.endsWith('.jsonl')) {
       // Gemini old format: single JSON file
       const obj = JSON.parse(require('fs').readFileSync(sourcePath, 'utf-8'));
       const msgs = Array.isArray(obj.messages) ? obj.messages.slice(-n) : [];
-      return msgs.map(m => {
+      const joined = msgs.map(m => {
         if (m.type === 'user') return `USER: ${(m.content||[]).map(c=>c.text).filter(Boolean).join('')}`;
         if (m.type === 'gemini') return `ASSISTANT: ${typeof m.content==='string'?m.content:''}`;
         return null;
       }).filter(Boolean).join('\n\n');
+      return joined.length > MAX_INJECT ? joined.slice(0, MAX_INJECT) + '\n[CONTEXT TRUNCATED]' : joined;
     }
     // JSONL: tail N lines
     const lines = require('fs').readFileSync(sourcePath, 'utf-8').trim().split('\n').slice(-n*2);
@@ -536,7 +548,8 @@ async function readTranscriptTail(kind, sourcePath, n = 10) {
         }
       }
     }
-    return out.slice(-n).join('\n\n');
+    const joined = out.slice(-n).join('\n\n');
+    return joined.length > MAX_INJECT ? joined.slice(0, MAX_INJECT) + '\n[CONTEXT TRUNCATED]' : joined;
   } catch (e) {
     console.warn(`[hub] readTranscriptTail(${kind}) failed:`, e.message);
     return null;

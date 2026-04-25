@@ -842,15 +842,21 @@ ipcMain.handle('resume-session', (_e, meta) => {
       readTranscriptTail(meta.kind, sourcePath, 10).then(tail => {
         if (!tail) return;
         const msg = `[CONTEXT FROM PREVIOUS SESSION]\n${tail}\n\n[END CONTEXT]\n`;
-        // Wait 2s for spawn to settle before injecting
+        // Wait 5s for spawn to settle (covers Gemini cold start ~3-5s; was 2s but T13 fix found
+        // it could collide with CLI banner). Verify session still alive before inject.
         setTimeout(() => {
           try {
+            const sess = sessionManager.getSession(session.id);
+            if (!sess || sess.status === 'dormant') {
+              console.warn(`[hub] Level 3 inject skipped: session ${session.id.slice(0,8)} no longer active`);
+              return;
+            }
             sessionManager.writeToSession(session.id, msg);
             console.log(`[hub] Level 3 fallback: injected ${tail.length}-char transcript tail to ${meta.kind} session ${session.id.slice(0,8)}`);
           } catch (e) {
             console.warn(`[hub] Level 3 inject failed:`, e.message);
           }
-        }, 2000);
+        }, 5000);
       }).catch(e => console.warn('[hub] Level 3 fallback error:', e.message));
     }
   }
