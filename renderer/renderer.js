@@ -938,6 +938,40 @@ function getOrCreateTerminal(sessionId) {
     const mod = e.ctrlKey || e.metaKey;
     if (!mod || e.altKey) return true;
 
+    // Ctrl+Up / Ctrl+Down — jump between user prompts
+    if (!e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      const c = terminalCache.get(sessionId);
+      if (!c || !c._minimap || !c._minimap.getTicks) return true;
+      const ticks = c._minimap.getTicks();
+      if (!ticks.length) return false;
+      // Anchor on the currently-active prompt if we have one. Without one, use
+      // viewport bottom for Up (so first press jumps to last visible-or-above
+      // prompt) and viewport top for Down (jumps to first below).
+      const buf = terminal.buffer.active;
+      const hasActive = typeof c._activePromptLine === 'number';
+      let cur;
+      if (hasActive) cur = c._activePromptLine;
+      else if (e.key === 'ArrowUp') cur = buf.viewportY + terminal.rows;
+      else cur = buf.viewportY;
+      let target = null;
+      if (e.key === 'ArrowUp') {
+        for (let i = ticks.length - 1; i >= 0; i--) {
+          if (ticks[i].line < cur) { target = ticks[i]; break; }
+        }
+      } else {
+        for (let i = 0; i < ticks.length; i++) {
+          if (ticks[i].line > cur) { target = ticks[i]; break; }
+        }
+      }
+      if (target) {
+        terminal.scrollToLine(target.line);
+        c._activePromptLine = target.line;
+        if (c._minimap.setActiveLine) c._minimap.setActiveLine(target.line);
+      }
+      e.preventDefault();
+      return false;
+    }
+
     // Ctrl+V — paste (text or image)
     if (!e.shiftKey && (e.key === 'v' || e.key === 'V')) {
       e.preventDefault();
@@ -1257,6 +1291,7 @@ function mountMinimap(sessionId, termContainer, terminal) {
   }
 
   let promptMarkerLayer = null;
+  let activeLine = -1;
 
   function ensureMarkerLayer() {
     if (promptMarkerLayer) return promptMarkerLayer;
@@ -1306,7 +1341,7 @@ function mountMinimap(sessionId, termContainer, terminal) {
       if (t.line < viewY || t.line >= viewY + rows) continue;
       const topPx = (t.line - viewY) * cellH;
       const marker = document.createElement('div');
-      marker.className = 'prompt-line-marker';
+      marker.className = 'prompt-line-marker' + (t.line === activeLine ? ' prompt-line-marker-active' : '');
       marker.style.top = topPx + 'px';
       marker.style.height = cellH + 'px';
       markerFrag.appendChild(marker);
@@ -1334,6 +1369,7 @@ function mountMinimap(sessionId, termContainer, terminal) {
   return {
     invalidate,
     getTicks() { return ticks; },
+    setActiveLine(line) { activeLine = line; render(); },
     dispose() {
       disposed = true;
       if (scanTimer) clearTimeout(scanTimer);

@@ -742,6 +742,13 @@ body.theme-light .session-time {
   right: 12px;
   background: rgba(210, 153, 34, 0.08);
   border-left: 3px solid var(--accent-orange, #d29922);
+  transition: background 0.15s ease, border-left-width 0.15s ease;
+}
+
+.prompt-line-marker-active {
+  background: rgba(210, 153, 34, 0.30);
+  border-left: 6px solid #ffb84d;
+  box-shadow: inset 0 0 0 1px rgba(255, 184, 77, 0.4);
 }
 
 .prompt-highlight {
