@@ -160,6 +160,7 @@
       <label>场景: <select class="mr-target-select" id="${sceneSelectId}">
         <option value="free_discussion">自动</option>
       </select></label>
+      <button class="mr-summary-btn" id="mr-bb-summary-btn" title="生成会议摘要">📝 摘要</button>
     `;
 
     ipcRenderer.invoke('get-summary-scenes').then(scenes => {
@@ -186,6 +187,28 @@
         meeting.lastScene = e.target.value;
         ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { lastScene: meeting.lastScene } });
       });
+    }
+
+    const summaryBtn = document.getElementById('mr-bb-summary-btn');
+    if (summaryBtn) {
+      summaryBtn.addEventListener('click', () => {
+        if (window.MeetingSummaryModal && typeof window.MeetingSummaryModal.open === 'function') {
+          window.MeetingSummaryModal.open(meeting.id);
+        } else {
+          console.error('[blackboard] MeetingSummaryModal not loaded');
+        }
+      });
+      // 当 timeline < 2 条时禁用
+      const enable = async () => {
+        try {
+          const tl = await ipcRenderer.invoke('meeting-get-timeline', meeting.id);
+          summaryBtn.disabled = !Array.isArray(tl) || tl.length < 2;
+          summaryBtn.title = summaryBtn.disabled
+            ? '会议尚未开始(需要至少 2 条对话)'
+            : '生成会议摘要';
+        } catch {}
+      };
+      enable();
     }
 
   }
