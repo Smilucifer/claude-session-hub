@@ -273,7 +273,7 @@ transcriptTap.on('turn-complete', ({ hubSessionId, text, completedAt }) => {
     session.meetingId,
     hubSessionId,
     text,
-    completedAt || Date.now(),
+    completedAt != null ? completedAt : Date.now(),
   );
   if (turn) {
     sendToRenderer('meeting-timeline-updated', { meetingId: session.meetingId, turn });
