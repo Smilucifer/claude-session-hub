@@ -719,6 +719,15 @@ body.theme-light .session-time {
 }
 .minimap-tick:hover { height: 8px; opacity: 1; background: #ffc869; }
 
+/* Light theme overrides — dark amber that reads on white background */
+body.theme-light .minimap-tick {
+  background: var(--accent-orange, #bc4c00);
+  box-shadow: 0 0 4px rgba(188, 76, 0, 0.5);
+}
+body.theme-light .minimap-tick:hover {
+  background: #d36a23;
+}
+
 .minimap-viewport {
   position: absolute;
   left: 0;
@@ -749,6 +758,11 @@ body.theme-light .session-time {
      but B-plan visual style is unified across all prompts. Leave empty
      to make it trivial to reintroduce a different active style later
      without JS changes. */
+}
+
+body.theme-light .prompt-line-marker {
+  background: rgba(188, 76, 0, 0.15);
+  border-left-color: var(--accent-orange, #bc4c00);
 }
 
 .prompt-highlight {
