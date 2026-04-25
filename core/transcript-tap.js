@@ -381,6 +381,10 @@ class CodexTap extends EventEmitter {
     this._pending.delete(best.hubSessionId);
     const hubSessionId = best.hubSessionId;
 
+    // Emit session-bound so main.js can persist codexSid for future resume.
+    const codexSid = extractCodexSidFromRolloutPath(rolloutPath);
+    this.emit('session-bound', { hubSessionId, kind: 'codex', codexSid, rolloutPath });
+
     const onLine = (obj) => {
       if (obj?.type !== 'event_msg' || !obj.payload) return;
       if (obj.payload.type === 'task_complete' && typeof obj.payload.last_agent_message === 'string') {
@@ -585,6 +589,7 @@ class TranscriptTap extends EventEmitter {
     this._gemini = new GeminiTap();
     for (const b of [this._claude, this._codex, this._gemini]) {
       b.on('turn-complete', (ev) => this.emit('turn-complete', ev));
+      b.on('session-bound', (ev) => this.emit('session-bound', ev));
     }
   }
 
@@ -638,4 +643,12 @@ function normalizePathForCompare(p) {
   return n;
 }
 
-module.exports = { TranscriptTap, JsonlTail, readLastAssistantMessageFromClaudeTranscript };
+function extractCodexSidFromRolloutPath(rolloutPath) {
+  const base = path.basename(rolloutPath, '.jsonl');
+  if (base.length < 36) return null;
+  const sid = base.slice(-36);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sid)) return null;
+  return sid;
+}
+
+module.exports = { TranscriptTap, JsonlTail, readLastAssistantMessageFromClaudeTranscript, extractCodexSidFromRolloutPath };
