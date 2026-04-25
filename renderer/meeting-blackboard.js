@@ -101,11 +101,6 @@
     return { text: '', source: 'none' };
   }
 
-  function escapeHtml(str) {
-    if (!str) return '';
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-  }
-
   function getSession(sid) {
     return (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
   }
