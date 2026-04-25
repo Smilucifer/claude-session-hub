@@ -1,5 +1,6 @@
 const pty = require('node-pty');
 const path = require('path');
+const os = require('os');
 const { v4: uuid } = require('uuid');
 const { EventEmitter } = require('events');
 
@@ -99,6 +100,8 @@ class SessionManager extends EventEmitter {
       // 清除可能继承的 Anthropic 认证，防止冲突
       delete sessionEnv.ANTHROPIC_API_KEY;
       delete sessionEnv.ANTHROPIC_API_BASE_URL;
+      // 隔离 transcript/settings/history，防止与 Claude 会话互相污染
+      sessionEnv.CLAUDE_CONFIG_DIR = path.join(process.env.USERPROFILE || process.env.HOME || os.homedir(), '.claude-deepseek');
       // Hub hook 集成
       sessionEnv.CLAUDE_HUB_SESSION_ID = id;
       if (this.hookPort) sessionEnv.CLAUDE_HUB_PORT = String(this.hookPort);

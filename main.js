@@ -26,9 +26,9 @@ if (process.env.CLAUDE_HUB_DATA_DIR) {
 
 // Auto-deploy hook scripts + settings.json config on first launch.
 // Idempotent — skips if already present, never overwrites user's existing hooks.
-function ensureHooksDeployed() {
-  const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
-  const claudeDir = path.join(home, '.claude');
+// claudeDirPath: target Claude config dir (e.g. ~/.claude or ~/.claude-deepseek)
+function ensureHooksDeployed(claudeDirPath) {
+  const claudeDir = claudeDirPath;
   const scriptsDir = path.join(claudeDir, 'scripts');
 
   // 1. Copy hook scripts if missing
@@ -136,15 +136,21 @@ function ensureCodexContextConfig() {
 // Returns the full path, or null if not found.
 function findTranscriptByCCSessionId(ccSessionId) {
   if (!ccSessionId) return null;
-  try {
-    const projectsDir = path.join(process.env.USERPROFILE || process.env.HOME || '.', '.claude', 'projects');
-    const entries = fs.readdirSync(projectsDir, { withFileTypes: true });
-    for (const d of entries) {
-      if (!d.isDirectory()) continue;
-      const candidate = path.join(projectsDir, d.name, ccSessionId + '.jsonl');
-      if (fs.existsSync(candidate)) return candidate;
-    }
-  } catch {}
+  const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
+  const candidateRoots = [
+    path.join(home, '.claude', 'projects'),
+    path.join(home, '.claude-deepseek', 'projects'),
+  ];
+  for (const projectsDir of candidateRoots) {
+    try {
+      const entries = fs.readdirSync(projectsDir, { withFileTypes: true });
+      for (const d of entries) {
+        if (!d.isDirectory()) continue;
+        const candidate = path.join(projectsDir, d.name, ccSessionId + '.jsonl');
+        if (fs.existsSync(candidate)) return candidate;
+      }
+    } catch {}
+  }
   return null;
 }
 
@@ -1160,7 +1166,9 @@ function startAgentScanner() {
 }
 
 app.whenReady().then(async () => {
-  ensureHooksDeployed();
+  const _home = process.env.USERPROFILE || process.env.HOME || os.homedir();
+  ensureHooksDeployed(path.join(_home, '.claude'));
+  ensureHooksDeployed(path.join(_home, '.claude-deepseek'));
   ensureCodexContextConfig();
   hookPort = await listenWithFallback();
   if (hookPort) {
