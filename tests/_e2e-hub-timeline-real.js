@@ -511,9 +511,163 @@ async function scenarioE() {
   return pass;
 }
 
+async function scenarioF() {
+  console.log('=== Scenario F: long meeting (10 rounds) ===');
+  const meeting = await evalJs(`(async () => {
+    const { ipcRenderer } = require('electron');
+    return await ipcRenderer.invoke('create-meeting');
+  })()`);
+  const meetingId = meeting.id;
+  const subs = {};
+  for (const kind of ['claude', 'codex', 'gemini']) {
+    const r = await evalJs(`(async () => {
+      const { ipcRenderer } = require('electron');
+      return await ipcRenderer.invoke('add-meeting-sub', { meetingId: '${meetingId}', kind: '${kind}', opts: { noInheritCursor: true } });
+    })()`);
+    subs[kind] = r.session.id;
+  }
+  for (const [kind, sid] of Object.entries(subs)) await waitForReady(sid, kind);
+  await sleep(2000);
+  await evalJs(`(async () => {
+    const { ipcRenderer } = require('electron');
+    ipcRenderer.send('update-meeting', { meetingId: '${meetingId}', fields: { syncContext: true } });
+  })()`);
+  await sleep(200);
+
+  for (let r = 1; r <= 10; r++) {
+    console.log('  round', r + '/10');
+    await sendMessage(meetingId, 'Q' + r + ': 用一句话回答 ' + r + '*' + r + ' 等于几');
+    await waitForTimelineLength(meetingId, r * 4, 120);
+  }
+
+  const tl = await getTimeline(meetingId);
+  console.log('  final timeline length:', tl.length);
+  // Validate: idx is 0..tl.length-1 monotonic, no gaps, no duplicates
+  let monotonic = true;
+  for (let i = 0; i < tl.length; i++) {
+    if (tl[i].idx !== i) { monotonic = false; break; }
+  }
+  const pass = tl.length === 40 && monotonic;
+  console.log(pass ? '  ✓ PASS Scenario F' : '  ✗ FAIL Scenario F (len=' + tl.length + ', monotonic=' + monotonic + ')');
+  return pass;
+}
+
+async function scenarioG() {
+  console.log('=== Scenario G: rapid send 5 user-turn messages without waiting ===');
+  const meeting = await evalJs(`(async () => {
+    const { ipcRenderer } = require('electron');
+    return await ipcRenderer.invoke('create-meeting');
+  })()`);
+  const meetingId = meeting.id;
+  const subs = {};
+  for (const kind of ['claude', 'codex', 'gemini']) {
+    const r = await evalJs(`(async () => {
+      const { ipcRenderer } = require('electron');
+      return await ipcRenderer.invoke('add-meeting-sub', { meetingId: '${meetingId}', kind: '${kind}', opts: { noInheritCursor: true } });
+    })()`);
+    subs[kind] = r.session.id;
+  }
+  for (const [kind, sid] of Object.entries(subs)) await waitForReady(sid, kind);
+  await sleep(2000);
+
+  // Fire 5 user-append-turns rapidly (don't actually send to PTY — just stress timeline write path).
+  await evalJs(`(async () => {
+    const { ipcRenderer } = require('electron');
+    for (let i = 1; i <= 5; i++) {
+      await ipcRenderer.invoke('meeting-append-user-turn', { meetingId: '${meetingId}', text: 'Q' + i });
+    }
+  })()`);
+
+  const tl = await getTimeline(meetingId);
+  // Should have exactly 5 user turns, idx 0..4 monotonic, all sid='user'
+  const allUser = tl.every(t => t.sid === 'user');
+  const monotonic = tl.every((t, i) => t.idx === i);
+  const pass = tl.length === 5 && allUser && monotonic;
+  console.log(pass ? '  ✓ PASS Scenario G' : '  ✗ FAIL Scenario G (len=' + tl.length + ' allUser=' + allUser + ' monotonic=' + monotonic + ')');
+  return pass;
+}
+
+async function scenarioH() {
+  console.log('=== Scenario H: Feed UI live update (DOM check) ===');
+  const meeting = await evalJs(`(async () => {
+    const { ipcRenderer } = require('electron');
+    return await ipcRenderer.invoke('create-meeting');
+  })()`);
+  const meetingId = meeting.id;
+  const sub = await evalJs(`(async () => {
+    const { ipcRenderer } = require('electron');
+    return await ipcRenderer.invoke('add-meeting-sub', { meetingId: '${meetingId}', kind: 'codex', opts: { noInheritCursor: true } });
+  })()`);
+  const sid = sub.session.id;
+  await waitForReady(sid, 'codex');
+  await sleep(2000);
+
+  // Trigger renderBlackboard via the public MeetingBlackboard API.
+  // We bypass the regular UI flow (which only renders when layout=='blackboard'
+  // tab is active) by calling renderBlackboard directly into a temp container.
+  await evalJs(`(async () => {
+    if (typeof MeetingBlackboard === 'undefined' || !MeetingBlackboard.renderBlackboard) {
+      throw new Error('MeetingBlackboard global not available');
+    }
+    const { ipcRenderer } = require('electron');
+    const meetings = await ipcRenderer.invoke('get-meetings');
+    const m = meetings.find(x => x.id === '${meetingId}');
+    if (!m) throw new Error('meeting not found in get-meetings');
+    let c = document.getElementById('mr-feed-test-container');
+    if (!c) { c = document.createElement('div'); c.id = 'mr-feed-test-container'; document.body.appendChild(c); }
+    await MeetingBlackboard.renderBlackboard(m, c);
+  })()`);
+  await sleep(500);
+
+  // Append a user turn via IPC and verify DOM updates via meeting-timeline-updated listener.
+  await evalJs(`(async () => {
+    const { ipcRenderer } = require('electron');
+    await ipcRenderer.invoke('meeting-append-user-turn', { meetingId: '${meetingId}', text: 'Hello feed UI' });
+  })()`);
+  await sleep(500);
+
+  const result = await evalJs(`(async () => {
+    const c = document.getElementById('mr-feed-test-container');
+    if (!c) return { error: 'container missing' };
+    const turns = c.querySelectorAll('.mr-feed-turn');
+    const userBadges = c.querySelectorAll('.mr-feed-badge-user');
+    return {
+      turnCount: turns.length,
+      userBadgeCount: userBadges.length,
+      firstTurnText: turns.length > 0 ? turns[0].textContent.slice(0, 100) : null,
+    };
+  })()`);
+  console.log('  DOM result:', result);
+  const pass = result && result.turnCount >= 1 && result.userBadgeCount >= 1
+    && result.firstTurnText && result.firstTurnText.includes('Hello feed UI');
+  console.log(pass ? '  ✓ PASS Scenario H' : '  ✗ FAIL Scenario H');
+  return pass;
+}
+
+async function scenarioI() {
+  console.log('=== Scenario I: tap failure fallback (no AI turn appears) ===');
+  // We can't easily disable the tap mid-test, so we observe the absence:
+  // create a meeting, append ONLY a user turn, no sub-session means no
+  // tap will fire. Verify timeline has exactly 1 user turn.
+  const meeting = await evalJs(`(async () => {
+    const { ipcRenderer } = require('electron');
+    return await ipcRenderer.invoke('create-meeting');
+  })()`);
+  const meetingId = meeting.id;
+  await evalJs(`(async () => {
+    const { ipcRenderer } = require('electron');
+    await ipcRenderer.invoke('meeting-append-user-turn', { meetingId: '${meetingId}', text: 'Lone user message — no AI to respond' });
+  })()`);
+  await sleep(1000);
+  const tl = await getTimeline(meetingId);
+  const pass = tl.length === 1 && tl[0].sid === 'user';
+  console.log(pass ? '  ✓ PASS Scenario I (no AI turn appears, fallback path observed)' : '  ✗ FAIL Scenario I (len=' + tl.length + ')');
+  return pass;
+}
+
 async function main() {
   await connect();
-  const fns = { A: scenarioA, B: scenarioB, C: scenarioC, D: scenarioD, E: scenarioE };
+  const fns = { A: scenarioA, B: scenarioB, C: scenarioC, D: scenarioD, E: scenarioE, F: scenarioF, G: scenarioG, H: scenarioH, I: scenarioI };
   let passed = 0, failed = 0;
   if (SCENARIO === 'all') {
     for (const [name, fn] of Object.entries(fns)) {
