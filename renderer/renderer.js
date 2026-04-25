@@ -100,8 +100,11 @@ const { CanvasAddon } = require('@xterm/addon-canvas');
 // TUI (prompt glyph, box chars, marker emoji) or we add a new file type, fix
 // it here and every caller picks it up.
 //
-// Claude Code's user-input prompt line, e.g. "❯ text" or "│ ❯ text │".
-// Deliberately excludes ASCII '>' — matched assistant markdown/list content.
+// Claude Code's user-input prompt line, e.g. "❯ text", "│ ❯ text │", or "> text".
+// Includes ASCII '>' because Claude Code v2.1.119 switched the prompt prefix
+// from '❯' to plain '>'. Trade-off: assistant markdown blockquotes ("> ...")
+// also match — accepted as a known false-positive (rare in practice; AI_MARKERS_RE
+// filters reply lines that contain progress glyphs).
 const PROMPT_LINE_RE = /^[\s│╭─╮╰╯]*[❯›>]\s+(.+?)(?:\s*[│╯╰╭╮]+\s*)?$/;
 // Just the prompt prefix — no capture group. Used when we only need to skip
 // prompt lines rather than parse them.
@@ -1398,7 +1401,14 @@ function mountMinimap(sessionId, termContainer, terminal) {
   return {
     invalidate,
     getTicks() { return ticks; },
-    setActiveLine(line) { activeLine = line; render(); },
+    setActiveLine(line) {
+      activeLine = line;
+      // Mirror to cache so re-mounts after a session-switch see the same state
+      // navTo() writes (single source of truth).
+      const cache = terminalCache.get(sessionId);
+      if (cache) cache._activePromptLine = line;
+      render();
+    },
     navPrev() { return navTo('up'); },
     navNext() { return navTo('down'); },
     canNavPrev() { return findNavTarget('up') !== null; },
