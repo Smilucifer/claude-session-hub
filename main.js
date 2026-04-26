@@ -733,7 +733,11 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
     const oldSession = oldByHubId.get(newSession.hubId);
     if (!oldSession) continue;
     for (const field of RESUME_META_FIELDS) {
-      if (newSession[field] === undefined && oldSession[field] != null) {
+      // T14 fix: use nullish (== null matches both null and undefined).
+      // T10 changed renderer to explicitly emit `field: s.field || null`,
+      // so the original `=== undefined` check never triggered → fields got
+      // wiped by every schedulePersist (race condition with T7 listener save).
+      if (newSession[field] == null && oldSession[field] != null) {
         newSession[field] = oldSession[field];
       }
     }
