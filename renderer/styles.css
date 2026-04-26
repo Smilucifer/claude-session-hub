@@ -1504,7 +1504,20 @@ body.theme-light .prompt-line-marker {
 }
 
 .preview-panel.preview-split {
-  border-left: 1px solid var(--border);
+  border-left: none;
+}
+
+.preview-splitter {
+  width: 5px;
+  cursor: col-resize;
+  background: var(--border);
+  flex-shrink: 0;
+  transition: background 150ms;
+}
+
+.preview-splitter:hover,
+.preview-splitter.dragging {
+  background: var(--accent-blue);
 }
 
 .preview-header {

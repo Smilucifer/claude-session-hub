@@ -2272,9 +2272,11 @@ function buildPreviewFromUserMessage(raw) {
 const previewPanelEl = document.getElementById('preview-panel');
 const previewTitleEl = document.getElementById('preview-title');
 const previewBodyEl = document.getElementById('preview-body');
+const previewSplitterEl = document.getElementById('preview-splitter');
 let previewSourcePanel = null;
 let currentPreviewPath = null;
 let previewIsFullscreen = false;
+let previewSplitRatio = 0.5;
 
 const sessionPreviewStates = new Map();
 
@@ -2292,15 +2294,19 @@ function savePreviewState() {
     path: currentPreviewPath,
     isFullscreen: previewIsFullscreen,
     zoomLevel: previewZoomLevel,
+    splitRatio: previewSplitRatio,
   });
 }
 
 function clearPreviewUI() {
   previewPanelEl.style.display = 'none';
   previewPanelEl.classList.remove('preview-split');
+  previewSplitterEl.style.display = 'none';
   currentPreviewPath = null;
   previewIsFullscreen = false;
+  previewSplitRatio = 0.5;
   previewSourcePanel = null;
+  applySplitWidths(null);
   resetPreviewZoom();
 }
 
@@ -2308,6 +2314,7 @@ function restorePreviewForContext(key) {
   const state = sessionPreviewStates.get(key);
   if (!state) return;
   previewIsFullscreen = state.isFullscreen;
+  previewSplitRatio = state.splitRatio || 0.5;
   openPreviewPanel(state.path).then(() => {
     setPreviewZoom(state.zoomLevel);
     const btn = document.getElementById('preview-toggle-layout');
@@ -2346,7 +2353,11 @@ async function openPreviewPanel(filePath) {
   const emptyEl = document.getElementById('empty-state');
   if (emptyEl) emptyEl.style.display = 'none';
   previewPanelEl.style.display = 'flex';
-  previewPanelEl.classList.toggle('preview-split', !previewIsFullscreen);
+  const isSplit = !previewIsFullscreen;
+  previewPanelEl.classList.toggle('preview-split', isSplit);
+  previewSplitterEl.style.display = isSplit ? '' : 'none';
+  applySplitWidths(isSplit ? previewSplitRatio : null);
+  if (isSplit) refitActiveTerminal();
 
   previewBodyEl.innerHTML = '';
 
@@ -2441,8 +2452,11 @@ function closePreviewPanel() {
 
   previewPanelEl.style.display = 'none';
   previewPanelEl.classList.remove('preview-split');
+  previewSplitterEl.style.display = 'none';
   currentPreviewPath = null;
   previewIsFullscreen = false;
+  previewSplitRatio = 0.5;
+  applySplitWidths(null);
   resetPreviewZoom();
 
   if (previewSourcePanel) {
@@ -2450,6 +2464,7 @@ function closePreviewPanel() {
     if (src) src.style.display = previewSourcePanel === 'terminal-panel' ? '' : 'flex';
     previewSourcePanel = null;
   }
+  refitActiveTerminal();
 }
 
 function togglePreviewLayout() {
@@ -2459,6 +2474,8 @@ function togglePreviewLayout() {
     btn.textContent = '◫';
     btn.title = '并列预览';
     previewPanelEl.classList.remove('preview-split');
+    previewSplitterEl.style.display = 'none';
+    applySplitWidths(null);
     if (previewSourcePanel) {
       const src = document.getElementById(previewSourcePanel);
       if (src) src.style.display = 'none';
@@ -2467,11 +2484,14 @@ function togglePreviewLayout() {
     btn.textContent = '□';
     btn.title = '全屏预览';
     previewPanelEl.classList.add('preview-split');
+    previewSplitterEl.style.display = '';
+    applySplitWidths(previewSplitRatio);
     if (previewSourcePanel) {
       const src = document.getElementById(previewSourcePanel);
       if (src) src.style.display = previewSourcePanel === 'terminal-panel' ? '' : 'flex';
     }
   }
+  refitActiveTerminal();
 }
 
 document.getElementById('preview-close').addEventListener('click', closePreviewPanel);
@@ -2520,6 +2540,72 @@ previewBodyEl.addEventListener('wheel', (e) => {
   const delta = e.deltaY < 0 ? 0.1 : -0.1;
   setPreviewZoom(previewZoomLevel + delta);
 }, { passive: false });
+
+// --- Preview splitter drag ---
+
+function applySplitWidths(ratio) {
+  const src = previewSourcePanel ? document.getElementById(previewSourcePanel) : null;
+  if (!ratio) {
+    if (src) { src.style.flex = ''; }
+    previewPanelEl.style.flex = '';
+    return;
+  }
+  const r = Math.max(0.1, Math.min(0.9, ratio));
+  if (src) src.style.flex = String(r);
+  previewPanelEl.style.flex = String(1 - r);
+}
+
+function refitActiveTerminal() {
+  const sid = activeSessionId;
+  if (!sid) return;
+  const cached = terminalCache.get(sid);
+  if (!cached || !cached.opened) return;
+  requestAnimationFrame(() => {
+    if (!cached.container.offsetWidth) return;
+    try { cached.fitAddon.fit(); } catch (_) {}
+    ipcRenderer.send('terminal-resize', { sessionId: sid, cols: cached.terminal.cols, rows: cached.terminal.rows });
+  });
+}
+
+(function initSplitterDrag() {
+  let dragging = false;
+  let rafId = 0;
+  previewSplitterEl.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    dragging = true;
+    previewSplitterEl.classList.add('dragging');
+    previewBodyEl.style.pointerEvents = 'none';
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    if (rafId) return;
+    rafId = requestAnimationFrame(() => {
+      rafId = 0;
+      const src = previewSourcePanel ? document.getElementById(previewSourcePanel) : null;
+      if (!src) return;
+      const srcRect = src.getBoundingClientRect();
+      const previewRect = previewPanelEl.getBoundingClientRect();
+      const totalContent = srcRect.width + previewRect.width;
+      if (totalContent <= 0) return;
+      const desired = e.clientX - srcRect.left;
+      previewSplitRatio = Math.max(0.1, Math.min(0.9, desired / totalContent));
+      applySplitWidths(previewSplitRatio);
+    });
+  });
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+    previewSplitterEl.classList.remove('dragging');
+    previewBodyEl.style.pointerEvents = '';
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    refitActiveTerminal();
+  });
+})();
 
 // --- Terminal buffer reading (xterm.js buffer API) ---
 
