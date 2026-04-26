@@ -146,10 +146,10 @@ class SessionManager extends EventEmitter {
 
     let currentModel = null;
     if (isGemini) {
-      const mid = opts.model || 'gemini-2.5-pro';
+      const mid = opts.model || 'gemini-3.1-pro-preview';
       currentModel = { id: mid, displayName: SessionManager.geminiDisplayName(mid) };
     } else if (isCodex) {
-      currentModel = { id: 'codex', displayName: 'Codex' };
+      currentModel = { id: 'gpt-5.5', displayName: 'GPT-5.5' };
     } else if (isDeepSeek) {
       const mid = opts.model || 'deepseek-v4-pro';
       currentModel = { id: mid, displayName: mid === 'deepseek-v4-pro' ? 'DS V4 Pro' : 'DS V4 Flash' };
@@ -206,9 +206,9 @@ class SessionManager extends EventEmitter {
       } else if (kind === 'claude-resume') {
         cmd = ' claude --resume';
       } else {
-        // Fresh Claude sessions default to Opus 4.6 1M (extended thinking).
+        // Fresh Claude sessions default to Opus 4.7 1M (extended thinking).
         // Resume/continue inherit the transcript's model, so don't force --model there.
-        cmd = ' claude --model claude-opus-4-6[1m]';
+        cmd = ' claude --model claude-opus-4-7[1m]';
       }
       // Append system prompt file if provided (TeamSessionManager injects character prompt)
       if (opts.appendSystemPromptFile) {
@@ -245,7 +245,7 @@ class SessionManager extends EventEmitter {
 
     if (isGemini) {
       let cmd = ' gemini --approval-mode yolo';
-      cmd += ` --model ${opts.model || 'gemini-2.5-pro'}`;
+      cmd += ` --model ${opts.model || 'gemini-3.1-pro-preview'}`;
       if (opts.useResume) {
         if (opts.geminiChatId && opts.geminiChatId.length > 8) {
           // Level 1: precise resume by full UUID (e.g. "3eab55d9-8019-4485-a47e-07f93e288be5")
@@ -289,7 +289,7 @@ class SessionManager extends EventEmitter {
         // Level 2 degradation: no sid recorded → use --last
         cmd = ' codex resume --last --full-auto';
       } else {
-        cmd = ' codex --full-auto';
+        cmd = ' codex --full-auto --model gpt-5.5';
       }
       cmd += '\r\n';
       let sent = false;

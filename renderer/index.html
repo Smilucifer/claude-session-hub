@@ -46,6 +46,9 @@
         <button class="context-menu-item" data-action="restart">Restart session</button>
         <button class="context-menu-item danger" data-action="close">Close</button>
       </div>
+      <div class="context-menu" id="terminal-context-menu" style="display:none">
+        <button class="context-menu-item" data-action="preview">预览</button>
+      </div>
     </div>
     <button class="btn-expand-sidebar" id="btn-expand-sidebar" title="Show sidebar (Ctrl+B)">▶</button>
     <div class="terminal-panel" id="terminal-panel">
@@ -59,6 +62,11 @@
       <div class="preview-header">
         <span class="preview-title" id="preview-title">Preview</span>
         <div class="preview-header-actions">
+          <button class="preview-action-btn" id="preview-zoom-out" title="缩小 (Ctrl+-)">A−</button>
+          <span class="preview-zoom-label" id="preview-zoom-label">100%</span>
+          <button class="preview-action-btn" id="preview-zoom-in" title="放大 (Ctrl++)">A+</button>
+          <button class="preview-action-btn" id="preview-zoom-reset" title="重置缩放">1:1</button>
+          <span class="preview-action-separator"></span>
           <button class="preview-action-btn" id="preview-open-external" title="在外部打开">↗</button>
           <button class="preview-action-btn" id="preview-toggle-layout" title="全屏预览">□</button>
           <button class="preview-action-btn" id="preview-close" title="关闭预览 (Esc)">✕</button>
@@ -120,6 +128,35 @@
         </div>
         <div class="modal-body" id="resume-list">
           <div class="modal-empty">Scanning…</div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-overlay" id="create-meeting-modal" style="display:none">
+      <div class="modal" style="max-width:380px">
+        <div class="modal-header">
+          <span class="modal-title">创建会议室</span>
+          <button class="modal-close" id="create-meeting-close" title="Close (Esc)">✕</button>
+        </div>
+        <div class="modal-body" style="padding:16px">
+          <label style="display:block;margin-bottom:8px;color:var(--text-secondary);font-size:13px">选择 AI 成员</label>
+          <div id="create-meeting-members" style="display:flex;flex-direction:column;gap:10px">
+            <label style="display:flex;align-items:center;gap:8px;color:var(--text-primary);font-size:14px;cursor:pointer">
+              <input type="checkbox" class="create-meeting-cb" data-kind="claude" checked>
+              Claude Code <span style="color:var(--text-secondary);font-size:12px">(Opus 4.7)</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;color:var(--text-primary);font-size:14px;cursor:pointer">
+              <input type="checkbox" class="create-meeting-cb" data-kind="gemini" checked>
+              Gemini CLI <span style="color:var(--text-secondary);font-size:12px">(3.1 Pro)</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;color:var(--text-primary);font-size:14px;cursor:pointer">
+              <input type="checkbox" class="create-meeting-cb" data-kind="codex" checked>
+              Codex CLI <span style="color:var(--text-secondary);font-size:12px">(GPT-5.5)</span>
+            </label>
+          </div>
+          <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:20px">
+            <button id="create-meeting-cancel" style="padding:6px 16px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer">取消</button>
+            <button id="create-meeting-confirm" style="padding:6px 16px;border-radius:6px;border:none;background:var(--accent, #6366f1);color:#fff;cursor:pointer">创建</button>
+          </div>
         </div>
       </div>
     </div>

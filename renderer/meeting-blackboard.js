@@ -4,6 +4,15 @@
 
 (function () {
   const { ipcRenderer } = require('electron');
+  const { marked } = require('marked');
+  const DOMPurify = require('dompurify');
+
+  marked.setOptions({ breaks: true, gfm: true });
+
+  function renderMd(text) {
+    if (!text) return '';
+    return DOMPurify.sanitize(marked.parse(text));
+  }
 
   let _summaryCache = {};
   let _expandedRaw = {};
@@ -41,9 +50,7 @@
     const text = typeof turn.text === 'string' ? turn.text : '';
     const longThreshold = 500;
     const isLong = text.length > longThreshold;
-    const preview = isLong ? text.slice(0, longThreshold) : text;
-    const previewHtml = escapeHtml(preview);
-    const fullHtml = escapeHtml(text);
+    const bodyHtml = renderMd(text);
     const foldId = `mr-feed-fold-${turn.idx}`;
 
     return `<div class="mr-feed-turn mr-feed-kind-${escapeHtml(kind)}" data-idx="${escapeHtml(String(turn.idx))}">
@@ -52,13 +59,8 @@
       <span class="mr-feed-time">${escapeHtml(formatTime(turn.ts))}</span>
       <span class="mr-feed-idx">#${escapeHtml(String(turn.idx))}</span>
     </div>
-    <div class="mr-feed-body">${
-      isLong
-        ? `<span id="${foldId}-preview">${previewHtml}<span class="mr-feed-ellipsis">…</span></span>
-           <span id="${foldId}-full" style="display:none">${fullHtml}</span>
-           <button class="mr-feed-toggle" data-fold-id="${foldId}">展开</button>`
-        : fullHtml
-    }</div>
+    <div class="mr-feed-body mr-bb-markdown${isLong ? ' mr-feed-collapsed' : ''}" id="${foldId}">${bodyHtml}</div>
+    ${isLong ? `<button class="mr-feed-toggle" data-fold-id="${foldId}">展开</button>` : ''}
   </div>`;
   }
 
@@ -67,16 +69,13 @@
       const btn = ev.target.closest('.mr-feed-toggle');
       if (!btn) return;
       const foldId = btn.getAttribute('data-fold-id');
-      const preview = document.getElementById(foldId + '-preview');
-      const full = document.getElementById(foldId + '-full');
-      if (!preview || !full) return;
-      if (full.style.display === 'none') {
-        preview.style.display = 'none';
-        full.style.display = 'inline';
+      const body = document.getElementById(foldId);
+      if (!body) return;
+      if (body.classList.contains('mr-feed-collapsed')) {
+        body.classList.remove('mr-feed-collapsed');
         btn.textContent = '收起';
       } else {
-        preview.style.display = 'inline';
-        full.style.display = 'none';
+        body.classList.add('mr-feed-collapsed');
         btn.textContent = '展开';
       }
     });

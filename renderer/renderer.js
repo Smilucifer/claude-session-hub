@@ -1222,6 +1222,8 @@ function showTerminal(sessionId, opts = { focus: true }) {
   if (cached._navButtons) { try { cached._navButtons.dispose(); } catch {} cached._navButtons = null; }
   cached._minimap = mountMinimap(sessionId, termContainer, cached.terminal);
   cached._navButtons = mountPromptNavButtons(sessionId, termContainer, cached._minimap);
+  if (cached._floatingInput) { try { cached._floatingInput.dispose(); } catch {} cached._floatingInput = null; }
+  cached._floatingInput = mountFloatingInput(sessionId, termContainer, cached.terminal);
 }
 
 // Minimap: a narrow strip on the right edge of the terminal that shows prompt
@@ -1494,6 +1496,95 @@ function mountPromptNavButtons(sessionId, termContainer, minimap) {
   };
 }
 
+function mountFloatingInput(sessionId, termContainer, terminal) {
+  const bar = document.createElement('div');
+  bar.className = 'floating-input-bar';
+
+  const scrollBtn = document.createElement('button');
+  scrollBtn.className = 'floating-scroll-btn';
+  scrollBtn.title = '滚动到底部 (Esc)';
+  scrollBtn.textContent = '↓';
+
+  const inputBox = document.createElement('div');
+  inputBox.className = 'floating-input-box';
+  inputBox.contentEditable = 'true';
+  inputBox.setAttribute('data-placeholder', '输入消息… Enter 发送, Shift+Enter 换行');
+
+  const sendBtn = document.createElement('button');
+  sendBtn.className = 'floating-input-send';
+  sendBtn.title = '发送 (Enter)';
+  sendBtn.textContent = '▶';
+
+  bar.append(scrollBtn, inputBox, sendBtn);
+  termContainer.appendChild(bar);
+
+  function isAtBottom() {
+    const buf = terminal.buffer.active;
+    return buf.viewportY >= buf.baseY;
+  }
+
+  function updateVisibility() {
+    bar.classList.toggle('visible', !isAtBottom());
+  }
+
+  function sendInput() {
+    const text = inputBox.innerText;
+    if (!text || !text.trim()) return;
+    ipcRenderer.send('terminal-input', { sessionId, data: text + '\r' });
+    inputBox.textContent = '';
+    terminal.scrollToBottom();
+    terminal.focus();
+  }
+
+  function scrollToBottom() {
+    terminal.scrollToBottom();
+    terminal.focus();
+  }
+
+  const scrollSub = terminal.onScroll(() => updateVisibility());
+  const renderSub = terminal.onRender(() => {
+    if (bar.classList.contains('visible') && isAtBottom()) {
+      bar.classList.remove('visible');
+    }
+  });
+
+  inputBox.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendInput();
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      scrollToBottom();
+    }
+  });
+
+  sendBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    sendInput();
+  });
+
+  scrollBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    scrollToBottom();
+  });
+
+  bar.addEventListener('click', (e) => e.stopPropagation());
+  bar.addEventListener('mousedown', (e) => e.stopPropagation());
+
+  updateVisibility();
+
+  return {
+    updateVisibility,
+    dispose() {
+      scrollSub.dispose();
+      renderSub.dispose();
+      if (bar.parentNode) bar.parentNode.removeChild(bar);
+    },
+  };
+}
+
 function flashPromptLine(terminal, lineNumber) {
   const container = terminal.element && terminal.element.closest('.terminal-container');
   if (!container) return;
@@ -1650,13 +1741,7 @@ for (const btn of document.querySelectorAll('.new-session-option')) {
   btn.addEventListener('click', async () => {
     menuEl.style.display = 'none';
     if (btn.dataset.kind === 'meeting') {
-      const meeting = await ipcRenderer.invoke('create-meeting');
-      if (meeting) {
-        meetings[meeting.id] = meeting;
-        selectMeeting(meeting.id);
-        renderSessionList();
-        schedulePersist();
-      }
+      openCreateMeetingModal();
       return;
     }
     if (btn.dataset.kind === 'team-room') {
@@ -1688,6 +1773,71 @@ function openResumeModal() {
 
 function closeResumeModal() {
   resumeModalEl.style.display = 'none';
+}
+
+// --- Create Meeting modal ---
+const createMeetingModalEl = document.getElementById('create-meeting-modal');
+const createMeetingConfirmEl = document.getElementById('create-meeting-confirm');
+
+function openCreateMeetingModal() {
+  createMeetingModalEl.style.display = 'flex';
+  createMeetingConfirmEl.disabled = false;
+  createMeetingConfirmEl.textContent = '创建';
+  for (const cb of document.querySelectorAll('.create-meeting-cb')) cb.checked = true;
+}
+
+function closeCreateMeetingModal() {
+  createMeetingModalEl.style.display = 'none';
+}
+
+async function submitCreateMeeting() {
+  const kinds = [...document.querySelectorAll('.create-meeting-cb:checked')]
+    .map(cb => cb.dataset.kind);
+  if (kinds.length === 0) return;
+
+  createMeetingConfirmEl.disabled = true;
+  createMeetingConfirmEl.textContent = '创建中...';
+
+  try {
+    const meeting = await ipcRenderer.invoke('create-meeting');
+    if (!meeting) {
+      createMeetingConfirmEl.textContent = '失败，重试';
+      createMeetingConfirmEl.disabled = false;
+      return;
+    }
+    meetings[meeting.id] = meeting;
+
+    for (const kind of kinds) {
+      const result = await ipcRenderer.invoke('add-meeting-sub', { meetingId: meeting.id, kind });
+      if (result && result.meeting) {
+        meetings[meeting.id] = result.meeting;
+      }
+    }
+
+    closeCreateMeetingModal();
+    selectMeeting(meeting.id);
+    renderSessionList();
+    schedulePersist();
+  } catch (e) {
+    console.error('[create-meeting] failed:', e.message);
+    createMeetingConfirmEl.textContent = '失败，重试';
+    createMeetingConfirmEl.disabled = false;
+  }
+}
+
+createMeetingConfirmEl.addEventListener('click', submitCreateMeeting);
+document.getElementById('create-meeting-cancel').addEventListener('click', closeCreateMeetingModal);
+document.getElementById('create-meeting-close').addEventListener('click', closeCreateMeetingModal);
+createMeetingModalEl.addEventListener('click', (e) => {
+  if (e.target === createMeetingModalEl) closeCreateMeetingModal();
+});
+
+// checkbox 变化时：至少勾选一个才能创建
+for (const cb of document.querySelectorAll('.create-meeting-cb')) {
+  cb.addEventListener('change', () => {
+    const anyChecked = document.querySelectorAll('.create-meeting-cb:checked').length > 0;
+    createMeetingConfirmEl.disabled = !anyChecked;
+  });
 }
 
 // --- Create Team Room modal ---
@@ -2412,12 +2562,26 @@ function onTerminalOutput(sessionId, dataLen) {
 // --- IPC event handlers ---
 const _cursorDebounce = new Map();
 
+// Codex TUI placeholder filter — the interactive TUI repeatedly redraws
+// "› Improve documentation in @filename" as input placeholder text. Due to
+// PTY/xterm size mismatch during startup, cursor positioning fails and the
+// placeholder leaks into scrollback.  Regex is ANSI-tolerant (handles color
+// codes between words).
+const _A = '(?:\\x1b\\[[0-9;]*[a-zA-Z])*';
+const CODEX_PLACEHOLDER_RE = new RegExp(
+  `[›> ]*${_A}I?m?prove${_A}\\s?${_A}documentation${_A}\\s?${_A}in${_A}\\s?${_A}@[^\\s]*`, 'g'
+);
+
 ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
   const cached = terminalCache.get(sessionId);
   if (!cached) return;
   const sess = sessions.get(sessionId);
   if (sess && sess.kind === 'codex') {
-    cached.terminal.write(data);
+    let filtered = data;
+    if (filtered.includes('prove documentation')) {
+      filtered = filtered.replace(CODEX_PLACEHOLDER_RE, '');
+    }
+    cached.terminal.write(filtered);
     cached.terminal.write('\x1b[?25l');
     clearTimeout(_cursorDebounce.get(sessionId));
     _cursorDebounce.set(sessionId, setTimeout(() => {
@@ -2511,7 +2675,9 @@ ipcRenderer.on('status-event', (_e, payload) => {
     }
     // Claude → Hub title sync: only overlay if user hasn't explicitly renamed in Hub.
     // The /rename we inject comes back via this same field — the guard below prevents loops.
-    if (payload.sessionName && !session.userRenamed && session.title !== payload.sessionName) {
+    // Meeting room subs keep their default "Claude N" name — auto-rename produces
+    // long titles that clutter the narrow tab headers.
+    if (payload.sessionName && !session.userRenamed && !session.meetingId && session.title !== payload.sessionName) {
       session.title = payload.sessionName;
       session.claudeSessionName = payload.sessionName;
       if (payload.sessionId === activeSessionId) {
@@ -2548,7 +2714,7 @@ function modelClass(id) {
   if (s.includes('sonnet')) return 'sonnet';
   if (s.includes('haiku')) return 'haiku';
   if (s.includes('gemini')) return 'gemini';
-  if (s.includes('codex') || s.includes('o3') || s.includes('o4-mini')) return 'codex';
+  if (s.includes('codex') || s.includes('gpt-5') || s.includes('o3') || s.includes('o4-mini')) return 'codex';
   if (s.includes('deepseek')) return 'deepseek';
   return '';
 }
@@ -3330,6 +3496,7 @@ ipcRenderer.on('session-closed', (_e, { sessionId }) => {
     // terminal.dispose() so it can cleanly unhook rather than leak listeners.
     if (cached._minimap) { try { cached._minimap.dispose(); } catch {} cached._minimap = null; }
     if (cached._navButtons) { try { cached._navButtons.dispose(); } catch {} cached._navButtons = null; }
+    if (cached._floatingInput) { try { cached._floatingInput.dispose(); } catch {} cached._floatingInput = null; }
     cached.terminal.dispose();
     cached.container.remove();
     terminalCache.delete(sessionId);
