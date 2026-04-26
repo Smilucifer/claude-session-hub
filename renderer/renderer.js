@@ -1042,6 +1042,14 @@ function getOrCreateTerminal(sessionId) {
     ipcRenderer.send('terminal-input', { sessionId, data: seq });
   });
 
+  // Right-click: show "Preview" option when text is selected
+  container.addEventListener('contextmenu', (e) => {
+    const sel = terminal.getSelection().trim();
+    if (!sel) return;
+    e.preventDefault();
+    openTerminalContextMenu(sel, e.clientX, e.clientY);
+  });
+
   const cached = {
     terminal, fitAddon, searchAddon, container, opened: false,
   };
@@ -1493,7 +1501,8 @@ function flashPromptLine(terminal, lineNumber) {
   if (!renderer || !renderer.dimensions) return;
   const cellH = renderer.dimensions.css.cell.height;
   const viewY = terminal.buffer.active.viewportY;
-  const topPx = (lineNumber - viewY) * cellH;
+  const padTop = parseFloat(getComputedStyle(container).paddingTop) || 0;
+  const topPx = (lineNumber - viewY) * cellH + padTop;
   let highlight = container.querySelector('.prompt-highlight');
   if (!highlight) {
     highlight = document.createElement('div');
@@ -1942,20 +1951,56 @@ document.addEventListener('keydown', (e) => {
 function registerLocalPathLinks(terminal) {
   terminal.registerLinkProvider({
     provideLinks(lineNumber, callback) {
-      const line = terminal.buffer.active.getLine(lineNumber - 1);
+      const buf = terminal.buffer.active;
+      const line = buf.getLine(lineNumber - 1);
       if (!line) { callback(undefined); return; }
-      const text = line.translateToString(true);
+
+      // Walk backwards to find the start of this logical line group
+      let groupIdx = lineNumber - 1; // 0-based buffer index
+      while (groupIdx > 0 && buf.getLine(groupIdx).isWrapped) groupIdx--;
+      const groupLine = groupIdx + 1; // 1-based line number of group start
+
+      // Collect all lines in the group (start + wrapped continuations)
+      let text = '';
+      const lineWidths = [];
+      for (let i = groupIdx; ; i++) {
+        const l = buf.getLine(i);
+        if (!l) break;
+        if (i > groupIdx && !l.isWrapped) break;
+        const lt = l.translateToString(true);
+        text += lt;
+        lineWidths.push(lt.length);
+      }
+
       const links = [];
       ABS_PATH_RE.lastIndex = 0;
       let m;
       while ((m = ABS_PATH_RE.exec(text))) {
         const filePath = m[0];
-        const startColumn = m.index + 1;
-        const endColumn = startColumn + filePath.length - 1;
+        const startOff = m.index;
+        const endOff = startOff + filePath.length - 1;
+        // Map flat offsets → (x, y) across physical lines
+        let startX, startY, endX, endY;
+        let cum = 0;
+        for (let i = 0; i < lineWidths.length; i++) {
+          if (startX === undefined && cum + lineWidths[i] > startOff) {
+            startX = startOff - cum + 1;
+            startY = groupLine + i;
+          }
+          if (cum + lineWidths[i] > endOff) {
+            endX = endOff - cum + 1;
+            endY = groupLine + i;
+            break;
+          }
+          cum += lineWidths[i];
+        }
+        if (startX === undefined || endX === undefined) continue;
+        // Only return links that overlap with the requested lineNumber
+        if (startY > lineNumber || endY < lineNumber) continue;
         links.push({
           range: {
-            start: { x: startColumn, y: lineNumber },
-            end: { x: endColumn, y: lineNumber },
+            start: { x: startX, y: startY },
+            end: { x: endX, y: endY },
           },
           text: filePath,
           activate: async (_event, uri) => {
@@ -1968,7 +2013,7 @@ function registerLocalPathLinks(terminal) {
           },
         });
       }
-      callback(links);
+      callback(links.length > 0 ? links : undefined);
     },
   });
 }
@@ -1994,7 +2039,9 @@ let currentPreviewPath = null;
 let previewIsFullscreen = false;
 
 async function openPreviewPanel(filePath) {
+  filePath = filePath.replace(/[\r\n]+/g, '').trim();
   currentPreviewPath = filePath;
+  resetPreviewZoom();
   const isUrl = /^https?:\/\//i.test(filePath);
   const fileName = isUrl ? filePath.replace(/^https?:\/\//i, '').split(/[/?#]/)[0] : filePath.replace(/^.*[\\/]/, '');
   previewTitleEl.textContent = fileName;
@@ -2113,6 +2160,7 @@ function closePreviewPanel() {
   previewPanelEl.classList.remove('preview-split');
   currentPreviewPath = null;
   previewIsFullscreen = false;
+  resetPreviewZoom();
 
   if (previewSourcePanel) {
     const src = document.getElementById(previewSourcePanel);
@@ -2161,6 +2209,34 @@ document.addEventListener('keydown', (e) => {
     closePreviewPanel();
   }
 });
+
+// --- Preview zoom ---
+let previewZoomLevel = 1.0;
+const previewZoomLabelEl = document.getElementById('preview-zoom-label');
+
+function setPreviewZoom(level) {
+  previewZoomLevel = Math.max(0.25, Math.min(5.0, level));
+  previewBodyEl.style.zoom = previewZoomLevel;
+  // Also zoom webview content if present
+  const wv = previewBodyEl.querySelector('webview');
+  if (wv) try { wv.setZoomFactor(previewZoomLevel); } catch {}
+  previewZoomLabelEl.textContent = Math.round(previewZoomLevel * 100) + '%';
+}
+
+function resetPreviewZoom() {
+  setPreviewZoom(1.0);
+}
+
+document.getElementById('preview-zoom-out').addEventListener('click', () => setPreviewZoom(previewZoomLevel - 0.1));
+document.getElementById('preview-zoom-in').addEventListener('click', () => setPreviewZoom(previewZoomLevel + 0.1));
+document.getElementById('preview-zoom-reset').addEventListener('click', resetPreviewZoom);
+
+previewBodyEl.addEventListener('wheel', (e) => {
+  if (!e.ctrlKey && !e.metaKey) return;
+  e.preventDefault();
+  const delta = e.deltaY < 0 ? 0.1 : -0.1;
+  setPreviewZoom(previewZoomLevel + delta);
+}, { passive: false });
 
 // --- Terminal buffer reading (xterm.js buffer API) ---
 
@@ -3078,6 +3154,39 @@ for (const btn of contextMenuEl.querySelectorAll('.context-menu-item')) {
   });
 }
 
+// --- Terminal context menu (right-click selected text → Preview) ---
+const termCtxMenuEl = document.getElementById('terminal-context-menu');
+let termCtxMenuSelection = null;
+
+function openTerminalContextMenu(selection, x, y) {
+  termCtxMenuSelection = selection;
+  termCtxMenuEl.style.display = 'block';
+  termCtxMenuEl.style.left = `${x}px`;
+  termCtxMenuEl.style.top = `${y}px`;
+  requestAnimationFrame(() => {
+    const rect = termCtxMenuEl.getBoundingClientRect();
+    if (rect.right > window.innerWidth) termCtxMenuEl.style.left = `${x - rect.width}px`;
+    if (rect.bottom > window.innerHeight) termCtxMenuEl.style.top = `${y - rect.height}px`;
+  });
+}
+
+function closeTerminalContextMenu() {
+  termCtxMenuEl.style.display = 'none';
+  termCtxMenuSelection = null;
+}
+
+document.addEventListener('mousedown', (e) => {
+  if (termCtxMenuEl.style.display === 'block' && !termCtxMenuEl.contains(e.target)) {
+    closeTerminalContextMenu();
+  }
+});
+
+termCtxMenuEl.querySelector('[data-action="preview"]').addEventListener('click', () => {
+  const sel = termCtxMenuSelection;
+  closeTerminalContextMenu();
+  if (sel) openPreviewPanel(sel.trim());
+});
+
 // --- Terminal in-buffer search (Ctrl+F) ---
 const termSearchEl = document.getElementById('terminal-search');
 const termSearchInput = document.getElementById('terminal-search-input');
@@ -3168,7 +3277,8 @@ ipcRenderer.on('session-created', (_e, { session }) => {
   // entry. Merge live PTY info on top of the dormant metadata so title /
   // preview / unread / pinned aren't wiped.
   const existing = sessions.get(session.id);
-  if (existing && existing.status === 'dormant') {
+  const wasDormant = existing && existing.status === 'dormant';
+  if (wasDormant) {
     sessions.set(session.id, {
       ...existing,
       ...session,
@@ -3181,10 +3291,14 @@ ipcRenderer.on('session-created', (_e, { session }) => {
   } else {
     sessions.set(session.id, session);
   }
-  // Sub-sessions belonging to a meeting: just add to sessions Map.
-  // Don't switch panels or re-render terminals — the showAddSubMenu
-  // callback in meeting-room.js handles terminal mounting.
+  // Sub-sessions belonging to a meeting: add to sessions Map and, if the
+  // meeting room is currently showing this meeting, mount the xterm for
+  // any slot that was dormant (dormant slots skip xterm creation).
   if (session.meetingId) {
+    if (wasDormant && typeof MeetingRoom !== 'undefined' &&
+        MeetingRoom.getActiveMeetingId() === session.meetingId) {
+      MeetingRoom.mountSubTerminal(session.id);
+    }
     renderSessionList();
     return;
   }

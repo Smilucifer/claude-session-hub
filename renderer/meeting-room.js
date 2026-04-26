@@ -408,6 +408,23 @@
     } catch (_) {}
   }
 
+  function mountSubTerminal(sessionId) {
+    if (!activeMeetingId || typeof getOrCreateTerminal !== 'function') return;
+    const slot = document.querySelector(`.mr-sub-slot[data-session-id="${sessionId}"]`);
+    if (!slot) return;
+    slot.classList.remove('dormant');
+    const termContainer = slot.querySelector('.mr-sub-terminal');
+    if (!termContainer || termContainer.querySelector('.xterm')) return;
+    const cached = getOrCreateTerminal(sessionId);
+    if (cached && cached.container) {
+      cached.container.style.display = 'block';
+      termContainer.appendChild(cached.container);
+      subTerminals[sessionId] = cached;
+      openSubTerminal(sessionId);
+      requestAnimationFrame(() => fitSubTerminal(sessionId));
+    }
+  }
+
   // --- Focus Mode ---
 
   function renderFocusMode(meeting, container) {
@@ -950,6 +967,7 @@
     getActiveMeetingId,
     getMeetingData,
     updateMeetingData,
+    mountSubTerminal,
     get _divergenceResult() { return _divergenceResult; },
   };
 })();
