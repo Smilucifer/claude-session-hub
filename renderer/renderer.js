@@ -668,6 +668,28 @@ function renderSessionList() {
   sessionListEl.scrollTop = savedScrollTop;
 }
 
+// --- Session card hover light-tracking + click ripple (event delegation) ---
+sessionListEl.addEventListener('mousemove', (e) => {
+  const item = e.target.closest('.session-item');
+  if (!item) return;
+  const rect = item.getBoundingClientRect();
+  item.style.setProperty('--mx', ((e.clientX - rect.left) / rect.width * 100) + '%');
+  item.style.setProperty('--my', ((e.clientY - rect.top) / rect.height * 100) + '%');
+});
+sessionListEl.addEventListener('mousedown', (e) => {
+  const item = e.target.closest('.session-item');
+  if (!item) return;
+  const rect = item.getBoundingClientRect();
+  const size = Math.max(rect.width, rect.height);
+  const r = document.createElement('span');
+  r.className = 'ripple-fx';
+  r.style.width = r.style.height = size + 'px';
+  r.style.left = (e.clientX - rect.left - size / 2) + 'px';
+  r.style.top = (e.clientY - rect.top - size / 2) + 'px';
+  item.appendChild(r);
+  setTimeout(() => r.remove(), 450);
+});
+
 // --- AI Team Room sidebar ---
 let teamRooms = [];
 let teamRoomPreviews = {};
@@ -743,12 +765,12 @@ async function deleteTeamRoom(roomId) {
 }
 
 function selectTeamRoom(roomId) {
+  savePreviewState();
   activeSessionId = null;
   activeMeetingId = null;
   const mrp = document.getElementById('meeting-room-panel');
   if (mrp) mrp.style.display = 'none';
-  const pp = document.getElementById('preview-panel');
-  if (pp) { pp.style.display = 'none'; previewSourcePanel = null; currentPreviewPath = null; }
+  clearPreviewUI();
   activeTeamRoomId = roomId;
   // Opening the room counts as "reading" any queued messages — parallels how
   // selectSession resets session.unreadCount = 0.
@@ -762,9 +784,11 @@ function selectTeamRoom(roomId) {
     TeamRoom.openRoom(roomId, room);
   }
   renderSessionList();
+  restorePreviewForContext(`teamroom:${roomId}`);
 }
 
 function selectMeeting(meetingId) {
+  savePreviewState();
   activeSessionId = null;
   activeTeamRoomId = null;
   activeMeetingId = meetingId;
@@ -773,8 +797,7 @@ function selectMeeting(meetingId) {
   if (emptyStateEl) emptyStateEl.style.display = 'none';
   const trp = document.getElementById('team-room-panel');
   if (trp) trp.style.display = 'none';
-  const pp = document.getElementById('preview-panel');
-  if (pp) { pp.style.display = 'none'; previewSourcePanel = null; currentPreviewPath = null; }
+  clearPreviewUI();
 
   const meeting = meetings[meetingId];
   if (meeting && typeof MeetingRoom !== 'undefined') {
@@ -791,6 +814,7 @@ function selectMeeting(meetingId) {
   }
 
   renderSessionList();
+  restorePreviewForContext(`meeting:${meetingId}`);
 }
 
 // Global team:event listener — tracks per-room preview + unread badge so the
@@ -844,8 +868,9 @@ function loadGpuRenderer(cached) {
 function getOrCreateTerminal(sessionId) {
   if (terminalCache.has(sessionId)) return terminalCache.get(sessionId);
 
+  const currentTheme = localStorage.getItem('claude-hub-theme') || 'default';
   const terminal = new Terminal({
-    theme: {
+    theme: (typeof XTERM_THEMES !== 'undefined' && XTERM_THEMES[currentTheme]) || {
       background: '#0d1117', foreground: '#f0f6fc', cursor: '#58a6ff',
       cursorAccent: '#0d1117', selectionBackground: 'rgba(88, 166, 255, 0.3)',
       black: '#484f58', red: '#ff7b72', green: '#3fb950', yellow: '#d29922',
@@ -1259,7 +1284,19 @@ function mountMinimap(sessionId, termContainer, terminal) {
       if (!m) continue;
       const q = m[1].trim();
       if (q.length < 2) continue;
-      found.push({ line: i, text: q });
+      let endLine = i;
+      while (endLine + 1 < total) {
+        const next = buf.getLine(endLine + 1);
+        if (!next) break;
+        if (next.isWrapped) { endLine++; continue; }
+        const nextText = next.translateToString(true);
+        if (!nextText || !nextText.trim()) break;
+        if (AI_MARKERS_RE.test(nextText)) break;
+        if (PROMPT_LINE_RE.test(nextText)) break;
+        endLine++;
+      }
+      found.push({ line: i, endLine, text: q });
+      i = endLine;
     }
     ticks = found;
     render();
@@ -1332,12 +1369,16 @@ function mountMinimap(sessionId, termContainer, terminal) {
     const rows = terminal.rows;
     const markerFrag = document.createDocumentFragment();
     for (const t of ticks) {
-      if (t.line < viewY || t.line >= viewY + rows) continue;
-      const topPx = (t.line - viewY) * cellH;
+      const end = t.endLine || t.line;
+      if (end < viewY || t.line >= viewY + rows) continue;
+      const visStart = Math.max(t.line, viewY);
+      const visEnd = Math.min(end, viewY + rows - 1);
+      const topPx = (visStart - viewY) * cellH;
+      const heightPx = (visEnd - visStart + 1) * cellH;
       const marker = document.createElement('div');
       marker.className = 'prompt-line-marker' + (t.line === activeLine ? ' prompt-line-marker-active' : '');
       marker.style.top = topPx + 'px';
-      marker.style.height = cellH + 'px';
+      marker.style.height = heightPx + 'px';
       markerFrag.appendChild(marker);
     }
     layer.appendChild(markerFrag);
@@ -1686,6 +1727,7 @@ function selectSession(id) {
   // xterm canvas stayed with stale dimensions while terminal-panel was
   // display:none, and the single rAF inside showTerminal is sometimes too
   // early to see the real width.
+  savePreviewState();
   const wasTeamRoom = activeTeamRoomId != null;
   activeTeamRoomId = null;
   const trp = document.getElementById('team-room-panel');
@@ -1693,8 +1735,7 @@ function selectSession(id) {
   activeMeetingId = null;
   const mrp = document.getElementById('meeting-room-panel');
   if (mrp) mrp.style.display = 'none';
-  const pp = document.getElementById('preview-panel');
-  if (pp) { pp.style.display = 'none'; previewSourcePanel = null; currentPreviewPath = null; }
+  clearPreviewUI();
   const tp = document.getElementById('terminal-panel');
   if (tp) tp.style.display = '';
 
@@ -1740,6 +1781,7 @@ function selectSession(id) {
   if (session) {
     session.readSignature = getQuestionsSignature(id);
   }
+  restorePreviewForContext(`session:${id}`);
 }
 
 // --- Dropdown menu ---
@@ -1798,6 +1840,9 @@ function openCreateMeetingModal() {
   createMeetingConfirmEl.disabled = false;
   createMeetingConfirmEl.textContent = '创建';
   for (const cb of document.querySelectorAll('.create-meeting-cb')) cb.checked = true;
+  const driverRadio = document.querySelector('input[name="meeting-mode"][value="driver"]');
+  if (driverRadio) driverRadio.checked = true;
+  _syncMeetingModeUI();
 }
 
 function closeCreateMeetingModal() {
@@ -1809,6 +1854,9 @@ async function submitCreateMeeting() {
     .map(cb => cb.dataset.kind);
   if (kinds.length === 0) return;
 
+  const modeRadio = document.querySelector('input[name="meeting-mode"]:checked');
+  const isDriverMode = modeRadio && modeRadio.value === 'driver';
+
   createMeetingConfirmEl.disabled = true;
   createMeetingConfirmEl.textContent = '创建中...';
 
@@ -1818,6 +1866,11 @@ async function submitCreateMeeting() {
       createMeetingConfirmEl.textContent = '失败，重试';
       createMeetingConfirmEl.disabled = false;
       return;
+    }
+
+    if (isDriverMode) {
+      ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { driverMode: true } });
+      meeting.driverMode = true;
     }
     meetings[meeting.id] = meeting;
 
@@ -1849,9 +1902,30 @@ createMeetingModalEl.addEventListener('click', (e) => {
 // checkbox 变化时：至少勾选一个才能创建
 for (const cb of document.querySelectorAll('.create-meeting-cb')) {
   cb.addEventListener('change', () => {
+    _syncMeetingModeUI();
     const anyChecked = document.querySelectorAll('.create-meeting-cb:checked').length > 0;
     createMeetingConfirmEl.disabled = !anyChecked;
   });
+}
+
+// radio 变化时：主驾模式强制 Claude 勾选
+for (const radio of document.querySelectorAll('input[name="meeting-mode"]')) {
+  radio.addEventListener('change', _syncMeetingModeUI);
+}
+
+function _syncMeetingModeUI() {
+  const isDriver = document.querySelector('input[name="meeting-mode"][value="driver"]')?.checked;
+  const claudeCb = document.querySelector('.create-meeting-cb[data-kind="claude"]');
+  const desc = document.getElementById('meeting-mode-desc');
+  if (isDriver && claudeCb) {
+    claudeCb.checked = true;
+    claudeCb.disabled = true;
+  } else if (claudeCb) {
+    claudeCb.disabled = false;
+  }
+  if (desc) {
+    desc.style.display = isDriver ? 'block' : 'none';
+  }
 }
 
 // --- Create Team Room modal ---
@@ -2202,6 +2276,48 @@ let previewSourcePanel = null;
 let currentPreviewPath = null;
 let previewIsFullscreen = false;
 
+const sessionPreviewStates = new Map();
+
+function getActiveContextKey() {
+  if (activeSessionId) return `session:${activeSessionId}`;
+  if (activeTeamRoomId) return `teamroom:${activeTeamRoomId}`;
+  if (activeMeetingId) return `meeting:${activeMeetingId}`;
+  return null;
+}
+
+function savePreviewState() {
+  const key = getActiveContextKey();
+  if (!key || !currentPreviewPath) return;
+  sessionPreviewStates.set(key, {
+    path: currentPreviewPath,
+    isFullscreen: previewIsFullscreen,
+    zoomLevel: previewZoomLevel,
+  });
+}
+
+function clearPreviewUI() {
+  previewPanelEl.style.display = 'none';
+  previewPanelEl.classList.remove('preview-split');
+  currentPreviewPath = null;
+  previewIsFullscreen = false;
+  previewSourcePanel = null;
+  resetPreviewZoom();
+}
+
+function restorePreviewForContext(key) {
+  const state = sessionPreviewStates.get(key);
+  if (!state) return;
+  previewIsFullscreen = state.isFullscreen;
+  openPreviewPanel(state.path).then(() => {
+    setPreviewZoom(state.zoomLevel);
+    const btn = document.getElementById('preview-toggle-layout');
+    if (btn) {
+      btn.textContent = previewIsFullscreen ? '◫' : '□';
+      btn.title = previewIsFullscreen ? '并列预览' : '全屏预览';
+    }
+  });
+}
+
 async function openPreviewPanel(filePath) {
   filePath = filePath.replace(/[\r\n]+/g, '').trim();
   currentPreviewPath = filePath;
@@ -2320,6 +2436,9 @@ async function openPreviewPanel(filePath) {
 }
 
 function closePreviewPanel() {
+  const key = getActiveContextKey();
+  if (key) sessionPreviewStates.delete(key);
+
   previewPanelEl.style.display = 'none';
   previewPanelEl.classList.remove('preview-split');
   currentPreviewPath = null;
@@ -3444,9 +3563,81 @@ function toggleSidebar() {
 btnCollapseEl.addEventListener('click', toggleSidebar);
 btnExpandEl.addEventListener('click', toggleSidebar);
 
-// --- Theme (dark only; toggle button removed) ---
-document.body.classList.remove('theme-light');
-localStorage.removeItem('claude-hub-theme');
+// --- Theme selector ---
+const THEME_CLASSES = ['theme-midnight', 'theme-obsidian', 'theme-aurora', 'theme-light'];
+const XTERM_THEMES = {
+  default: {
+    background: '#0d1117', foreground: '#f0f6fc', cursor: '#58a6ff',
+    cursorAccent: '#0d1117', selectionBackground: 'rgba(88, 166, 255, 0.3)',
+    black: '#484f58', red: '#ff7b72', green: '#3fb950', yellow: '#d29922',
+    blue: '#58a6ff', magenta: '#bc8cff', cyan: '#39d353', white: '#f0f6fc',
+    brightBlack: '#6e7681', brightRed: '#ffa198', brightGreen: '#56d364',
+    brightYellow: '#e3b341', brightBlue: '#79c0ff', brightMagenta: '#d2a8ff',
+    brightCyan: '#56d364', brightWhite: '#ffffff',
+  },
+  midnight: {
+    background: '#080c14', foreground: '#c8d8f0', cursor: '#58a6ff',
+    cursorAccent: '#080c14', selectionBackground: 'rgba(88, 166, 255, 0.3)',
+    black: '#1a2540', red: '#ff7b72', green: '#39d353', yellow: '#d29922',
+    blue: '#58a6ff', magenta: '#bc8cff', cyan: '#39d353', white: '#c8d8f0',
+    brightBlack: '#3a4a68', brightRed: '#ffa198', brightGreen: '#56d364',
+    brightYellow: '#e3b341', brightBlue: '#79c0ff', brightMagenta: '#d2a8ff',
+    brightCyan: '#56d364', brightWhite: '#e0ecff',
+  },
+  obsidian: {
+    background: '#0a0a0a', foreground: '#d4c4a8', cursor: '#e8a040',
+    cursorAccent: '#0a0a0a', selectionBackground: 'rgba(232, 160, 64, 0.25)',
+    black: '#1a1a1a', red: '#ff7b72', green: '#e8a040', yellow: '#f0b860',
+    blue: '#c8a878', magenta: '#d4a080', cyan: '#e8a040', white: '#d4c4a8',
+    brightBlack: '#504030', brightRed: '#ffa198', brightGreen: '#f0b860',
+    brightYellow: '#f8d080', brightBlue: '#d8c098', brightMagenta: '#e0b898',
+    brightCyan: '#f0b860', brightWhite: '#e8d8c0',
+  },
+  aurora: {
+    background: '#0b0e13', foreground: '#b0d0e0', cursor: '#7ee8c8',
+    cursorAccent: '#0b0e13', selectionBackground: 'rgba(126, 232, 200, 0.25)',
+    black: '#1a1f28', red: '#ff7b72', green: '#7ee8c8', yellow: '#d29922',
+    blue: '#58a6ff', magenta: '#bc8cff', cyan: '#7ee8c8', white: '#b0d0e0',
+    brightBlack: '#384858', brightRed: '#ffa198', brightGreen: '#a0f0d8',
+    brightYellow: '#e3b341', brightBlue: '#79c0ff', brightMagenta: '#d2a8ff',
+    brightCyan: '#a0f0d8', brightWhite: '#d0e8f0',
+  },
+};
+function applyTheme(name) {
+  THEME_CLASSES.forEach(c => document.body.classList.remove(c));
+  if (name && name !== 'default') document.body.classList.add('theme-' + name);
+  localStorage.setItem('claude-hub-theme', name || 'default');
+  const popup = document.getElementById('theme-picker-popup');
+  if (popup) {
+    for (const opt of popup.querySelectorAll('.theme-option')) {
+      opt.classList.toggle('active', (opt.dataset.theme || 'default') === (name || 'default'));
+    }
+  }
+  const xt = XTERM_THEMES[name] || XTERM_THEMES.default;
+  for (const [, cached] of terminalCache) {
+    cached.terminal.options.theme = xt;
+  }
+}
+(function initThemePicker() {
+  const saved = localStorage.getItem('claude-hub-theme') || 'default';
+  applyTheme(saved);
+  const btn = document.getElementById('btn-theme');
+  const popup = document.getElementById('theme-picker-popup');
+  if (!btn || !popup) return;
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    popup.style.display = popup.style.display === 'none' ? 'block' : 'none';
+  });
+  for (const opt of popup.querySelectorAll('.theme-option')) {
+    opt.addEventListener('click', () => {
+      applyTheme(opt.dataset.theme);
+      popup.style.display = 'none';
+    });
+  }
+  document.addEventListener('mousedown', (e) => {
+    if (!btn.contains(e.target) && !popup.contains(e.target)) popup.style.display = 'none';
+  });
+})();
 
 if (typeof MeetingRoom !== 'undefined') {
   MeetingRoom.init(sessions, getOrCreateTerminal);

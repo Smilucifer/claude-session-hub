@@ -33,7 +33,28 @@
           </div>
           <button class="btn-resume-picker" id="btn-resume-picker" title="Resume a past session">↻</button>
           <button class="btn-collapse-sidebar" id="btn-collapse-sidebar" title="Collapse sidebar (Ctrl+B)">◀</button>
-          <button class="btn-collapse-sidebar" id="btn-mobile" title="配对手机 (Mobile Pairing)">📱</button>
+          <div class="theme-picker-wrapper">
+            <button class="btn-collapse-sidebar" id="btn-theme" title="切换主题">🎨</button>
+            <div class="theme-picker-popup" id="theme-picker-popup" style="display:none">
+              <div class="theme-picker-title">选择主题</div>
+              <div class="theme-option" data-theme="default">
+                <div class="theme-swatch swatch-default"></div>
+                <div class="theme-option-info"><div class="theme-option-name">Default Dark</div><div class="theme-option-desc">经典深色</div></div>
+              </div>
+              <div class="theme-option" data-theme="midnight">
+                <div class="theme-swatch swatch-midnight"></div>
+                <div class="theme-option-info"><div class="theme-option-name">Midnight Abyss</div><div class="theme-option-desc">深邃海蓝 + 冰蓝</div></div>
+              </div>
+              <div class="theme-option" data-theme="obsidian">
+                <div class="theme-swatch swatch-obsidian"></div>
+                <div class="theme-option-info"><div class="theme-option-name">Obsidian Ember</div><div class="theme-option-desc">纯黑 + 琥珀暖光</div></div>
+              </div>
+              <div class="theme-option" data-theme="aurora">
+                <div class="theme-swatch swatch-aurora"></div>
+                <div class="theme-option-info"><div class="theme-option-name">Aurora Borealis</div><div class="theme-option-desc">极光渐变 蓝绿紫</div></div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
       <div class="sidebar-search">
@@ -152,6 +173,18 @@
               <input type="checkbox" class="create-meeting-cb" data-kind="codex" checked>
               Codex CLI <span style="color:var(--text-secondary);font-size:12px">(GPT-5.5)</span>
             </label>
+          </div>
+          <div id="create-meeting-mode" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border, #30363d)">
+            <label style="display:block;margin-bottom:8px;color:var(--text-secondary);font-size:13px">会议模式</label>
+            <div style="display:flex;gap:16px">
+              <label style="display:flex;align-items:center;gap:6px;color:var(--text-primary);font-size:14px;cursor:pointer">
+                <input type="radio" name="meeting-mode" value="driver" checked> 主驾模式
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;color:var(--text-primary);font-size:14px;cursor:pointer">
+                <input type="radio" name="meeting-mode" value="free"> 自由讨论
+              </label>
+            </div>
+            <p id="meeting-mode-desc" style="color:var(--text-muted, #6b7280);font-size:12px;margin:6px 0 0">Claude 主驾执行，Gemini/Codex 仅审查副驾</p>
           </div>
           <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:20px">
             <button id="create-meeting-cancel" style="padding:6px 16px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer">取消</button>
