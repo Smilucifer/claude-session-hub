@@ -740,7 +740,10 @@ body.theme-light .minimap-tick:hover {
 
 .prompt-marker-layer {
   position: absolute;
-  inset: 0;
+  top: 4px;
+  left: 0;
+  right: 0;
+  bottom: 4px;
   pointer-events: none;
   z-index: 3;
 }
@@ -1392,6 +1395,22 @@ body.theme-light .prompt-line-marker {
   border-color: var(--text-secondary);
 }
 
+.preview-zoom-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  min-width: 36px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.preview-action-separator {
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+  margin: 0 2px;
+}
+
 .preview-body {
   flex: 1;
   overflow: auto;
@@ -1623,4 +1642,111 @@ body.theme-light .prompt-nav-btn:hover:not(:disabled) {
 }
 body.theme-light .prompt-nav-btn:active:not(:disabled) {
   background: rgba(188, 76, 0, 0.35);
+}
+
+/* --- Floating input bar (visible when scrolled away from bottom) --- */
+.floating-input-bar {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  right: 20px;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 10px 12px;
+  background: rgba(22, 27, 34, 0.95);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.3);
+  z-index: 10;
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.floating-input-bar.visible {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+.floating-input-box {
+  flex: 1;
+  min-height: 36px;
+  max-height: 120px;
+  overflow-y: auto;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: var(--text-primary);
+  font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  outline: none;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+.floating-input-box:empty::before {
+  content: attr(data-placeholder);
+  color: var(--text-secondary);
+  pointer-events: none;
+}
+.floating-input-box:focus {
+  border-color: var(--accent-blue);
+}
+.floating-input-send {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent-blue);
+  color: #fff;
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+.floating-input-send:hover {
+  filter: brightness(1.15);
+  transform: scale(1.05);
+}
+.floating-input-send:active {
+  transform: scale(0.95);
+}
+.floating-scroll-btn {
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(110, 118, 129, 0.15);
+  color: var(--text-secondary);
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.floating-scroll-btn:hover {
+  background: rgba(110, 118, 129, 0.3);
+  color: var(--text-primary);
+}
+
+/* Light theme overrides for floating input */
+body.theme-light .floating-input-bar {
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.1);
+}
+body.theme-light .floating-input-send {
+  background: var(--accent-blue, #0969da);
+}
+body.theme-light .floating-scroll-btn {
+  background: rgba(110, 118, 129, 0.1);
+  border-color: rgba(110, 118, 129, 0.3);
 }

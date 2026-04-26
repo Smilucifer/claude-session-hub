@@ -1519,7 +1519,12 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   termContainer.appendChild(bar);
 
   function isAtBottom() {
+    const vp = termContainer.querySelector('.xterm-viewport');
+    if (vp && vp.scrollHeight > vp.clientHeight) {
+      return vp.scrollTop + vp.clientHeight >= vp.scrollHeight - 5;
+    }
     const buf = terminal.buffer.active;
+    if (isNaN(buf.viewportY) || isNaN(buf.baseY)) return true;
     return buf.viewportY >= buf.baseY;
   }
 
@@ -1538,14 +1543,22 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
 
   function scrollToBottom() {
     terminal.scrollToBottom();
+    const vp = termContainer.querySelector('.xterm-viewport');
+    if (vp) vp.scrollTop = vp.scrollHeight;
     terminal.focus();
   }
 
+  let vp = termContainer.querySelector('.xterm-viewport');
+  const onVpScroll = () => updateVisibility();
+  if (vp) vp.addEventListener('scroll', onVpScroll, { passive: true });
+
   const scrollSub = terminal.onScroll(() => updateVisibility());
   const renderSub = terminal.onRender(() => {
-    if (bar.classList.contains('visible') && isAtBottom()) {
-      bar.classList.remove('visible');
+    if (!vp) {
+      vp = termContainer.querySelector('.xterm-viewport');
+      if (vp) vp.addEventListener('scroll', onVpScroll, { passive: true });
     }
+    updateVisibility();
   });
 
   inputBox.addEventListener('keydown', (e) => {
@@ -1578,6 +1591,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   return {
     updateVisibility,
     dispose() {
+      if (vp) vp.removeEventListener('scroll', onVpScroll);
       scrollSub.dispose();
       renderSub.dispose();
       if (bar.parentNode) bar.parentNode.removeChild(bar);
