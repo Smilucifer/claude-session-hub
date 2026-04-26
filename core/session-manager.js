@@ -47,8 +47,7 @@ class SessionManager extends EventEmitter {
   //   useResume:          generic resume flag for codex/gemini → uses sid/index if provided, else --last/latest
   //   codexSid:           when set + kind=='codex' + useResume, runs `codex resume <sid>` precisely (T8 new)
   //   geminiChatId:       Gemini 8charId from chats/session-*.json (T8 new, used for index lookup)
-  //   geminiProjectRoot:  required for Gemini list-sessions reverse-lookup (T8 new, used as cwd)
-  //   geminiResumeIndex:  resolved index from `gemini --list-sessions` (T8 new, set by main.js before spawn)
+  //   geminiProjectRoot:  required for Gemini resume (T8 new, used as cwd for correct project scoping)
   createSession(kind = 'powershell', opts = {}) {
     const id = opts.id || uuid();
     const isClaude = kind === 'claude' || kind === 'claude-resume';
@@ -248,11 +247,11 @@ class SessionManager extends EventEmitter {
       let cmd = ' gemini --approval-mode yolo';
       cmd += ` --model ${opts.model || 'gemini-2.5-pro'}`;
       if (opts.useResume) {
-        if (opts.geminiChatId && opts.geminiProjectRoot && typeof opts.geminiResumeIndex === 'number') {
-          // Level 1: precise resume by index resolved via list-sessions reverse-lookup
-          cmd += ` -r ${opts.geminiResumeIndex}`;
+        if (opts.geminiChatId && opts.geminiChatId.length > 8) {
+          // Level 1: precise resume by full UUID (e.g. "3eab55d9-8019-4485-a47e-07f93e288be5")
+          cmd += ` --resume ${opts.geminiChatId}`;
         } else {
-          // Level 2 degradation: no index resolved → fall back to latest
+          // Level 2: 8charId (old state.json format) or no chatId → fall back to latest
           cmd += ' --resume latest';
         }
       }

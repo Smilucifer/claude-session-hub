@@ -751,38 +751,6 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
   });
 });
 
-// Gemini resume index lookup: takes (geminiChatId, geminiProjectRoot) → returns index | null.
-// Spawned synchronously with 5s timeout. Used before spawn-time to translate
-// stable 8charId into Gemini's dynamic --list-sessions index.
-function lookupGeminiResumeIndex(geminiChatId, projectRoot) {
-  if (!geminiChatId || !projectRoot) return null;
-  try {
-    const r = require('child_process').spawnSync('gemini', ['--list-sessions', '--output-format', 'json'], {
-      cwd: projectRoot,
-      timeout: 5000,
-      encoding: 'utf-8',
-    });
-    if (r.status !== 0) {
-      console.warn('[hub] gemini --list-sessions failed:', (r.stderr || '').slice(0, 200));
-      return null;
-    }
-    let parsed;
-    try { parsed = JSON.parse(r.stdout); } catch { console.warn('[hub] gemini --list-sessions output non-JSON'); return null; }
-    const sessions = Array.isArray(parsed) ? parsed : (parsed.sessions || []);
-    for (let i = 0; i < sessions.length; i++) {
-      const s = sessions[i];
-      const id = s.sessionId || s.id || s.session_id || '';
-      if (typeof id === 'string' && id.toLowerCase().endsWith(geminiChatId.toLowerCase())) {
-        return i;
-      }
-    }
-    return null;
-  } catch (e) {
-    console.warn('[hub] lookupGeminiResumeIndex error:', e.message);
-    return null;
-  }
-}
-
 // Wake a dormant session: spawn PTY with the same hubId, reusing stored cwd,
 // CC session id, title. The session-manager handles `claude --resume <id>` or
 // `--continue` as fallback when we don't have a CC id recorded.
@@ -792,16 +760,6 @@ ipcMain.handle('resume-session', (_e, meta) => {
   const isDeepSeek = (meta.kind === 'deepseek');
   const isClaudeCliResumable = isClaude || isDeepSeek;
   const isGeminiOrCodex = (meta.kind === 'gemini' || meta.kind === 'codex');
-
-  // Gemini index reverse-lookup (Level 1).
-  // Pre-resolves index here so spawn cmd can use precise -r <index>.
-  let geminiResumeIndex = null;
-  if (meta.kind === 'gemini' && meta.geminiChatId && meta.geminiProjectRoot) {
-    geminiResumeIndex = lookupGeminiResumeIndex(meta.geminiChatId, meta.geminiProjectRoot);
-    if (geminiResumeIndex == null) {
-      console.warn(`[hub] gemini index lookup failed for ${meta.hubId.slice(0,8)} — will degrade to --resume latest`);
-    }
-  }
 
   const session = sessionManager.createSession(meta.kind || 'claude', {
     id: meta.hubId,
@@ -814,7 +772,6 @@ ipcMain.handle('resume-session', (_e, meta) => {
     codexSid: meta.kind === 'codex' ? (meta.codexSid || null) : null,
     geminiChatId: meta.kind === 'gemini' ? (meta.geminiChatId || null) : null,
     geminiProjectRoot: meta.kind === 'gemini' ? (meta.geminiProjectRoot || null) : null,
-    geminiResumeIndex: geminiResumeIndex,
     lastMessageTime: meta.lastMessageTime,
     lastOutputPreview: meta.lastOutputPreview,
   });
@@ -825,7 +782,7 @@ ipcMain.handle('resume-session', (_e, meta) => {
   // inject transcript tail as [CONTEXT] block into PTY after spawn settles.
   const needsLevel3 = (
     (meta.kind === 'codex' && !meta.codexSid) ||
-    (meta.kind === 'gemini' && (!meta.geminiChatId || geminiResumeIndex == null))
+    (meta.kind === 'gemini' && !meta.geminiChatId)
   );
 
   if (needsLevel3) {

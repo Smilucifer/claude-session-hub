@@ -529,10 +529,22 @@ class GeminiTap extends EventEmitter {
       projectRoot = (await fs.promises.readFile(path.join(projectDir, '.project_root'), 'utf8')).trim();
     } catch {}
 
+    // Read full sessionId UUID from first line of JSONL (authoritative).
+    // Falls back to 8charId from filename if read fails.
+    let geminiChatId = extractGeminiChatIdFromSessionPath(sessionPath);
+    try {
+      const raw = await fs.promises.readFile(sessionPath, 'utf8');
+      const firstLine = raw.split('\n')[0];
+      const meta = JSON.parse(firstLine);
+      if (meta.sessionId && /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(meta.sessionId)) {
+        geminiChatId = meta.sessionId;
+      }
+    } catch {}
+
     this.emit('session-bound', {
       hubSessionId,
       kind: 'gemini',
-      geminiChatId: extractGeminiChatIdFromSessionPath(sessionPath),
+      geminiChatId,
       geminiProjectHash: extractGeminiProjectHashFromDir(projectDir),
       geminiProjectRoot: projectRoot,
       sessionPath,
