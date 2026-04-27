@@ -311,20 +311,9 @@ transcriptTap.on('turn-complete', ({ hubSessionId, text, completedAt }) => {
   if (turn) {
     sendToRenderer('meeting-timeline-updated', { meetingId: session.meetingId, turn });
   }
-  // Driver mode: detect [REQUEST_REVIEW] or [DANGER_REVIEW] from Claude
-  if (text && session.meetingId) {
-    const meeting = meetingManager.getMeeting(session.meetingId);
-    if (meeting && meeting.driverMode && hubSessionId === meeting.driverSessionId) {
-      if (text.includes('[REQUEST_REVIEW]') || text.includes('[DANGER_REVIEW]')) {
-        const isDanger = text.includes('[DANGER_REVIEW]');
-        sendToRenderer('driver-auto-review', {
-          meetingId: session.meetingId,
-          triggerType: isDanger ? 'danger' : 'claude-request',
-          claudeText: text,
-        });
-      }
-    }
-  }
+  // Driver-mode auto-review now flows through MCP tool calls (request_review /
+  // request_danger_review) → hookServer /api/driver/request-review → driver-auto-review IPC.
+  // String-based detection has been removed (误触发 + 漏触发 + 不可观测).
 });
 
 // Persist resume meta when transcript-tap binds a sub-session to its native CLI sid.
@@ -455,7 +444,16 @@ ipcMain.handle('add-meeting-sub', (_e, { meetingId, kind, opts }) => {
   if (meeting && meeting.driverMode) {
     const hubDataDir = getHubDataDir();
     if (kind === 'claude') {
-      sessionOpts.appendSystemPromptFile = driverMode.writeDriverPromptFile(hubDataDir, meetingId);
+      // hookPort 是主驾模式的硬依赖：MCP server 通过 HTTP 回调到 hookServer 触发审查。
+      // 没有 hookPort，request_review/request_danger_review 工具调用全部失败，
+      // 但 Claude 仍被指令"必须调用"——安全约束失效。所以无 hookPort 时退化为
+      // 普通 Claude session（不注入 driver prompt 也不挂 MCP），用户能看到 console.warn。
+      if (hookPort) {
+        sessionOpts.appendSystemPromptFile = driverMode.writeDriverPromptFile(hubDataDir, meetingId);
+        sessionOpts.mcpConfigFile = driverMode.writeDriverMcpConfig(hubDataDir, meetingId, hookPort, HOOK_TOKEN);
+      } else {
+        console.warn(`[hub] driver-mode Claude session in meeting ${meetingId} but hookPort unavailable — falling back to plain Claude (no driver rules, no MCP tools). Restart Hub or check port 3456-3460 availability.`);
+      }
     } else if (kind === 'gemini') {
       sessionOpts.extraEnv = { GEMINI_SYSTEM_MD: driverMode.writeCopilotPromptFile(hubDataDir, meetingId, 'gemini') };
     } else if (kind === 'codex') {
@@ -503,80 +501,166 @@ ipcMain.handle('close-meeting', (_e, meetingId) => {
 // --- Driver Mode: review request ---
 // promptMap: { sid: prompt } for per-copilot role-specific prompts
 // Uses activity-based timeout: keeps waiting while copilot buffer is growing (streaming).
-ipcMain.handle('driver-request-review', async (_e, { meetingId, promptMap, timeoutMs }) => {
-  const sids = Object.keys(promptMap || {});
-  const IDLE_TIMEOUT = 20000;   // 20s no buffer growth → timeout
-  const MAX_WALL = timeoutMs || 120000; // 120s absolute max
+// --- Driver Mode: unified review executor ---
+let _reviewInProgress = false;
+const REVIEW_WATCHDOG_MS = 600000; // 10 min
 
-  // Send prompt to each copilot with text/Enter delay
-  for (const sid of sids) {
-    const prompt = promptMap[sid];
-    if (!prompt) continue;
-    const session = sessionManager.getSession(sid);
-    const buf = sessionManager.getSessionBuffer(sid);
-    if (!buf || buf.length < 100) continue;
-    sessionManager.writeToSession(sid, prompt);
-    const enterDelay = session && session.kind === 'codex' ? 400 : 120;
-    await new Promise(r => setTimeout(r, enterDelay));
-    sessionManager.writeToSession(sid, '\r');
+async function executeReview(meetingId, { userText, triggerType }) {
+  if (_reviewInProgress) {
+    return { status: 'busy', reviewId: null, reviewers: {} };
   }
+  _reviewInProgress = true;
+  const reviewId = `review-${Date.now()}`;
+  try {
+    const meeting = meetingManager.getMeeting(meetingId);
+    if (!meeting || !meeting.driverMode) return { status: 'error', reviewId, reviewers: {} };
 
-  const results = await Promise.all(sids.map(sid => {
-    return new Promise(resolve => {
-      let lastBufLen = (sessionManager.getSessionBuffer(sid) || '').length;
-      let lastActivity = Date.now();
-      const startTime = Date.now();
-      let settled = false;
-
-      const handler = (ev) => {
-        if (ev.hubSessionId !== sid) return;
-        cleanup();
-        const parsed = driverMode.parseReviewVerdict(ev.text);
-        resolve({ sid, ...parsed });
-      };
-      transcriptTap.on('turn-complete', handler);
-
-      // Poll buffer growth to detect streaming activity
-      const pollInterval = setInterval(() => {
-        if (settled) return;
-        const buf = sessionManager.getSessionBuffer(sid) || '';
-        const now = Date.now();
-
-        if (buf.length > lastBufLen) {
-          lastBufLen = buf.length;
-          lastActivity = now;
-        }
-
-        const idleMs = now - lastActivity;
-        const wallMs = now - startTime;
-
-        if (wallMs >= MAX_WALL) {
-          cleanup();
-          resolve({ sid, verdict: 'FLAG', reason: `副驾超时 (${Math.round(wallMs/1000)}s)` });
-        } else if (idleMs >= IDLE_TIMEOUT && wallMs > 30000) {
-          cleanup();
-          resolve({ sid, verdict: 'FLAG', reason: `副驾静默超时 (${Math.round(idleMs/1000)}s 无输出)` });
-        }
-      }, 3000);
-
-      function cleanup() {
-        if (settled) return;
-        settled = true;
-        clearInterval(pollInterval);
-        transcriptTap.removeListener('turn-complete', handler);
-      }
-
-      // Safety net
-      setTimeout(() => {
-        if (!settled) {
-          cleanup();
-          const buf = sessionManager.getSessionBuffer(sid) || '';
-          resolve({ sid, verdict: 'FLAG', reason: buf.length < 100 ? '副驾尚未就绪' : '副驾最终超时' });
-        }
-      }, MAX_WALL + 5000);
+    // Collect copilot SIDs
+    const copilotSids = (meeting.subSessions || []).filter(sid => {
+      if (sid === meeting.driverSessionId) return false;
+      const s = sessionManager.getSession(sid);
+      return s && s.status !== 'dormant';
     });
-  }));
-  return results;
+    if (copilotSids.length === 0) return { status: 'no_copilots', reviewId, reviewers: {} };
+
+    // Build label map
+    const labelMap = new Map();
+    for (const sid of meeting.subSessions) {
+      const s = sessionManager.getSession(sid);
+      if (s) labelMap.set(sid, { label: s.title || s.kind || 'AI', kind: s.kind });
+    }
+
+    // Write context.md snapshot (resolve to Claude's cwd, not Hub dir)
+    const claudeSession = meeting.driverSessionId ? sessionManager.getSession(meeting.driverSessionId) : null;
+    const projectCwd = claudeSession ? claudeSession.cwd : null;
+    if (projectCwd) {
+      meetingManager.loadTimelineLazy(meetingId);
+      const timeline = meetingManager.getTimeline(meetingId) || [];
+      const arenaDir = path.join(projectCwd, '.arena');
+      driverMode.writeContextSnapshot(arenaDir, timeline, labelMap);
+    }
+
+    // Get Claude's last output + recent timeline
+    const claudeLastOutput = meeting.driverSessionId
+      ? (transcriptTap.getLastAssistantText(meeting.driverSessionId) || '') : '';
+    meetingManager.loadTimelineLazy(meetingId);
+    const recentTimeline = driverMode.formatRecentTimeline(
+      meetingManager.getTimeline(meetingId) || [], labelMap, 10);
+
+    // Build per-copilot prompts
+    const promptMap = {};
+    for (const sid of copilotSids) {
+      const meta = labelMap.get(sid) || {};
+      promptMap[sid] = driverMode.buildReviewPrompt({
+        kind: meta.kind || 'unknown',
+        triggerType,
+        claudeLastOutput,
+        recentTimeline,
+        userText,
+      });
+    }
+
+    // Send prompts in parallel
+    const sentSids = [];
+    const READY_MARKERS = {
+      gemini: ['Type your message', 'YOLO'],
+      codex: ['gpt-5.5', 'Context 100%', 'send'],
+      claude: ['Type your message', '? for shortcuts'],
+    };
+    async function waitCliReady(sid, kind, maxMs = 15000) {
+      const need = READY_MARKERS[kind] || [];
+      const start = Date.now();
+      while (Date.now() - start < maxMs) {
+        const buf = sessionManager.getSessionBuffer(sid) || '';
+        if (need.length === 0) { if (buf.length >= 1000) return true; }
+        else if (need.some(m => buf.includes(m))) return true;
+        await new Promise(r => setTimeout(r, 300));
+      }
+      return false;
+    }
+    await Promise.all(copilotSids.map(async (sid) => {
+      const prompt = promptMap[sid];
+      if (!prompt) { console.log(`[review] skip ${sid}: no prompt`); return; }
+      const s = sessionManager.getSession(sid);
+      const kind = s ? s.kind : '?';
+      const ready = await waitCliReady(sid, kind, 15000);
+      const buf = sessionManager.getSessionBuffer(sid) || '';
+      if (!ready) { console.log(`[review] skip ${sid}: ${kind} not ready (buf=${buf.length})`); return; }
+      console.log(`[review] sending to ${kind} (${sid.slice(0,8)}), prompt=${prompt.length} chars, buf=${buf.length}`);
+      sessionManager.writeToSession(sid, prompt);
+      const baseDelay = s && s.kind === 'codex' ? 500 : 250;
+      const sizeDelay = Math.min(Math.floor(prompt.length / 100) * 10, 500);
+      await new Promise(r => setTimeout(r, baseDelay + sizeDelay));
+      sessionManager.writeToSession(sid, '\r');
+      sentSids.push(sid);
+      console.log(`[review] sent Enter to ${kind} (${sid.slice(0,8)})`);
+    }));
+
+    // Wait for turn-complete only from copilots that received prompts
+    if (sentSids.length === 0) {
+      console.log('[review] no prompts sent, returning empty');
+      return { status: 'no_prompts', reviewId, reviewers: {} };
+    }
+    console.log(`[review] waiting for turn-complete from ${sentSids.length} copilots`);
+    const results = await Promise.all(sentSids.map(sid => {
+      return new Promise(resolve => {
+        let settled = false;
+        const handler = (ev) => {
+          if (ev.hubSessionId !== sid || settled) return;
+          settled = true;
+          transcriptTap.removeListener('turn-complete', handler);
+          clearTimeout(watchdog);
+          const meta = labelMap.get(sid) || {};
+          resolve({ sid, label: meta.label || 'AI', status: 'completed', text: ev.text || '' });
+        };
+        transcriptTap.on('turn-complete', handler);
+        const watchdog = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          transcriptTap.removeListener('turn-complete', handler);
+          const meta = labelMap.get(sid) || {};
+          resolve({ sid, label: meta.label || 'AI', status: 'timeout', text: '' });
+        }, REVIEW_WATCHDOG_MS);
+      });
+    }));
+
+    // Write results to .arena/reviews/
+    if (projectCwd) {
+      const reviewsDir = path.join(projectCwd, '.arena', 'reviews');
+      try { fs.mkdirSync(reviewsDir, { recursive: true }); } catch {}
+      const lines = [`# 审查结果 (${new Date().toLocaleString('zh-CN')})`, `触发: ${triggerType}`, `焦点: ${userText || ''}`, ''];
+      for (const r of results) {
+        lines.push(`## ${r.label} [${r.status}]`, '', r.text || '(无输出)', '');
+      }
+      const filePath = path.join(reviewsDir, `${reviewId}.md`);
+      fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
+    }
+
+    // Write summary to timeline
+    const summaryLines = results.map(r => `[${r.label}] (${r.status}) ${(r.text || '').slice(0, 200)}`);
+    const summaryText = `**审查完成**\n${summaryLines.join('\n')}`;
+    const turn = meetingManager.appendTurn(meetingId, 'user', summaryText, Date.now());
+    if (turn) sendToRenderer('meeting-timeline-updated', { meetingId, turn });
+
+    return { status: 'completed', reviewId, reviewers: Object.fromEntries(results.map(r => [r.sid, r])) };
+  } finally {
+    _reviewInProgress = false;
+  }
+}
+
+// IPC for renderer @review
+ipcMain.handle('driver-execute-review', async (_e, { meetingId, userText, triggerType }) => {
+  const result = await executeReview(meetingId, { userText, triggerType });
+  // Set pendingReview for @review path (not MCP path)
+  if (result.status === 'completed' && result.reviewId) {
+    const meeting = meetingManager.getMeeting(meetingId);
+    if (meeting) {
+      meetingManager.updateMeeting(meetingId, { pendingReviewId: result.reviewId });
+    }
+  }
+  // Notify renderer
+  sendToRenderer('driver-review-complete', { meetingId, result });
+  return result;
 });
 
 // --- Driver Mode: write context.md snapshot ---
@@ -917,6 +1001,24 @@ ipcMain.handle('resume-session', (_e, meta) => {
   const isClaudeCliResumable = isClaude || isDeepSeek;
   const isGeminiOrCodex = (meta.kind === 'gemini' || meta.kind === 'codex');
 
+  // If resuming a driver-mode Claude session, re-inject the rules + MCP config
+  // (--mcp-config does work with --resume; we verified team-room reuses the same flag).
+  // hookPort 不可用时退化为普通 session（同 add-meeting-sub 的处理），避免 Claude
+  // 收到"必须调用 MCP 工具"指令但没有工具可调，让安全约束悬空。
+  let driverOpts = {};
+  if (isClaude && meta.meetingId) {
+    const meeting = meetingManager.getMeeting(meta.meetingId);
+    if (meeting && meeting.driverMode) {
+      if (hookPort) {
+        const hubDataDir = getHubDataDir();
+        driverOpts.appendSystemPromptFile = driverMode.writeDriverPromptFile(hubDataDir, meta.meetingId);
+        driverOpts.mcpConfigFile = driverMode.writeDriverMcpConfig(hubDataDir, meta.meetingId, hookPort, HOOK_TOKEN);
+      } else {
+        console.warn(`[hub] resuming driver-mode Claude session in meeting ${meta.meetingId} but hookPort unavailable — falling back to plain Claude (no driver rules, no MCP tools).`);
+      }
+    }
+  }
+
   const session = sessionManager.createSession(meta.kind || 'claude', {
     id: meta.hubId,
     title: meta.title,
@@ -930,6 +1032,7 @@ ipcMain.handle('resume-session', (_e, meta) => {
     geminiProjectRoot: meta.kind === 'gemini' ? (meta.geminiProjectRoot || null) : null,
     lastMessageTime: meta.lastMessageTime,
     lastOutputPreview: meta.lastOutputPreview,
+    ...driverOpts,
   });
   registerSessionForTap(session);
   sendToRenderer('session-created', { session });
@@ -1125,7 +1228,8 @@ const hookServer = http.createServer((req, res) => {
   const isHook = req.method === 'POST' && req.url.startsWith('/api/hook/');
   const isStatus = req.method === 'POST' && req.url === '/api/status';
   const isTeamResponse = req.method === 'POST' && req.url === '/api/team/response';
-  if (!isHook && !isStatus && !isTeamResponse) {
+  const isDriverReview = req.method === 'POST' && req.url === '/api/driver/request-review';
+  if (!isHook && !isStatus && !isTeamResponse && !isDriverReview) {
     res.writeHead(404); res.end('{}'); return;
   }
 
@@ -1141,6 +1245,24 @@ const hookServer = http.createServer((req, res) => {
     if (tooBig) { res.writeHead(413); res.end('{}'); return; }
     let parsed;
     try { parsed = JSON.parse(body || '{}'); } catch { parsed = {}; }
+    // Driver-mode MCP callback (loopback). Token-protected since the MCP
+    // server runs as a child of Claude CLI — payload originates from Claude's
+    // tool_use call but is forwarded by our own driver-mcp-server.js process.
+    if (isDriverReview) {
+      if (parsed.token !== HOOK_TOKEN) { res.writeHead(403); res.end('{}'); return; }
+      const { meetingId, isDanger, scope, open_risks, operation, files } = parsed;
+      const meeting = meetingId ? meetingManager.getMeeting(meetingId) : null;
+      if (!meeting || !meeting.driverMode) {
+        res.writeHead(400); res.end('{"error":"not driver mode"}'); return;
+      }
+      const triggerType = isDanger ? 'danger' : 'claude-request';
+      const claudeText = isDanger
+        ? `危险操作：${operation || ''}${files ? `\n受影响文件：${files}` : ''}`
+        : `${scope || ''}${open_risks ? `\n关注点：${open_risks}` : ''}`;
+      sendToRenderer('driver-auto-review', { meetingId, triggerType, claudeText });
+      res.writeHead(200); res.end('{"ok":true}');
+      return;
+    }
     // Team MCP callback — no hook token required (loopback only)
     if (isTeamResponse) {
       if (teamSessionManager && parsed.room_id && parsed.character_id && parsed.content) {
