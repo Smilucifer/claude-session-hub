@@ -23,6 +23,8 @@ class MeetingRoomManager {
       pinned: false,
       status: 'idle',
       lastScene: 'free_discussion',
+      driverMode: false,
+      driverSessionId: null,
     };
     // Hub Timeline phase 1 (in-memory only)
     meeting._timeline = [];
@@ -84,7 +86,7 @@ class MeetingRoomManager {
   updateMeeting(meetingId, fields) {
     const m = this.meetings.get(meetingId);
     if (!m) return null;
-    const allowed = ['title', 'layout', 'focusedSub', 'syncContext', 'sendTarget', 'pinned', 'lastMessageTime', 'status', 'lastScene'];
+    const allowed = ['title', 'layout', 'focusedSub', 'syncContext', 'sendTarget', 'pinned', 'lastMessageTime', 'status', 'lastScene', 'driverMode', 'driverSessionId'];
     for (const key of allowed) {
       if (key in fields) m[key] = fields[key];
     }
@@ -109,6 +111,8 @@ class MeetingRoomManager {
       ...meetingData,
       status: 'dormant',
       subSessions: meetingData.subSessions || [],
+      driverMode: meetingData.driverMode || false,
+      driverSessionId: meetingData.driverSessionId || null,
       _timeline: [],
       _cursors: {},
       _nextIdx: 0,

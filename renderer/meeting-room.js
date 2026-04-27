@@ -15,9 +15,224 @@
   let _divergenceEnabled = false;
   let _divergenceResult = null;
   let _divergenceHash = '';
+  let _driverSummaryEnabled = false; // Claude 摘要开关
 
   // renderer.js loads before us — its `sessions` and `getOrCreateTerminal`
   // are accessible via the global lexical scope. We access them directly.
+
+  // --- Driver Mode: @command parser ---
+  function parseDriverCommand(text, meeting) {
+    if (!meeting || !meeting.driverMode) return { type: 'normal', text, targets: null };
+    const trimmed = text.trim();
+    if (/^@review\b/i.test(trimmed) || /^@审查\b/.test(trimmed)) {
+      return { type: 'review', text: trimmed.replace(/^@(?:review|审查)\s*/i, '').trim() };
+    }
+    if (/^@gemini\b/i.test(trimmed)) {
+      return { type: 'direct', targetKind: 'gemini', text: trimmed.replace(/^@gemini\s*/i, '').trim() };
+    }
+    if (/^@codex\b/i.test(trimmed)) {
+      return { type: 'direct', targetKind: 'codex', text: trimmed.replace(/^@codex\s*/i, '').trim() };
+    }
+    if (/^@claude\b/i.test(trimmed)) {
+      return { type: 'direct', targetKind: 'claude', text: trimmed.replace(/^@claude\s*/i, '').trim() };
+    }
+    return { type: 'driver-only', text };
+  }
+
+  function findSessionByKind(meeting, kind) {
+    if (!meeting || !meeting.subSessions) return null;
+    for (const sid of meeting.subSessions) {
+      const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
+      if (s && s.kind === kind && s.status !== 'dormant') return sid;
+    }
+    return null;
+  }
+
+  function getCopilotSids(meeting) {
+    if (!meeting || !meeting.subSessions) return [];
+    return meeting.subSessions.filter(sid => {
+      if (sid === meeting.driverSessionId) return false;
+      const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
+      return s && s.status !== 'dormant';
+    });
+  }
+
+  // --- Driver Mode: trigger review ---
+  async function triggerReview(meeting, userText, triggerType) {
+    const copilotSids = getCopilotSids(meeting);
+    if (copilotSids.length === 0) {
+      console.warn('[driver] no copilot sessions available for review');
+      return;
+    }
+
+    // Write .arena/context.md snapshot
+    try {
+      await ipcRenderer.invoke('driver-write-context', { meetingId: meeting.id, arenaDir: '.arena' });
+    } catch {}
+
+    // Optionally ask Claude to summarize first
+    let claudeSummary = '';
+    if (_driverSummaryEnabled) {
+      try {
+        const instruction = await ipcRenderer.invoke('driver-summarize-instruction');
+        if (instruction && meeting.driverSessionId) {
+          ipcRenderer.send('terminal-input', { sessionId: meeting.driverSessionId, data: instruction });
+          await new Promise(r => setTimeout(r, 120));
+          ipcRenderer.send('terminal-input', { sessionId: meeting.driverSessionId, data: '\r' });
+          // Wait for Claude to respond (poll transcript tap)
+          for (let i = 0; i < 10; i++) {
+            await new Promise(r => setTimeout(r, 2000));
+            const text = await ipcRenderer.invoke('get-last-assistant-text', meeting.driverSessionId);
+            if (text && text.includes('当前目标') || text && text.includes('已完成')) {
+              claudeSummary = text;
+              break;
+            }
+          }
+          if (!claudeSummary) {
+            claudeSummary = await ipcRenderer.invoke('get-last-assistant-text', meeting.driverSessionId) || '';
+          }
+        }
+      } catch (e) {
+        console.warn('[driver] Claude summary failed:', e.message);
+      }
+    }
+
+    // Get Claude's last output
+    let claudeLastOutput = '';
+    try {
+      claudeLastOutput = await ipcRenderer.invoke('get-last-assistant-text', meeting.driverSessionId) || '';
+    } catch {}
+
+    // Get recent timeline
+    let recentTimeline = '';
+    try {
+      recentTimeline = await ipcRenderer.invoke('driver-recent-timeline', { meetingId: meeting.id, count: 10 });
+    } catch {}
+
+    // Build per-copilot role-specific review prompts
+    const promptMap = {};
+    for (const sid of copilotSids) {
+      const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
+      const kind = s ? s.kind : 'unknown';
+      promptMap[sid] = buildReviewPayloadRenderer({
+        kind,
+        triggerType,
+        triggerText: userText,
+        claudeSummary,
+        claudeLastOutput,
+        recentTimeline,
+        userText,
+      });
+    }
+
+    // Show "审查中..." indicator
+    renderReviewResult(meeting, [{ sid: 'pending', verdict: 'PENDING', reason: '审查中...' }]);
+
+    // Send per-copilot prompts and wait
+    try {
+      const results = await ipcRenderer.invoke('driver-request-review', {
+        meetingId: meeting.id,
+        promptMap,
+        timeoutMs: 120000,
+      });
+
+      // Enhance results with session labels
+      const enhanced = results.map(r => {
+        const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(r.sid) : null;
+        return { ...r, label: s ? (s.title || s.kind || 'AI') : 'AI' };
+      });
+
+      renderReviewResult(meeting, enhanced);
+
+      // Process results: FLAG → send reminder to Claude
+      for (const r of enhanced) {
+        if (r.verdict === 'FLAG' && meeting.driverSessionId) {
+          const reminder = `[副驾提醒 from ${r.label}] ${r.reason}`;
+          ipcRenderer.send('terminal-input', { sessionId: meeting.driverSessionId, data: reminder + '\r' });
+        }
+      }
+    } catch (e) {
+      console.error('[driver] review failed:', e.message);
+      renderReviewResult(meeting, [{ sid: 'error', verdict: 'FLAG', reason: '审查流程异常: ' + e.message, label: 'System' }]);
+    }
+  }
+
+  function buildReviewPayloadRenderer({ kind, triggerType, claudeSummary, claudeLastOutput, recentTimeline, userText }) {
+    const roleLabel = kind === 'gemini'
+      ? '你是架构审查副驾（Gemini）。请从方案/架构/需求理解角度审查。'
+      : '你是代码实现审查副驾（Codex）。请从代码正确性/边界条件/测试遗漏角度审查。';
+
+    const sections = ['=== 审查请求 ===', `角色: ${roleLabel}`, `触发: ${triggerType}`, ''];
+    if (claudeSummary) { sections.push('--- Claude 任务摘要 ---', claudeSummary.slice(0, 5000), ''); }
+    if (recentTimeline) { sections.push('--- 近期对话 ---', recentTimeline.slice(0, 8000), ''); }
+    if (claudeLastOutput) { sections.push('--- Claude 最近操作 ---', claudeLastOutput.slice(0, 10000), ''); }
+    if (userText) { sections.push('--- 用户补充 ---', userText, ''); }
+    sections.push('如需更多上下文，可读取 .arena/context.md 或项目源码文件。');
+    sections.push('', '请用以下格式回复（第一行必须是判定）:', 'OK|FLAG|BLOCKER: 一句话理由');
+    let payload = sections.join('\n');
+    if (payload.length > 20000) payload = payload.slice(0, 20000) + '\n[…已截断]';
+    return payload;
+  }
+
+  // --- Driver Mode: render review result banner ---
+  function renderReviewResult(meeting, results) {
+    let bar = document.getElementById('mr-review-bar');
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'mr-review-bar';
+      const container = terminalsEl();
+      if (container && container.parentElement) {
+        container.parentElement.insertBefore(bar, container);
+      }
+    }
+
+    const isPending = results.length === 1 && results[0].verdict === 'PENDING';
+    if (isPending) {
+      bar.innerHTML = '<div class="mr-review-header">审查中...</div>';
+      bar.className = 'mr-review-bar';
+      return;
+    }
+
+    let html = '<div class="mr-review-header">审查结果</div>';
+    for (const r of results) {
+      const cls = r.verdict === 'OK' ? 'mr-review-ok'
+        : r.verdict === 'BLOCKER' ? 'mr-review-blocker'
+        : 'mr-review-flag';
+      const label = r.label || r.sid || 'AI';
+      html += `<div class="mr-review-item ${cls}">
+        <span class="mr-review-agent">${escapeHtml(label)}</span>
+        <span class="mr-review-verdict">${escapeHtml(r.verdict)}</span>
+        <span class="mr-review-reason">${escapeHtml(r.reason || '')}</span>
+      </div>`;
+    }
+
+    const hasBlocker = results.some(r => r.verdict === 'BLOCKER');
+    if (hasBlocker) {
+      html += `<div class="mr-review-actions">
+        <button class="mr-review-btn mr-review-override" onclick="document.getElementById('mr-review-bar').remove()">覆盖继续</button>
+        <button class="mr-review-btn mr-review-abort" onclick="document.getElementById('mr-review-bar').remove()">中止</button>
+      </div>`;
+    }
+
+    bar.innerHTML = html;
+    bar.className = 'mr-review-bar';
+
+    if (!hasBlocker) {
+      setTimeout(() => { if (bar.parentElement) bar.remove(); }, 5000);
+    }
+  }
+
+  function escapeHtml(str) {
+    if (str == null) return '';
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  // --- Driver Mode: listen for auto-review events from Claude ---
+  ipcRenderer.on('driver-auto-review', (_event, { meetingId, triggerType, claudeText }) => {
+    const meeting = meetingData[meetingId];
+    if (!meeting || !meeting.driverMode) return;
+    triggerReview(meeting, claudeText || '', triggerType);
+  });
 
   const panelEl = () => document.getElementById('meeting-room-panel');
   const headerEl = () => document.getElementById('mr-header');
@@ -107,14 +322,15 @@
         const statusDot = `<span class="mr-tab-status ${state}"></span>`;
         const newBadge = state === 'new-output' ? ' <span class="new-badge">NEW</span>' : '';
         const hasNewCls = state === 'new-output' ? ' has-new' : '';
-        return `<button class="${cls}${hasNewCls}" data-sid="${sid}">${statusDot}${escapeHtml(label)}${badges ? ' ' + badges : ''} ${markerBadge}${newBadge}</button>`;
+        const driverIcon = meeting.driverMode ? (sid === meeting.driverSessionId ? ' <span class="mr-role-icon" title="主驾">&#128663;</span>' : ' <span class="mr-role-icon" title="副驾">&#128065;</span>') : '';
+        return `<button class="${cls}${hasNewCls}" data-sid="${sid}">${statusDot}${escapeHtml(label)}${driverIcon}${badges ? ' ' + badges : ''} ${markerBadge}${newBadge}</button>`;
       }).join('');
       tabsHtml = `<div class="mr-tabs" id="mr-tabs">${tabs}</div>`;
     }
 
     el.innerHTML = `
       <div class="mr-header-left">
-        <span class="mr-header-title" id="mr-title">${escapeHtml(meeting.title)}</span>
+        <span class="mr-header-title" id="mr-title">${escapeHtml(meeting.title)}</span>${meeting.driverMode ? '<span class="mr-driver-badge">Driver</span>' : ''}
         ${tabsHtml}
       </div>
       <div class="mr-header-right">
@@ -489,6 +705,10 @@
       return;
     }
 
+    const summaryToggle = meeting.driverMode
+      ? `<div class="mr-sync-toggle ${_driverSummaryEnabled ? 'active' : ''}" id="mr-summary-toggle"><span>Claude 摘要: ${_driverSummaryEnabled ? '开' : '关'}</span></div>`
+      : '';
+
     el.innerHTML = `
       <button class="mr-header-btn" id="mr-sync-btn">⟳ 同步</button>
       <div class="mr-sync-toggle ${meeting.syncContext ? 'active' : ''}" id="mr-sync-toggle">
@@ -497,6 +717,7 @@
       <div class="mr-sync-toggle ${_divergenceEnabled ? 'active' : ''}" id="mr-divergence-toggle">
         <span>分歧检测: ${_divergenceEnabled ? '开' : '关'}</span>
       </div>
+      ${summaryToggle}
     `;
 
     document.getElementById('mr-sync-toggle').addEventListener('click', () => {
@@ -504,6 +725,14 @@
       ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { syncContext: meeting.syncContext } });
       renderToolbar(meeting);
     });
+
+    const summaryEl = document.getElementById('mr-summary-toggle');
+    if (summaryEl) {
+      summaryEl.addEventListener('click', () => {
+        _driverSummaryEnabled = !_driverSummaryEnabled;
+        renderToolbar(meeting);
+      });
+    }
 
     document.getElementById('mr-divergence-toggle').addEventListener('click', () => {
       _divergenceEnabled = !_divergenceEnabled;
@@ -533,6 +762,18 @@
     if (!inputBox || !sendBtn) return;
 
     inputBox.textContent = '';
+    inputBox.dataset.placeholder = meeting.driverMode
+      ? '输入指令给 Claude（@review @gemini @codex 触发副驾）'
+      : '输入消息...';
+
+    // Driver mode: disable target select (routing via @commands)
+    if (meeting.driverMode && targetSelect) {
+      targetSelect.style.opacity = '0.4';
+      targetSelect.style.pointerEvents = 'none';
+    } else if (targetSelect) {
+      targetSelect.style.opacity = '';
+      targetSelect.style.pointerEvents = '';
+    }
 
     if (targetSelect) {
       targetSelect.innerHTML = '<option value="all">全部</option>';
@@ -622,7 +863,50 @@
       return;
     }
 
-    // Phase C: send to each target.
+    // --- Driver Mode routing ---
+    if (current.driverMode) {
+      const cmd = parseDriverCommand(text, current);
+      if (cmd.type === 'review') {
+        renderReviewResult(current, [{ sid: 'pending', verdict: 'PENDING', reason: '审查中...' }]);
+        triggerReview(current, cmd.text, 'user-review');
+        meeting.lastMessageTime = Date.now();
+        ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { lastMessageTime: meeting.lastMessageTime } });
+        return;
+      }
+      let driverTargets;
+      if (cmd.type === 'direct') {
+        const sid = findSessionByKind(current, cmd.targetKind);
+        driverTargets = sid ? [sid] : [];
+        // For @gemini/@codex with summary enabled, prepend context
+        if (_driverSummaryEnabled && cmd.targetKind !== 'claude') {
+          let claudeLastOutput = '';
+          try { claudeLastOutput = await ipcRenderer.invoke('get-last-assistant-text', current.driverSessionId) || ''; } catch {}
+          let recentTl = '';
+          try { recentTl = await ipcRenderer.invoke('driver-recent-timeline', { meetingId: meeting.id, count: 5 }); } catch {}
+          const ctx = (recentTl ? recentTl + '\n' : '') + (claudeLastOutput ? '--- Claude 最近输出 ---\n' + claudeLastOutput.slice(0, 5000) + '\n---\n' : '');
+          if (ctx && driverTargets.length > 0) {
+            contextBySid[driverTargets[0]] = ctx;
+          }
+        }
+      } else {
+        driverTargets = current.driverSessionId ? [current.driverSessionId] : validTargets;
+      }
+      // Use driverTargets instead of validTargets
+      for (const sessionId of driverTargets) {
+        const payload = (contextBySid[sessionId] || '') + (cmd.text || text);
+        ipcRenderer.send('terminal-input', { sessionId, data: payload });
+        const session = sessions ? sessions.get(sessionId) : null;
+        const enterDelay = session && session.kind === 'codex' ? 300 : 80;
+        setTimeout(() => {
+          ipcRenderer.send('terminal-input', { sessionId, data: '\r' });
+        }, enterDelay);
+      }
+      meeting.lastMessageTime = Date.now();
+      ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { lastMessageTime: meeting.lastMessageTime } });
+      return;
+    }
+
+    // --- Normal mode: Phase C send to each target ---
     for (const sessionId of validTargets) {
       const payload = (contextBySid[sessionId] || '') + text;
       ipcRenderer.send('terminal-input', { sessionId, data: payload });

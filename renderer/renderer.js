@@ -1869,7 +1869,7 @@ async function submitCreateMeeting() {
     }
 
     if (isDriverMode) {
-      ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { driverMode: true } });
+      await ipcRenderer.invoke('update-meeting-sync', { meetingId: meeting.id, fields: { driverMode: true } });
       meeting.driverMode = true;
     }
     meetings[meeting.id] = meeting;
@@ -2751,6 +2751,12 @@ function onTerminalOutput(sessionId, dataLen) {
     const wasRunning = session.status === 'running';
     if (wasRunning) session.status = 'idle';
 
+    const _fc = terminalCache.get(sessionId);
+    if (_fc) {
+      flushFoldState(sessionId, _fc.terminal);
+      if (foldToolBlocks) createFoldDecorations(sessionId);
+    }
+
     readTerminalPreview(sessionId);
 
     // Semantic signal: unread/time bump only when the last-question signature
@@ -2791,6 +2797,229 @@ const CODEX_PLACEHOLDER_RE = new RegExp(
   `[›> ]*${_A}I?m?prove${_A}\\s?${_A}documentation${_A}\\s?${_A}in${_A}\\s?${_A}@[^\\s]*`, 'g'
 );
 
+// --- Tool block folding (Claude sessions only) ---
+const foldStates = new Map();
+let foldToolBlocks = true;
+const sessionFoldStore = new Map();
+const foldDecoStates = new Map();
+const foldTimers = new Map();
+
+function stripAnsiCodes(str) {
+  return str.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
+}
+
+function processForFolding(sessionId, data) {
+  if (!foldToolBlocks) return data;
+  let state = foldStates.get(sessionId);
+  if (!state) {
+    state = { partial: '', folding: false, foldedCount: 0, foldedLines: [] };
+    foldStates.set(sessionId, state);
+  }
+
+  const combined = state.partial + data;
+  const lastNL = combined.lastIndexOf('\n');
+
+  if (lastNL === -1) {
+    if (state.folding || stripAnsiCodes(combined).includes('●')) {
+      state.partial = combined;
+      return '';
+    }
+    state.partial = '';
+    return combined;
+  }
+
+  const complete = combined.substring(0, lastNL + 1);
+  state.partial = combined.substring(lastNL + 1);
+
+  let output = '';
+  const lines = complete.split('\n');
+  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+
+  if (!sessionFoldStore.has(sessionId)) sessionFoldStore.set(sessionId, []);
+  const store = sessionFoldStore.get(sessionId);
+
+  for (const line of lines) {
+    const plain = stripAnsiCodes(line).replace(/\r/g, '');
+    const hasBullet = plain.includes('●');
+    const isToolBullet = hasBullet && /●\s*\S+\(/.test(plain);
+
+    if (isToolBullet) {
+      if (state.folding && state.foldedCount > 0) {
+        store.push(state.foldedLines.join('\n'));
+        output += `\x1b[2m    ⋯ ${state.foldedCount} lines\x1b[0m\r\n`;
+      }
+      state.folding = true;
+      state.foldedCount = 0;
+      state.foldedLines = [];
+      output += line + '\n';
+    } else if (hasBullet || /❯/.test(plain)) {
+      if (state.folding && state.foldedCount > 0) {
+        store.push(state.foldedLines.join('\n'));
+        output += `\x1b[2m    ⋯ ${state.foldedCount} lines\x1b[0m\r\n`;
+      }
+      state.folding = false;
+      state.foldedCount = 0;
+      state.foldedLines = [];
+      output += line + '\n';
+    } else if (state.folding) {
+      state.foldedCount++;
+      state.foldedLines.push(line);
+    } else {
+      output += line + '\n';
+    }
+  }
+
+  return output;
+}
+
+function flushFoldState(sessionId, terminal) {
+  const state = foldStates.get(sessionId);
+  if (!state) return;
+  let output = '';
+  if (state.folding && state.foldedCount > 0) {
+    if (!sessionFoldStore.has(sessionId)) sessionFoldStore.set(sessionId, []);
+    sessionFoldStore.get(sessionId).push(state.foldedLines.join('\n'));
+    output += `\x1b[2m    ⋯ ${state.foldedCount} lines\x1b[0m\r\n`;
+  }
+  if (state.partial && !state.folding) {
+    output += state.partial;
+  }
+  state.partial = '';
+  state.folding = false;
+  state.foldedCount = 0;
+  state.foldedLines = [];
+  if (output && terminal) terminal.write(output);
+}
+
+// Scan buffer for fold indicators & text bullets, create decorations
+function createFoldDecorations(sessionId) {
+  const cached = terminalCache.get(sessionId);
+  if (!cached || !cached.terminal) return;
+  const terminal = cached.terminal;
+  const buf = terminal.buffer.active;
+  const store = sessionFoldStore.get(sessionId) || [];
+
+  let ds = foldDecoStates.get(sessionId);
+  if (!ds) { ds = { lastLine: 0, foldIdx: 0, decos: [] }; foldDecoStates.set(sessionId, ds); }
+
+  const cursorAbs = buf.baseY + buf.cursorY;
+
+  for (let y = ds.lastLine; y < buf.length; y++) {
+    const line = buf.getLine(y);
+    if (!line) continue;
+    let text = '';
+    for (let x = 0; x < line.length; x++) {
+      const c = line.getCell(x);
+      if (c) text += c.getChars();
+    }
+    const trimmed = text.trim();
+
+    if (/⋯\s*\d+\s*lines/.test(trimmed) && ds.foldIdx < store.length) {
+      const content = store[ds.foldIdx++];
+      const marker = terminal.registerMarker(y - cursorAbs);
+      if (!marker) continue;
+      const deco = terminal.registerDecoration({ marker, anchor: 'left', width: terminal.cols, height: 1, layer: 'top' });
+      if (deco) {
+        deco.onRender(el => {
+          if (el.dataset.init) return;
+          el.dataset.init = '1';
+          el.className = 'fold-indicator-deco';
+          el.textContent = trimmed;
+          el.addEventListener('click', (e) => {
+            e.stopPropagation();
+            showFoldPopup(content, el.getBoundingClientRect(), sessionId);
+          });
+        });
+        ds.decos.push(deco);
+      }
+    } else if (trimmed.includes('●') && !/●\s*\S+\(/.test(trimmed)) {
+      // Text bullet — add highlight accent
+      let blockHeight = 1;
+      for (let yy = y + 1; yy < buf.length; yy++) {
+        const nl = buf.getLine(yy);
+        if (!nl) break;
+        let nt = '';
+        for (let x = 0; x < nl.length; x++) { const c = nl.getCell(x); if (c) nt += c.getChars(); }
+        if (nt.trim() === '' || nt.includes('●') || /❯/.test(nt)) break;
+        blockHeight++;
+      }
+      const marker = terminal.registerMarker(y - cursorAbs);
+      if (!marker) continue;
+      const deco = terminal.registerDecoration({ marker, anchor: 'left', height: blockHeight, layer: 'bottom' });
+      if (deco) {
+        deco.onRender(el => {
+          if (el.dataset.init) return;
+          el.dataset.init = '1';
+          el.className = 'fold-text-highlight';
+        });
+        ds.decos.push(deco);
+      }
+    }
+  }
+  if (ds.foldIdx >= store.length) {
+    ds.lastLine = buf.length;
+  }
+}
+
+function disposeFoldDecorations(sessionId) {
+  const ds = foldDecoStates.get(sessionId);
+  if (!ds) return;
+  for (const d of ds.decos) try { d.dispose(); } catch {}
+  ds.decos = [];
+  ds.lastLine = 0;
+  ds.foldIdx = 0;
+}
+
+// Fold popup
+const foldPopupEl = document.createElement('div');
+foldPopupEl.id = 'fold-popup';
+foldPopupEl.className = 'fold-popup';
+foldPopupEl.style.display = 'none';
+foldPopupEl.innerHTML = '<div class="fold-popup-header"><span class="fold-popup-title">Folded content</span><button class="fold-popup-close">✕</button></div><pre class="fold-popup-body"></pre>';
+document.body.appendChild(foldPopupEl);
+foldPopupEl.querySelector('.fold-popup-close').addEventListener('click', () => { foldPopupEl.style.display = 'none'; });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && foldPopupEl.style.display !== 'none') foldPopupEl.style.display = 'none'; });
+
+function showFoldPopup(content, anchorRect, sessionId) {
+  const body = foldPopupEl.querySelector('.fold-popup-body');
+  const cleaned = stripAnsiCodes(content);
+  body.textContent = cleaned;
+  foldPopupEl.style.display = 'flex';
+  const popH = Math.min(400, cleaned.split('\n').length * 18 + 50);
+  foldPopupEl.style.height = popH + 'px';
+  let top = anchorRect.bottom + 4;
+  if (top + popH > window.innerHeight) top = anchorRect.top - popH - 4;
+  foldPopupEl.style.top = Math.max(4, top) + 'px';
+  foldPopupEl.style.left = Math.max(4, anchorRect.left) + 'px';
+  foldPopupEl.style.maxWidth = (window.innerWidth - anchorRect.left - 20) + 'px';
+}
+
+// Global fold toggle
+function toggleFoldMode() {
+  foldToolBlocks = !foldToolBlocks;
+  const btn = document.getElementById('btn-fold-toggle');
+  if (btn) {
+    btn.textContent = foldToolBlocks ? '⋯' : '≡';
+    btn.title = foldToolBlocks ? '折叠模式 (点击切换为原始模式)' : '原始模式 (点击切换为折叠模式)';
+    btn.classList.toggle('active', foldToolBlocks);
+  }
+  if (!foldToolBlocks) {
+    for (const [sid] of foldDecoStates) disposeFoldDecorations(sid);
+  }
+}
+
+// Create fold toggle button dynamically (static HTML gets replaced by terminal setup)
+(function createFoldToggleBtn() {
+  const btn = document.createElement('button');
+  btn.id = 'btn-fold-toggle';
+  btn.className = 'btn-fold-toggle active';
+  btn.title = '折叠模式 (点击切换为原始模式)';
+  btn.textContent = '⋯';
+  btn.addEventListener('click', toggleFoldMode);
+  const tp = document.getElementById('terminal-panel');
+  if (tp) tp.appendChild(btn);
+})();
+
 ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
   const cached = terminalCache.get(sessionId);
   if (!cached) return;
@@ -2806,6 +3035,16 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
     _cursorDebounce.set(sessionId, setTimeout(() => {
       cached.terminal.write('\x1b[?25h');
     }, 150));
+  } else if (!sess || sess.kind === 'claude' || sess.kind === 'claude-resume' || !sess.kind) {
+    const processed = processForFolding(sessionId, data);
+    if (processed) cached.terminal.write(processed);
+    if (foldToolBlocks) {
+      if (foldTimers.has(sessionId)) clearTimeout(foldTimers.get(sessionId));
+      foldTimers.set(sessionId, setTimeout(() => {
+        foldTimers.delete(sessionId);
+        createFoldDecorations(sessionId);
+      }, 300));
+    }
   } else {
     cached.terminal.write(data);
   }

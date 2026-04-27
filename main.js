@@ -18,6 +18,7 @@ const summaryEngine = new SummaryEngine();
 const { TranscriptTap } = require('./core/transcript-tap');
 const transcriptTap = new TranscriptTap();
 const { DeepSummaryService } = require('./core/deep-summary-service.js');
+const driverMode = require('./core/driver-mode.js');
 const { GeminiCliProvider } = require('./core/summary-providers/gemini-cli.js');
 const { DeepSeekProvider } = require('./core/summary-providers/deepseek-api.js');
 const { loadConfig: loadDeepSummaryConfig } = require('./core/deep-summary-config.js');
@@ -310,6 +311,20 @@ transcriptTap.on('turn-complete', ({ hubSessionId, text, completedAt }) => {
   if (turn) {
     sendToRenderer('meeting-timeline-updated', { meetingId: session.meetingId, turn });
   }
+  // Driver mode: detect [REQUEST_REVIEW] or [DANGER_REVIEW] from Claude
+  if (text && session.meetingId) {
+    const meeting = meetingManager.getMeeting(session.meetingId);
+    if (meeting && meeting.driverMode && hubSessionId === meeting.driverSessionId) {
+      if (text.includes('[REQUEST_REVIEW]') || text.includes('[DANGER_REVIEW]')) {
+        const isDanger = text.includes('[DANGER_REVIEW]');
+        sendToRenderer('driver-auto-review', {
+          meetingId: session.meetingId,
+          triggerType: isDanger ? 'danger' : 'claude-request',
+          claudeText: text,
+        });
+      }
+    }
+  }
 });
 
 // Persist resume meta when transcript-tap binds a sub-session to its native CLI sid.
@@ -434,17 +449,37 @@ ipcMain.handle('create-meeting', () => {
 });
 
 ipcMain.handle('add-meeting-sub', (_e, { meetingId, kind, opts }) => {
-  const session = sessionManager.createSession(kind, { ...(opts || {}), meetingId });
+  const meeting = meetingManager.getMeeting(meetingId);
+  let sessionOpts = { ...(opts || {}), meetingId };
+
+  if (meeting && meeting.driverMode) {
+    const hubDataDir = getHubDataDir();
+    if (kind === 'claude') {
+      sessionOpts.appendSystemPromptFile = driverMode.writeDriverPromptFile(hubDataDir, meetingId);
+    } else if (kind === 'gemini') {
+      sessionOpts.extraEnv = { GEMINI_SYSTEM_MD: driverMode.writeCopilotPromptFile(hubDataDir, meetingId, 'gemini') };
+    } else if (kind === 'codex') {
+      sessionOpts.codexInstructionFile = driverMode.writeCopilotPromptFile(hubDataDir, meetingId, 'codex');
+    }
+  }
+
+  const session = sessionManager.createSession(kind, sessionOpts);
   if (!session) return null;
   const updated = meetingManager.addSubSession(meetingId, session.id);
   if (!updated) {
     sessionManager.closeSession(session.id);
     return null;
   }
+
+  if (meeting && meeting.driverMode && kind === 'claude' && !meeting.driverSessionId) {
+    meetingManager.updateMeeting(meetingId, { driverSessionId: session.id });
+  }
+
   registerSessionForTap(session);
   sendToRenderer('session-created', { session });
-  sendToRenderer('meeting-updated', { meeting: updated });
-  return { session, meeting: updated };
+  const freshMeeting = meetingManager.getMeeting(meetingId);
+  sendToRenderer('meeting-updated', { meeting: freshMeeting || updated });
+  return { session, meeting: freshMeeting || updated };
 });
 
 ipcMain.handle('remove-meeting-sub', (_e, { meetingId, sessionId }) => {
@@ -460,8 +495,123 @@ ipcMain.handle('close-meeting', (_e, meetingId) => {
   for (const sid of subIds) {
     sessionManager.closeSession(sid);
   }
+  driverMode.cleanupPromptFiles(getHubDataDir(), meetingId);
   sendToRenderer('meeting-closed', { meetingId });
   return true;
+});
+
+// --- Driver Mode: review request ---
+// promptMap: { sid: prompt } for per-copilot role-specific prompts
+// Uses activity-based timeout: keeps waiting while copilot buffer is growing (streaming).
+ipcMain.handle('driver-request-review', async (_e, { meetingId, promptMap, timeoutMs }) => {
+  const sids = Object.keys(promptMap || {});
+  const IDLE_TIMEOUT = 20000;   // 20s no buffer growth → timeout
+  const MAX_WALL = timeoutMs || 120000; // 120s absolute max
+
+  // Send prompt to each copilot with text/Enter delay
+  for (const sid of sids) {
+    const prompt = promptMap[sid];
+    if (!prompt) continue;
+    const session = sessionManager.getSession(sid);
+    const buf = sessionManager.getSessionBuffer(sid);
+    if (!buf || buf.length < 100) continue;
+    sessionManager.writeToSession(sid, prompt);
+    const enterDelay = session && session.kind === 'codex' ? 400 : 120;
+    await new Promise(r => setTimeout(r, enterDelay));
+    sessionManager.writeToSession(sid, '\r');
+  }
+
+  const results = await Promise.all(sids.map(sid => {
+    return new Promise(resolve => {
+      let lastBufLen = (sessionManager.getSessionBuffer(sid) || '').length;
+      let lastActivity = Date.now();
+      const startTime = Date.now();
+      let settled = false;
+
+      const handler = (ev) => {
+        if (ev.hubSessionId !== sid) return;
+        cleanup();
+        const parsed = driverMode.parseReviewVerdict(ev.text);
+        resolve({ sid, ...parsed });
+      };
+      transcriptTap.on('turn-complete', handler);
+
+      // Poll buffer growth to detect streaming activity
+      const pollInterval = setInterval(() => {
+        if (settled) return;
+        const buf = sessionManager.getSessionBuffer(sid) || '';
+        const now = Date.now();
+
+        if (buf.length > lastBufLen) {
+          lastBufLen = buf.length;
+          lastActivity = now;
+        }
+
+        const idleMs = now - lastActivity;
+        const wallMs = now - startTime;
+
+        if (wallMs >= MAX_WALL) {
+          cleanup();
+          resolve({ sid, verdict: 'FLAG', reason: `副驾超时 (${Math.round(wallMs/1000)}s)` });
+        } else if (idleMs >= IDLE_TIMEOUT && wallMs > 30000) {
+          cleanup();
+          resolve({ sid, verdict: 'FLAG', reason: `副驾静默超时 (${Math.round(idleMs/1000)}s 无输出)` });
+        }
+      }, 3000);
+
+      function cleanup() {
+        if (settled) return;
+        settled = true;
+        clearInterval(pollInterval);
+        transcriptTap.removeListener('turn-complete', handler);
+      }
+
+      // Safety net
+      setTimeout(() => {
+        if (!settled) {
+          cleanup();
+          const buf = sessionManager.getSessionBuffer(sid) || '';
+          resolve({ sid, verdict: 'FLAG', reason: buf.length < 100 ? '副驾尚未就绪' : '副驾最终超时' });
+        }
+      }, MAX_WALL + 5000);
+    });
+  }));
+  return results;
+});
+
+// --- Driver Mode: write context.md snapshot ---
+ipcMain.handle('driver-write-context', (_e, { meetingId, arenaDir }) => {
+  meetingManager.loadTimelineLazy(meetingId);
+  const timeline = meetingManager.getTimeline(meetingId);
+  const labelMap = new Map();
+  const meeting = meetingManager.getMeeting(meetingId);
+  if (meeting) {
+    for (const sid of meeting.subSessions) {
+      const s = sessionManager.getSession(sid);
+      if (s) labelMap.set(sid, { label: s.title || s.kind || 'AI', kind: s.kind });
+    }
+  }
+  return driverMode.writeContextSnapshot(arenaDir, timeline || [], labelMap);
+});
+
+// --- Driver Mode: get recent timeline formatted ---
+ipcMain.handle('driver-recent-timeline', (_e, { meetingId, count }) => {
+  meetingManager.loadTimelineLazy(meetingId);
+  const timeline = meetingManager.getTimeline(meetingId);
+  const labelMap = new Map();
+  const meeting = meetingManager.getMeeting(meetingId);
+  if (meeting) {
+    for (const sid of meeting.subSessions) {
+      const s = sessionManager.getSession(sid);
+      if (s) labelMap.set(sid, { label: s.title || s.kind || 'AI', kind: s.kind });
+    }
+  }
+  return driverMode.formatRecentTimeline(timeline || [], labelMap, count || 10);
+});
+
+// --- Driver Mode: get Claude summarize instruction ---
+ipcMain.handle('driver-summarize-instruction', () => {
+  return driverMode.SUMMARIZE_INSTRUCTION;
 });
 
 ipcMain.handle('get-ring-buffer', (_e, sessionId) => {
@@ -590,6 +740,12 @@ ipcMain.handle('build-injection', (_e, { summaries, userFollowUp }) => {
 ipcMain.on('update-meeting', (_e, { meetingId, fields }) => {
   const updated = meetingManager.updateMeeting(meetingId, fields);
   if (updated) sendToRenderer('meeting-updated', { meeting: updated });
+});
+
+ipcMain.handle('update-meeting-sync', (_e, { meetingId, fields }) => {
+  const updated = meetingManager.updateMeeting(meetingId, fields);
+  if (updated) sendToRenderer('meeting-updated', { meeting: updated });
+  return !!updated;
 });
 
 ipcMain.handle('get-meetings', () => {

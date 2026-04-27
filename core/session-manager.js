@@ -290,6 +290,9 @@ class SessionManager extends EventEmitter {
         cmd = ' codex resume --last --full-auto';
       } else {
         cmd = ' codex --full-auto --model gpt-5.5';
+        if (opts.codexInstructionFile) {
+          cmd += ` -c "model_instructions_file=${opts.codexInstructionFile.replace(/\\/g, '\\\\')}"`;
+        }
       }
       cmd += '\r\n';
       let sent = false;
