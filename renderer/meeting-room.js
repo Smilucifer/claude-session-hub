@@ -657,11 +657,23 @@
     for (const sessionId of meeting.subSessions) {
       openSubTerminal(sessionId);
     }
-    requestAnimationFrame(() => {
-      for (const sessionId of meeting.subSessions) {
-        fitSubTerminal(sessionId);
-      }
-    });
+    // Only fit the visible (focused) terminal; hidden ones get wrong dims
+    robustFit(focused);
+  }
+
+  // rAF-loop until container has real width, then fit + resize PTY
+  function robustFit(sessionId) {
+    const _refit = () => {
+      const cached = subTerminals[sessionId];
+      if (!cached || !cached.fitAddon) return;
+      const el = cached.container || cached.fitAddon._addonDispose ? null : cached.terminal.element;
+      if (el && !el.offsetWidth) { requestAnimationFrame(_refit); return; }
+      try {
+        cached.fitAddon.fit();
+        ipcRenderer.send('terminal-resize', { sessionId, cols: cached.terminal.cols, rows: cached.terminal.rows });
+      } catch (_) {}
+    };
+    requestAnimationFrame(_refit);
   }
 
   function switchFocusTab(meeting, newSid) {
@@ -671,11 +683,12 @@
     for (const slot of slots) {
       slot.style.display = slot.dataset.sessionId === newSid ? '' : 'none';
     }
-    requestAnimationFrame(() => {
-      fitSubTerminal(newSid);
+    // Use robust fit with rAF loop — single rAF often fires before layout propagates
+    robustFit(newSid);
+    setTimeout(() => {
       const cached = subTerminals[newSid];
       if (cached && cached.terminal) cached.terminal.scrollToBottom();
-    });
+    }, 100);
   }
 
   // --- Layout Toggle ---
