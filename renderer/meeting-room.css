@@ -1209,3 +1209,6 @@
   padding: 18px;
   color: var(--ink-2, #a0a8b9);
 }
+
+/* === 投研圆桌 / 通用圆桌：隐藏 3-xterm 终端容器 === */
+.mr-terminals-hidden { display: none !important; }

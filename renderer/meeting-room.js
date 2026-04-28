@@ -916,14 +916,18 @@
       tabsHtml = `<div class="mr-tabs" id="mr-tabs">${tabs}</div>`;
     }
 
+    // 投研圆桌 / 通用圆桌不展示 Focus / Blackboard 切换（layout 概念在这两种模式下无意义）
+    const showLayoutButtons = !(meeting.researchMode || meeting.roundtableMode);
+    const layoutButtonsHtml = showLayoutButtons ? `
+        <button class="mr-header-btn ${meeting.layout === 'focus' ? 'active' : ''}" id="mr-btn-focus">Focus</button>
+        <button class="mr-header-btn ${meeting.layout === 'blackboard' ? 'active' : ''}" id="mr-btn-blackboard">Blackboard</button>` : '';
+
     el.innerHTML = `
       <div class="mr-header-left">
         <span class="mr-header-title" id="mr-title">${escapeHtml(meeting.title)}</span>${meeting.driverMode ? '<span class="mr-driver-badge">Driver</span>' : ''}
         ${tabsHtml}
       </div>
-      <div class="mr-header-right">
-        <button class="mr-header-btn ${meeting.layout === 'focus' ? 'active' : ''}" id="mr-btn-focus">Focus</button>
-        <button class="mr-header-btn ${meeting.layout === 'blackboard' ? 'active' : ''}" id="mr-btn-blackboard">Blackboard</button>
+      <div class="mr-header-right">${layoutButtonsHtml}
         <button class="mr-header-btn" id="mr-btn-add-sub" title="添加子会话">+ 添加</button>
         <button class="btn-zoom btn-memo-toggle ${typeof localStorage !== 'undefined' && localStorage.getItem('claude-hub-memo-open') === 'true' ? 'active' : ''}" id="mr-btn-memo" title="Toggle memo panel"><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M2 3.5A1.5 1.5 0 013.5 2h9A1.5 1.5 0 0114 3.5v9a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 12.5v-9zM4 5h8M4 8h8M4 11h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" fill="none"/></svg></button>
         <button class="btn-zoom" id="mr-btn-zoom-out" title="Shrink UI">A−</button>
@@ -932,8 +936,10 @@
       </div>
     `;
 
-    document.getElementById('mr-btn-focus').addEventListener('click', () => setLayout(meeting.id, 'focus'));
-    document.getElementById('mr-btn-blackboard').addEventListener('click', () => setLayout(meeting.id, 'blackboard'));
+    const focusBtn = document.getElementById('mr-btn-focus');
+    if (focusBtn) focusBtn.addEventListener('click', () => setLayout(meeting.id, 'focus'));
+    const bbBtn = document.getElementById('mr-btn-blackboard');
+    if (bbBtn) bbBtn.addEventListener('click', () => setLayout(meeting.id, 'blackboard'));
     document.getElementById('mr-btn-add-sub').addEventListener('click', () => showAddSubMenu(meeting.id));
     document.getElementById('mr-btn-memo').addEventListener('click', () => { if (typeof toggleMemoPanel === 'function') toggleMemoPanel(); });
     document.getElementById('mr-btn-zoom-out').addEventListener('click', () => { if (typeof applyZoom === 'function') applyZoom(currentZoom - 1); });
@@ -1046,6 +1052,15 @@
 
   // --- Terminal Rendering ---
 
+  function applyModeContainerVisibility(meeting, container) {
+    if (!container) return;
+    if (meeting && (meeting.researchMode || meeting.roundtableMode)) {
+      container.classList.add('mr-terminals-hidden');
+    } else {
+      container.classList.remove('mr-terminals-hidden');
+    }
+  }
+
   function renderTerminals(meeting) {
     const container = terminalsEl();
     if (!container) return;
@@ -1055,6 +1070,12 @@
       }
     }
     container.innerHTML = '';
+    applyModeContainerVisibility(meeting, container);
+    // 投研圆桌 / 通用圆桌：3-xterm 终端不渲染（圆桌专属面板由 refreshRoundtablePanel 渲染）
+    if (meeting && (meeting.researchMode || meeting.roundtableMode)) {
+      subTerminals = {};
+      return;
+    }
     if (meeting.layout === 'blackboard') {
       container.className = 'mr-terminals mr-blackboard';
       subTerminals = {};
@@ -1332,6 +1353,10 @@
   function setLayout(meetingId, layout) {
     const meeting = meetingData[meetingId];
     if (!meeting) return;
+    if (meeting.researchMode || meeting.roundtableMode) {
+      console.warn('[meeting-room] setLayout called in roundtable/research mode — ignored');
+      return;
+    }
     meeting.layout = layout;
     if (layout === 'focus' && !meeting.focusedSub) {
       meeting.focusedSub = meeting.subSessions[0] || null;
