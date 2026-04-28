@@ -74,6 +74,27 @@ const TOOLS = [
       required: ['operation'],
     },
   },
+  {
+    name: 'arena_remember',
+    description: '记录主驾会议室级关键决策/事实/教训供下次会议复用。'
+               + '注意：工作偏好/技术习惯（如"我用 strict TS"）应走 ~/.claude/CLAUDE.md 或 Anthropic memory tool，'
+               + '不要用此工具——这里只放本项目主驾会议室的特定共识。'
+               + 'kind=fact 写到 .arena/memory/shared/facts.md（What/Why/Status 三段式），'
+               + 'kind=lesson/decision 写到 .arena/memory/episodes.jsonl 事件流。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['fact', 'lesson', 'decision'],
+          description: 'fact=项目级事实, lesson=审查中发现的隐患/教训, decision=方案选型决议' },
+        what: { type: 'string', description: '当 kind=fact 时必填: 简短一句概括（用作去重 key）' },
+        why: { type: 'string', description: '当 kind=fact 时必填: 为什么/原因' },
+        status: { type: 'string', enum: ['stable', 'observed', 'deprecated'],
+          description: '当 kind=fact 时必填: 状态。stable=稳定的事实, observed=新观察, deprecated=已废弃' },
+        content: { type: 'string', description: '当 kind=lesson/decision 时必填: 一句话内容（<= 500 字）' },
+      },
+      required: ['kind'],
+    },
+  },
 ];
 
 // --- HTTP helper ---
@@ -84,6 +105,28 @@ function postReview(body) {
       hostname: '127.0.0.1',
       port: HUB_PORT,
       path: '/api/driver/request-review',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
+      timeout: 5000,
+    }, (res) => {
+      let chunks = '';
+      res.on('data', (c) => { chunks += c; });
+      res.on('end', () => resolve({ ok: res.statusCode === 200, status: res.statusCode, body: chunks }));
+    });
+    req.on('error', (e) => resolve({ ok: false, status: 0, body: 'request error: ' + e.message }));
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, status: 0, body: 'timeout' }); });
+    req.write(data);
+    req.end();
+  });
+}
+
+function postRemember(body) {
+  return new Promise((resolve) => {
+    const data = JSON.stringify(body);
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port: HUB_PORT,
+      path: '/api/driver/remember',
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
       timeout: 5000,
@@ -144,6 +187,33 @@ async function handleRequest(req) {
       const text = r.ok
         ? '危险操作审查已触发，副驾正在审查中。请等待副驾反馈再决定是否执行。'
         : `审查触发失败（${r.status}）：${r.body}`;
+      return reply(id, { content: [{ type: 'text', text }], isError: !r.ok });
+    }
+    if (name === 'arena_remember') {
+      const kind = String(args.kind || '').trim();
+      if (!['fact', 'lesson', 'decision'].includes(kind)) {
+        return reply(id, { content: [{ type: 'text', text: '记忆失败：kind 必须是 fact/lesson/decision' }], isError: true });
+      }
+      const body = { token: HOOK_TOKEN, meetingId: MEETING_ID, kind };
+      if (kind === 'fact') {
+        const what = String(args.what || '').trim();
+        const why = String(args.why || '').trim();
+        const status = String(args.status || '').trim();
+        if (!what || !why || !status) {
+          return reply(id, { content: [{ type: 'text', text: '记忆失败：fact 需要 what/why/status' }], isError: true });
+        }
+        Object.assign(body, { what, why, status });
+      } else {
+        const content = String(args.content || '').trim();
+        if (!content) {
+          return reply(id, { content: [{ type: 'text', text: `记忆失败：${kind} 需要 content` }], isError: true });
+        }
+        body.content = content;
+      }
+      const r = await postRemember(body);
+      const text = r.ok
+        ? `已记忆 (${kind})。下次启动主驾会议会自动注入。`
+        : `记忆失败（${r.status}）：${r.body}`;
       return reply(id, { content: [{ type: 'text', text }], isError: !r.ok });
     }
     return replyError(id, -32601, 'unknown tool: ' + name);
