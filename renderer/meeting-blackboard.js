@@ -109,6 +109,8 @@
   }
 
   async function renderBlackboard(meeting, container) {
+    // 通用圆桌 / 投研圆桌不渲染黑板，只在主驾模式（driverMode）显示
+    if (!meeting || !meeting.driverMode) return;
     container.innerHTML = '';
     container.className = 'mr-terminals mr-blackboard mr-feed';
     _currentMeetingId = meeting.id;
@@ -143,6 +145,8 @@
 
   function renderBlackboardToolbar(meeting, toolbarEl) {
     if (!toolbarEl) return;
+    // 通用圆桌 / 投研圆桌不渲染黑板工具栏，只在主驾模式（driverMode）显示
+    if (!meeting || !meeting.driverMode) return;
 
     let targetHtml = '<option value="all">全部</option>';
     for (const sid of meeting.subSessions) {
