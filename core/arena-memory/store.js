@@ -56,4 +56,33 @@ async function appendFact(projectCwd, { what, why, status, source }) {
   return { added: true };
 }
 
-module.exports = { getMemoryDir, ensureDir, appendEpisode, appendFact };
+async function persistMarkers(projectCwd, markers, opts) {
+  const source = (opts && opts.source) || 'unknown';
+  let factsAdded = 0;
+  let episodesAdded = 0;
+  for (const m of markers) {
+    if (m.kind === 'fact') {
+      const r = await appendFact(projectCwd, {
+        what: m.content,
+        why: `(${m.who} 在审查中提及; tags=${(m.tags || []).join(',') || 'none'})`,
+        status: 'observed',
+        source,
+      });
+      if (r.added) factsAdded++;
+    } else {
+      // lesson/decision 不入 facts.md，只记 episodes（让 CLI 自带 memory 来管个人成长）
+      await appendEpisode(projectCwd, {
+        type: 'marker',
+        kind: m.kind,
+        who: m.who,
+        content: m.content,
+        tags: m.tags || [],
+        source,
+      });
+      episodesAdded++;
+    }
+  }
+  return { factsAdded, episodesAdded };
+}
+
+module.exports = { getMemoryDir, ensureDir, appendEpisode, appendFact, persistMarkers };

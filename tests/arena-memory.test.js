@@ -8,6 +8,7 @@ const TEMP_PROJECT = fs.mkdtempSync(path.join(os.tmpdir(), 'arena-mem-'));
 
 const store = require('../core/arena-memory/store');
 const parser = require('../core/arena-memory/marker-parser');
+const injector = require('../core/arena-memory/injector');
 
 (async () => {
   // T1.1: getMemoryDir returns <projectCwd>/.arena/memory
@@ -128,6 +129,58 @@ const parser = require('../core/arena-memory/marker-parser');
   assert.deepStrictEqual(parser.parseMarkers('[fact] #aa #bb', 'gemini'), []);
 
   console.log('PASS T3.4 CRLF + content guards');
+
+  // T4.1: persistMarkers routes fact→facts.md, lesson/decision→episodes.jsonl
+  const fakeMarkers = [
+    { kind: 'fact', who: 'gemini', content: 'review-only port: 3470', tags: [], line: 0 },
+    { kind: 'lesson', who: 'gemini', content: 'check WAL before quit', tags: [], line: 1 },
+    { kind: 'decision', who: 'gemini', content: '本会决议: 修 BUG-A', tags: [], line: 2 },
+  ];
+  const result = await store.persistMarkers(TEMP_PROJECT, fakeMarkers, { source: 'marker:test-review-1' });
+  assert.strictEqual(result.factsAdded, 1, 'one fact written');
+  assert.strictEqual(result.episodesAdded, 2, 'two non-fact markers in episodes');
+  // 验证 fact 进了 facts.md
+  const factsAfter = fs.readFileSync(path.join(store.getMemoryDir(TEMP_PROJECT), 'shared', 'facts.md'), 'utf-8');
+  assert.ok(factsAfter.includes('## review-only port: 3470'));
+  // 验证 lesson/decision 进了 episodes.jsonl
+  const epAfter = fs.readFileSync(path.join(store.getMemoryDir(TEMP_PROJECT), 'episodes.jsonl'), 'utf-8');
+  const epLines = epAfter.trim().split('\n').map(JSON.parse);
+  const markerEvents = epLines.filter((e) => e.type === 'marker');
+  assert.strictEqual(markerEvents.length, 2, 'two marker events');
+  assert.ok(markerEvents.some((e) => e.kind === 'lesson'));
+  assert.ok(markerEvents.some((e) => e.kind === 'decision'));
+  console.log('PASS T4.1 persistMarkers routes correctly');
+
+  // T4.2: injector.composeMemoryBlock returns '' for empty memory dir
+  const EMPTY_PROJECT = fs.mkdtempSync(path.join(os.tmpdir(), 'arena-mem-empty-'));
+  const blockEmpty = await injector.composeMemoryBlock({ projectCwd: EMPTY_PROJECT });
+  assert.strictEqual(blockEmpty, '', 'empty when no facts.md');
+  console.log('PASS T4.2 composeMemoryBlock returns empty string for empty dir');
+
+  // T4.3: composeMemoryBlock returns content when facts.md present
+  const block = await injector.composeMemoryBlock({ projectCwd: TEMP_PROJECT });
+  assert.ok(block.includes('## 你已知的项目背景'), 'has TLDR header');
+  assert.ok(block.includes('hookPort 默认 3456'), 'includes fact');
+
+  // T4.4: appendMemoryToPromptFile is idempotent
+  const promptFile = path.join(TEMP_PROJECT, '_test-prompt.md');
+  fs.writeFileSync(promptFile, '# Original prompt\n\nSome content.\n', 'utf-8');
+  injector.appendMemoryToPromptFile(promptFile, block);
+  const after1 = fs.readFileSync(promptFile, 'utf-8');
+  assert.ok(after1.includes(injector.SENTINEL_BEGIN));
+  assert.ok(after1.includes(injector.SENTINEL_END));
+  assert.ok(after1.includes('hookPort 默认 3456'));
+
+  // 重复注入：文件大小不应翻倍
+  injector.appendMemoryToPromptFile(promptFile, block);
+  const after2 = fs.readFileSync(promptFile, 'utf-8');
+  assert.strictEqual(after1, after2, 'second injection produces identical content');
+  // 注入空 block：sentinel 区块应被剥离
+  injector.appendMemoryToPromptFile(promptFile, '');
+  const after3 = fs.readFileSync(promptFile, 'utf-8');
+  assert.ok(!after3.includes(injector.SENTINEL_BEGIN), 'empty block strips sentinel');
+  assert.ok(after3.includes('# Original prompt'), 'original content preserved');
+  console.log('PASS T4.3 composeMemoryBlock + appendMemoryToPromptFile idempotent');
 
   console.log('---all tests passed---');
 })().catch((e) => { console.error('FAIL', e); process.exit(1); });
