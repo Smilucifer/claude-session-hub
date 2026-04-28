@@ -147,6 +147,15 @@
         const mode = btn.getAttribute('data-mode');
         if (!mode) return;
         try {
+          // 切到非 roundtable 时，先清理 roundtable 的 prompt/covenant/private 文件
+          // （toggle-roundtable-mode handler 在 enabled=false 时会调 cleanupGeneralRoundtableFiles）
+          if (meeting.roundtableMode && mode !== 'roundtable') {
+            try {
+              await ipcRenderer.invoke('toggle-roundtable-mode', { meetingId: meeting.id, enabled: false });
+            } catch (e) {
+              console.warn('[mode-toggle] roundtable cleanup failed (continuing anyway):', e.message);
+            }
+          }
           if (mode === 'roundtable') {
             // 通用圆桌：走 toggle-roundtable-mode（含 prompt 文件写盘 + mutex 互斥）
             const res = await ipcRenderer.invoke('toggle-roundtable-mode', { meetingId: meeting.id, enabled: true });
@@ -959,8 +968,9 @@
       tabsHtml = `<div class="mr-tabs" id="mr-tabs">${tabs}</div>`;
     }
 
-    // 投研圆桌 / 通用圆桌不展示 Focus / Blackboard 切换（layout 概念在这两种模式下无意义）
-    const showLayoutButtons = !(meeting.researchMode || meeting.roundtableMode);
+    // 通用圆桌不展示 Focus / Blackboard 切换（layout 概念在该模式下无意义）；
+    // researchMode 保持原行为（按钮显示）以满足 C1：existing researchMode UI behavior MUST be preserved
+    const showLayoutButtons = !meeting.roundtableMode;
     const layoutButtonsHtml = showLayoutButtons ? `
         <button class="mr-header-btn ${meeting.layout === 'focus' ? 'active' : ''}" id="mr-btn-focus">Focus</button>
         <button class="mr-header-btn ${meeting.layout === 'blackboard' ? 'active' : ''}" id="mr-btn-blackboard">Blackboard</button>` : '';
@@ -1099,7 +1109,8 @@
 
   function applyModeContainerVisibility(meeting, container) {
     if (!container) return;
-    if (meeting && (meeting.researchMode || meeting.roundtableMode)) {
+    // 仅通用圆桌隐藏 3-xterm 容器；researchMode 保持原行为（C1）
+    if (meeting && meeting.roundtableMode) {
       container.classList.add('mr-terminals-hidden');
     } else {
       container.classList.remove('mr-terminals-hidden');
@@ -1116,8 +1127,9 @@
     }
     container.innerHTML = '';
     applyModeContainerVisibility(meeting, container);
-    // 投研圆桌 / 通用圆桌：3-xterm 终端不渲染（圆桌专属面板由 refreshRoundtablePanel 渲染）
-    if (meeting && (meeting.researchMode || meeting.roundtableMode)) {
+    // 通用圆桌：3-xterm 终端不渲染（圆桌专属面板由 refreshRoundtablePanel 渲染）；
+    // researchMode 保持原行为（终端继续渲染）以满足 C1
+    if (meeting && meeting.roundtableMode) {
       subTerminals = {};
       return;
     }
@@ -1398,8 +1410,9 @@
   function setLayout(meetingId, layout) {
     const meeting = meetingData[meetingId];
     if (!meeting) return;
-    if (meeting.researchMode || meeting.roundtableMode) {
-      console.warn('[meeting-room] setLayout called in roundtable/research mode — ignored');
+    // 仅通用圆桌阻断 layout 切换；researchMode 保持原行为（C1）
+    if (meeting.roundtableMode) {
+      console.warn('[meeting-room] setLayout called in roundtable mode — ignored');
       return;
     }
     meeting.layout = layout;
