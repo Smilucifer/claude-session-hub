@@ -182,5 +182,25 @@ const injector = require('../core/arena-memory/injector');
   assert.ok(after3.includes('# Original prompt'), 'original content preserved');
   console.log('PASS T4.3 composeMemoryBlock + appendMemoryToPromptFile idempotent');
 
+  // T4.4: appendMemoryToPromptFile uses lastIndexOf so it doesn't swallow user content
+  // containing literal sentinel strings (post-review fix for I-1)
+  const promptWithLiteralSentinel = path.join(TEMP_PROJECT, '_test-prompt-literal.md');
+  fs.writeFileSync(promptWithLiteralSentinel,
+    '# Discussion\n\nIn a previous chat we discussed <!-- ARENA_MEMORY_BEGIN --> and how it works.\n\n' +
+    'Some user content here.\n\n' +
+    '<!-- ARENA_MEMORY_END --> end of discussion.\n\n' +
+    'More user content.\n', 'utf-8');
+  injector.appendMemoryToPromptFile(promptWithLiteralSentinel, block);
+  const literalAfter = fs.readFileSync(promptWithLiteralSentinel, 'utf-8');
+  // 关键：用户内容必须保留（"Some user content here." 和 "More user content." 不能被剥掉）
+  assert.ok(literalAfter.includes('Some user content here.'),
+    'user content between literal sentinels preserved (lastIndexOf prevents accidental swallowing)');
+  assert.ok(literalAfter.includes('More user content.'),
+    'user content after literal sentinels preserved');
+  // 我们的注入区块在末尾
+  assert.ok(literalAfter.endsWith(injector.SENTINEL_END + '\n'),
+    'injection appended at file end');
+  console.log('PASS T4.4 appendMemoryToPromptFile preserves user content with literal sentinels');
+
   console.log('---all tests passed---');
 })().catch((e) => { console.error('FAIL', e); process.exit(1); });

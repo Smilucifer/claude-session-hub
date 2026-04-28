@@ -7,12 +7,14 @@ const store = require('./store');
 const SENTINEL_BEGIN = '<!-- ARENA_MEMORY_BEGIN -->';
 const SENTINEL_END = '<!-- ARENA_MEMORY_END -->';
 
-async function composeMemoryBlock({ projectCwd, budgetTokens = 1500 }) {
+async function composeMemoryBlock({ projectCwd, budgetTokens = 800 }) {
   const factsPath = path.join(store.getMemoryDir(projectCwd), 'shared', 'facts.md');
   if (!fs.existsSync(factsPath)) return '';
   const content = fs.readFileSync(factsPath, 'utf-8').trim();
   if (!content) return '';
-  // 简单 token 预算：1 token ≈ 0.5 中文字 / 0.75 英文字。1500 tok ≈ 6000 chars 上限
+  // token 预算（混合中英内容偏保守估算）：
+  // 1 中文字 ≈ 1-2 tokens，1 英文字 ≈ 0.25 tokens。
+  // 默认 budget=800，char ceiling=3200，对纯中文约 4000-5000 tokens（控制副驾 prompt 注入量）
   const charBudget = budgetTokens * 4;
   const truncated = content.length > charBudget ? content.slice(0, charBudget) + '\n\n_[truncated due to budget]_' : content;
   return [
@@ -30,9 +32,12 @@ function appendMemoryToPromptFile(promptFilePath, memoryBlock) {
   }
   let prompt = fs.readFileSync(promptFilePath, 'utf-8');
   // 幂等：先剥离旧的 sentinel 区块
-  const beginIdx = prompt.indexOf(SENTINEL_BEGIN);
-  const endIdx = prompt.indexOf(SENTINEL_END);
-  if (beginIdx >= 0 && endIdx > beginIdx) {
+  // lastIndexOf + END 在文件尾部双重判定：保证只剥 Hub 自己注入的（per design 在文件末尾），
+  // 不会误吞用户内容里出现的字面 sentinel 字符串
+  const beginIdx = prompt.lastIndexOf(SENTINEL_BEGIN);
+  const endIdx = prompt.lastIndexOf(SENTINEL_END);
+  const tailIsBlank = endIdx >= 0 && prompt.slice(endIdx + SENTINEL_END.length).trim() === '';
+  if (beginIdx >= 0 && endIdx > beginIdx && tailIsBlank) {
     prompt = prompt.slice(0, beginIdx).replace(/\n+$/, '') + prompt.slice(endIdx + SENTINEL_END.length);
   }
   // 空 memoryBlock → 不写 sentinel
