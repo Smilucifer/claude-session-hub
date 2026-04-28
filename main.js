@@ -440,9 +440,14 @@ ipcMain.handle('create-meeting', () => {
   return meeting;
 });
 
-ipcMain.handle('add-meeting-sub', (_e, { meetingId, kind, opts }) => {
+ipcMain.handle('add-meeting-sub', async (_e, { meetingId, kind, opts }) => {
   const meeting = meetingManager.getMeeting(meetingId);
   let sessionOpts = { ...(opts || {}), meetingId };
+
+  // arena-memory: 记录每种 audience 注入的 prompt 文件路径，session 创建后取出 cwd 再注入。
+  let driverPromptFile = null;
+  let geminiPromptFile = null;
+  let codexPromptFile = null;
 
   if (meeting && meeting.driverMode) {
     const hubDataDir = getHubDataDir();
@@ -454,13 +459,17 @@ ipcMain.handle('add-meeting-sub', (_e, { meetingId, kind, opts }) => {
       if (hookPort) {
         sessionOpts.appendSystemPromptFile = driverMode.writeDriverPromptFile(hubDataDir, meetingId);
         sessionOpts.mcpConfigFile = driverMode.writeDriverMcpConfig(hubDataDir, meetingId, hookPort, HOOK_TOKEN);
+        driverPromptFile = sessionOpts.appendSystemPromptFile;
       } else {
         console.warn(`[hub] driver-mode Claude session in meeting ${meetingId} but hookPort unavailable — falling back to plain Claude (no driver rules, no MCP tools). Restart Hub or check port 3456-3460 availability.`);
       }
     } else if (kind === 'gemini') {
-      sessionOpts.extraEnv = { GEMINI_SYSTEM_MD: driverMode.writeCopilotPromptFile(hubDataDir, meetingId, 'gemini') };
+      const gemPrompt = driverMode.writeCopilotPromptFile(hubDataDir, meetingId, 'gemini');
+      sessionOpts.extraEnv = { GEMINI_SYSTEM_MD: gemPrompt };
+      geminiPromptFile = gemPrompt;
     } else if (kind === 'codex') {
       sessionOpts.codexInstructionFile = driverMode.writeCopilotPromptFile(hubDataDir, meetingId, 'codex');
+      codexPromptFile = sessionOpts.codexInstructionFile;
     }
   } else if (meeting && meeting.researchMode) {
     // 投研圆桌模式：三家平等注入同一份 system prompt（rules + 用户公约合成）。
@@ -506,6 +515,56 @@ ipcMain.handle('add-meeting-sub', (_e, { meetingId, kind, opts }) => {
 
   if (meeting && meeting.driverMode && kind === 'claude' && !meeting.driverSessionId) {
     meetingManager.updateMeeting(meetingId, { driverSessionId: session.id });
+  }
+
+  // arena-memory: 注入会议室共识到 prompt 尾部。Claude 启动有 200ms 防抖延迟，
+  // 同步写盘完全来得及。Gemini/Codex 副驾继承 driver session 的 cwd（meet 是
+  // 共识的物理位置，没 driver 时退回到 session 自己的 cwd 兜底）。
+  if (driverPromptFile) {
+    try {
+      const arenaInjector = require('./core/arena-memory/injector');
+      const arenaStore = require('./core/arena-memory/store');
+      const cwd = session && session.cwd;
+      if (cwd) {
+        const block = await arenaInjector.composeMemoryBlock({ projectCwd: cwd });
+        arenaInjector.appendMemoryToPromptFile(driverPromptFile, block);
+        await arenaStore.appendEpisode(cwd, { type: 'injection', meetingId, audience: 'driver', tokens: block.length });
+      }
+    } catch (e) {
+      console.error('[hub] arena-memory injection (driver) failed:', e.message);
+    }
+  }
+  if (geminiPromptFile) {
+    try {
+      const arenaInjector = require('./core/arena-memory/injector');
+      const arenaStore = require('./core/arena-memory/store');
+      const meet = meetingManager.getMeeting(meetingId);
+      const driverSess = meet && meet.driverSessionId ? sessionManager.getSession(meet.driverSessionId) : null;
+      const cwd = (driverSess && driverSess.cwd) || (session && session.cwd);
+      if (cwd) {
+        const block = await arenaInjector.composeMemoryBlock({ projectCwd: cwd });
+        arenaInjector.appendMemoryToPromptFile(geminiPromptFile, block);
+        await arenaStore.appendEpisode(cwd, { type: 'injection', meetingId, audience: 'gemini', tokens: block.length });
+      }
+    } catch (e) {
+      console.error('[hub] arena-memory injection (gemini) failed:', e.message);
+    }
+  }
+  if (codexPromptFile) {
+    try {
+      const arenaInjector = require('./core/arena-memory/injector');
+      const arenaStore = require('./core/arena-memory/store');
+      const meet = meetingManager.getMeeting(meetingId);
+      const driverSess = meet && meet.driverSessionId ? sessionManager.getSession(meet.driverSessionId) : null;
+      const cwd = (driverSess && driverSess.cwd) || (session && session.cwd);
+      if (cwd) {
+        const block = await arenaInjector.composeMemoryBlock({ projectCwd: cwd });
+        arenaInjector.appendMemoryToPromptFile(codexPromptFile, block);
+        await arenaStore.appendEpisode(cwd, { type: 'injection', meetingId, audience: 'codex', tokens: block.length });
+      }
+    } catch (e) {
+      console.error('[hub] arena-memory injection (codex) failed:', e.message);
+    }
   }
 
   registerSessionForTap(session);
@@ -1285,7 +1344,7 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
 // Wake a dormant session: spawn PTY with the same hubId, reusing stored cwd,
 // CC session id, title. The session-manager handles `claude --resume <id>` or
 // `--continue` as fallback when we don't have a CC id recorded.
-ipcMain.handle('resume-session', (_e, meta) => {
+ipcMain.handle('resume-session', async (_e, meta) => {
   if (!meta || !meta.hubId) return null;
   const isClaude = (meta.kind === 'claude' || meta.kind === 'claude-resume');
   const isDeepSeek = (meta.kind === 'deepseek');
@@ -1297,6 +1356,7 @@ ipcMain.handle('resume-session', (_e, meta) => {
   // hookPort 不可用时退化为普通 session（同 add-meeting-sub 的处理），避免 Claude
   // 收到"必须调用 MCP 工具"指令但没有工具可调，让安全约束悬空。
   let driverOpts = {};
+  let driverPromptFile = null;
   if (isClaude && meta.meetingId) {
     const meeting = meetingManager.getMeeting(meta.meetingId);
     if (meeting && meeting.driverMode) {
@@ -1304,6 +1364,7 @@ ipcMain.handle('resume-session', (_e, meta) => {
         const hubDataDir = getHubDataDir();
         driverOpts.appendSystemPromptFile = driverMode.writeDriverPromptFile(hubDataDir, meta.meetingId);
         driverOpts.mcpConfigFile = driverMode.writeDriverMcpConfig(hubDataDir, meta.meetingId, hookPort, HOOK_TOKEN);
+        driverPromptFile = driverOpts.appendSystemPromptFile;
       } else {
         console.warn(`[hub] resuming driver-mode Claude session in meeting ${meta.meetingId} but hookPort unavailable — falling back to plain Claude (no driver rules, no MCP tools).`);
       }
@@ -1314,6 +1375,20 @@ ipcMain.handle('resume-session', (_e, meta) => {
         ? meeting.covenantText
         : researchMode.readCovenantSnapshot(hubDataDir, meta.meetingId);
       driverOpts.appendSystemPromptFile = researchMode.writeResearchPromptFile(hubDataDir, meta.meetingId, covenantText);
+    }
+  }
+
+  // arena-memory: resume 时同样把当前 facts.md 注入 driver prompt 尾部。
+  // 用 meta.cwd 作为 projectCwd（resume 元数据里就有），命中后再下钻 createSession。
+  if (driverPromptFile && meta.cwd) {
+    try {
+      const arenaInjector = require('./core/arena-memory/injector');
+      const arenaStore = require('./core/arena-memory/store');
+      const block = await arenaInjector.composeMemoryBlock({ projectCwd: meta.cwd });
+      arenaInjector.appendMemoryToPromptFile(driverPromptFile, block);
+      await arenaStore.appendEpisode(meta.cwd, { type: 'injection', meetingId: meta.meetingId, audience: 'driver', tokens: block.length, via: 'resume' });
+    } catch (e) {
+      console.error('[hub] arena-memory injection (driver) failed:', e.message);
     }
   }
 
