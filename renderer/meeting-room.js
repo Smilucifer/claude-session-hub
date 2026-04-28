@@ -41,6 +41,41 @@
       return { type: 'rt-fanout', text: rest };
     }
 
+    // 通用圆桌：默认 fanout，新增 @<who> 单聊语义
+    if (meeting.roundtableMode) {
+      let rest = text.trim();
+      const summaryRe = /^@summary\s+@(claude|gemini|codex)\b\s*/i;
+      let m;
+      if ((m = rest.match(summaryRe))) {
+        return { type: 'rt-summary', summarizerKind: m[1].toLowerCase(), text: rest.slice(m[0].length) };
+      }
+      const debateRe = /^@debate\b\s*/i;
+      if ((m = rest.match(debateRe))) {
+        return { type: 'rt-debate', text: rest.slice(m[0].length) };
+      }
+      const allRe = /^@all\b\s*/i;
+      if ((m = rest.match(allRe))) {
+        return { type: 'rt-fanout', text: rest.slice(m[0].length) };
+      }
+      // @<who> 单家或多家但非全员 → 私聊
+      const targets = [];
+      const tokenRe = /^@(claude|gemini|codex)\b\s*/i;
+      while (true) {
+        const t = rest.match(tokenRe);
+        if (!t) break;
+        const tok = t[1].toLowerCase();
+        if (!targets.includes(tok)) targets.push(tok);
+        rest = rest.slice(t[0].length);
+      }
+      if (targets.length === 3) {
+        return { type: 'rt-fanout', text: rest };
+      }
+      if (targets.length > 0) {
+        return { type: 'rt-private', targetKinds: targets, text: rest };
+      }
+      return { type: 'rt-fanout', text: rest };
+    }
+
     if (!meeting.driverMode) return { type: 'normal', text, targets: null };
     let rest = text.trim();
     const targets = [];
