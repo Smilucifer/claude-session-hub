@@ -729,6 +729,33 @@ async function executeReview(meetingId, { userText, triggerType }) {
       }
       const filePath = path.join(reviewsDir, `${reviewId}.md`);
       fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
+
+      // arena-memory: 解析副驾 [lesson]/[fact]/[decision] 标记 → 持久化
+      try {
+        const parser = require('./core/arena-memory/marker-parser');
+        const arenaStore = require('./core/arena-memory/store');
+        let totalMarkers = { fact: 0, lesson: 0, decision: 0 };
+        for (const r of results) {
+          if (!r.text) continue;
+          // 通过 labelMap 取 kind（'gemini'/'codex'/...）比 r.label 可靠（label 可能是用户自定义 title）
+          const meta = labelMap.get(r.sid) || {};
+          const copilotKind = String(meta.kind || '').toLowerCase();
+          if (!['gemini', 'codex'].includes(copilotKind)) continue;
+          const markers = parser.parseMarkers(r.text, copilotKind);
+          if (markers.length) {
+            await arenaStore.persistMarkers(projectCwd, markers, { source: `marker:${reviewId}` });
+            for (const m of markers) totalMarkers[m.kind] = (totalMarkers[m.kind] || 0) + 1;
+          }
+        }
+        await arenaStore.appendEpisode(projectCwd, {
+          type: 'review_complete',
+          reviewId,
+          meetingId,
+          markerCounts: totalMarkers,
+        });
+      } catch (e) {
+        console.error('[hub] arena-memory marker parsing failed:', e.message);
+      }
     }
 
     // Write summary to timeline
