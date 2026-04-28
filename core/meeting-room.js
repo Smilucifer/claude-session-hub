@@ -28,6 +28,9 @@ class MeetingRoomManager {
       pendingReviewId: null,
       researchMode: false,
       covenantText: '',
+      // 新增：通用圆桌（默认开启，与 driverMode/researchMode 互斥）
+      roundtableMode: true,
+      generalRoundtableCovenant: '',
     };
     // Hub Timeline phase 1 (in-memory only)
     meeting._timeline = [];
@@ -89,9 +92,28 @@ class MeetingRoomManager {
   updateMeeting(meetingId, fields) {
     const m = this.meetings.get(meetingId);
     if (!m) return null;
-    const allowed = ['title', 'layout', 'focusedSub', 'syncContext', 'sendTarget', 'pinned', 'lastMessageTime', 'status', 'lastScene', 'driverMode', 'driverSessionId', 'pendingReviewId', 'researchMode', 'covenantText'];
+    const allowed = [
+      'title', 'layout', 'focusedSub', 'syncContext', 'sendTarget', 'pinned',
+      'lastMessageTime', 'status', 'lastScene', 'driverMode', 'driverSessionId',
+      'pendingReviewId', 'researchMode', 'covenantText',
+      // 新增字段
+      'roundtableMode', 'generalRoundtableCovenant',
+    ];
     for (const key of allowed) {
       if (key in fields) m[key] = fields[key];
+    }
+    // 三态互斥：开启某一个时关掉其他两个
+    if (fields.roundtableMode === true) {
+      m.researchMode = false;
+      m.driverMode = false;
+    }
+    if (fields.researchMode === true) {
+      m.roundtableMode = false;
+      m.driverMode = false;
+    }
+    if (fields.driverMode === true) {
+      m.roundtableMode = false;
+      m.researchMode = false;
     }
     return { ...m, subSessions: [...m.subSessions] };
   }
