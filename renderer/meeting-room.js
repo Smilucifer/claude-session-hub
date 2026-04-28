@@ -929,6 +929,14 @@
       if (activeMeetingId === meetingId) {
         renderHeader(updated);
         renderToolbar(updated);
+        // 模式切换时同步刷新面板与终端容器可见性（E2E 修复）
+        if (updated.researchMode || updated.roundtableMode) {
+          refreshRoundtablePanel(updated);
+        } else {
+          _removeRtPanel();
+        }
+        const term = terminalsEl();
+        if (term) applyModeContainerVisibility(updated, term);
         const prevSubs = prev ? prev.subSessions.join(',') : '';
         const newSubs = updated.subSessions ? updated.subSessions.join(',') : '';
         if (prevSubs !== newSubs) {
