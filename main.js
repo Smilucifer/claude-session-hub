@@ -1527,11 +1527,12 @@ const hookServer = http.createServer((req, res) => {
   const isStatus = req.method === 'POST' && req.url === '/api/status';
   const isTeamResponse = req.method === 'POST' && req.url === '/api/team/response';
   const isDriverReview = req.method === 'POST' && req.url === '/api/driver/request-review';
+  const isDriverRemember = req.method === 'POST' && req.url === '/api/driver/remember';
   const isResearchFetchStock = req.method === 'POST' && req.url === '/api/research/fetch-stock';
   const isResearchFetchConcept = req.method === 'POST' && req.url === '/api/research/fetch-concept';
   const isResearchFetchSector = req.method === 'POST' && req.url === '/api/research/fetch-sector';
   const isResearchFetch = isResearchFetchStock || isResearchFetchConcept || isResearchFetchSector;
-  if (!isHook && !isStatus && !isTeamResponse && !isDriverReview && !isResearchFetch) {
+  if (!isHook && !isStatus && !isTeamResponse && !isDriverReview && !isDriverRemember && !isResearchFetch) {
     res.writeHead(404); res.end('{}'); return;
   }
 
@@ -1563,6 +1564,74 @@ const hookServer = http.createServer((req, res) => {
         : `${scope || ''}${open_risks ? `\n关注点：${open_risks}` : ''}`;
       sendToRenderer('driver-auto-review', { meetingId, triggerType, claudeText });
       res.writeHead(200); res.end('{"ok":true}');
+      return;
+    }
+    // Driver-mode arena_remember MCP callback (loopback). Persists facts /
+    // episodes into the project's .arena/memory/ directory via arena store.
+    if (isDriverRemember) {
+      try {
+        if (parsed.token !== HOOK_TOKEN) {
+          res.writeHead(403); res.end(JSON.stringify({ ok: false, error: 'invalid token' }));
+          return;
+        }
+        // Reject multi-line what/content (post-review I-1 from T2: LLM input
+        // arrives here, validate at boundary before reaching the store).
+        if (parsed.kind === 'fact' && parsed.what && /[\r\n]/.test(parsed.what)) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ ok: false, error: 'what must be single-line (no newlines)' }));
+          return;
+        }
+        if ((parsed.kind === 'lesson' || parsed.kind === 'decision')
+            && parsed.content && /[\r\n]/.test(parsed.content)) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ ok: false, error: 'content must be single-line (no newlines)' }));
+          return;
+        }
+        const meetingId = String(parsed.meetingId || '');
+        const meeting = meetingManager.getMeeting(meetingId);
+        if (!meeting || !meeting.driverSessionId) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ ok: false, error: 'meeting or driver session not found' }));
+          return;
+        }
+        const session = sessionManager.getSession(meeting.driverSessionId);
+        const projectCwd = session && session.cwd;
+        if (!projectCwd) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ ok: false, error: 'no projectCwd' }));
+          return;
+        }
+        const arenaStore = require('./core/arena-memory/store');
+        if (parsed.kind === 'fact') {
+          await arenaStore.appendFact(projectCwd, {
+            what: parsed.what,
+            why: parsed.why,
+            status: parsed.status,
+            source: 'mcp:arena_remember',
+          });
+          await arenaStore.appendEpisode(projectCwd, {
+            type: 'remember',
+            kind: 'fact',
+            what: parsed.what,
+            meetingId,
+            source: 'mcp:arena_remember',
+          });
+        } else {
+          await arenaStore.appendEpisode(projectCwd, {
+            type: 'remember',
+            kind: parsed.kind,
+            content: parsed.content,
+            meetingId,
+            source: 'mcp:arena_remember',
+          });
+        }
+        res.writeHead(200);
+        res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        console.error('[hub] /api/driver/remember error:', e.message);
+        res.writeHead(500);
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
       return;
     }
 
