@@ -731,22 +731,27 @@ async function executeReview(meetingId, { userText, triggerType }) {
       fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
 
       // arena-memory: 解析副驾 [lesson]/[fact]/[decision] 标记 → 持久化
-      try {
-        const parser = require('./core/arena-memory/marker-parser');
-        const arenaStore = require('./core/arena-memory/store');
-        let totalMarkers = { fact: 0, lesson: 0, decision: 0 };
-        for (const r of results) {
-          if (!r.text) continue;
-          // 通过 labelMap 取 kind（'gemini'/'codex'/...）比 r.label 可靠（label 可能是用户自定义 title）
-          const meta = labelMap.get(r.sid) || {};
-          const copilotKind = String(meta.kind || '').toLowerCase();
-          if (!['gemini', 'codex'].includes(copilotKind)) continue;
+      const parser = require('./core/arena-memory/marker-parser');
+      const arenaStore = require('./core/arena-memory/store');
+      const totalMarkers = { fact: 0, lesson: 0, decision: 0 };
+      for (const r of results) {
+        if (!r.text) continue;
+        // 通过 labelMap 取 kind（'gemini'/'codex'/...）比 r.label 可靠（label 可能是用户自定义 title）
+        const meta = labelMap.get(r.sid) || {};
+        const copilotKind = String(meta.kind || '').toLowerCase();
+        if (!['gemini', 'codex'].includes(copilotKind)) continue;
+        try {
           const markers = parser.parseMarkers(r.text, copilotKind);
           if (markers.length) {
             await arenaStore.persistMarkers(projectCwd, markers, { source: `marker:${reviewId}` });
+            // 注：计数副驾说了什么，不区分 appendFact 是否 dedup（审计语义）
             for (const m of markers) totalMarkers[m.kind] = (totalMarkers[m.kind] || 0) + 1;
           }
+        } catch (e) {
+          console.error('[hub] arena-memory marker persist failed for', r.sid, ':', e.message);
         }
+      }
+      try {
         await arenaStore.appendEpisode(projectCwd, {
           type: 'review_complete',
           reviewId,
@@ -754,7 +759,7 @@ async function executeReview(meetingId, { userText, triggerType }) {
           markerCounts: totalMarkers,
         });
       } catch (e) {
-        console.error('[hub] arena-memory marker parsing failed:', e.message);
+        console.error('[hub] arena-memory review_complete episode failed:', e.message);
       }
     }
 
