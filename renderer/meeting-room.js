@@ -245,9 +245,10 @@
     const firstRunHint = state.turns.length === 0
       ? `<div class="mr-rt-firstrun-hint">⏱ <strong>首次发送较慢</strong>（约 25 秒）— 三家 CLI 需要冷启动 + OAuth 验证。后续轮次会快很多。</div>`
       : '';
+    const titleText = (meeting && meeting.researchMode) ? '投研圆桌' : '圆桌讨论';
     return `
       <div class="mr-rt-header">
-        <span class="mr-rt-title">投研圆桌</span>
+        <span class="mr-rt-title">${titleText}</span>
         <span class="mr-rt-meta">
           <span>已 ${state.turns.length} 轮</span>
           <span class="mr-rt-mode-tag ${mode}">${escapeHtml(modeLabel)}</span>
@@ -265,7 +266,7 @@
   // 此时 server state 真实状态（含 idle）才被采纳。
   // partialBy 单独保留：轮中单家完成 IPC 推 partial-update，这是轮内增量，独立处理。
   async function refreshRoundtablePanel(meeting) {
-    if (!meeting || !meeting.researchMode) { _removeRtPanel(); return; }
+    if (!meeting || (!meeting.researchMode && !meeting.roundtableMode)) { _removeRtPanel(); return; }
     let state;
     try {
       state = await ipcRenderer.invoke('roundtable:get-state', { meetingId: meeting.id });
@@ -553,7 +554,7 @@
   // 从 IPC 拉最终 state（含 turn N 已持久化）
   ipcRenderer.on('roundtable-turn-complete', (_event, { meetingId }) => {
     const meeting = meetingData[meetingId];
-    if (meeting && meeting.researchMode && meetingId === activeMeetingId) {
+    if (meeting && (meeting.researchMode || meeting.roundtableMode) && meetingId === activeMeetingId) {
       delete _rtOptimisticTurn[meetingId];
       const cached = _rtPanelState[meetingId];
       if (cached) {
@@ -570,7 +571,7 @@
   // Roundtable state 元数据变更（如 summary 启动写入 currentSummarizerKind）
   ipcRenderer.on('roundtable-state-update', (_event, { meetingId }) => {
     const meeting = meetingData[meetingId];
-    if (meeting && meeting.researchMode && meetingId === activeMeetingId) {
+    if (meeting && (meeting.researchMode || meeting.roundtableMode) && meetingId === activeMeetingId) {
       refreshRoundtablePanel(meeting);
     }
   });
@@ -578,7 +579,7 @@
   // Roundtable 单家 partial-update：单卡片立即刷新，不等所有家完成
   ipcRenderer.on('roundtable-partial-update', (_event, { meetingId, sid, status, text }) => {
     const meeting = meetingData[meetingId];
-    if (!meeting || !meeting.researchMode || meetingId !== activeMeetingId) return;
+    if (!meeting || (!meeting.researchMode && !meeting.roundtableMode) || meetingId !== activeMeetingId) return;
     const cached = _rtPanelState[meetingId];
     if (!cached) {
       // 首次：直接 refresh（拉 state），下次 partial 才能本地更新
@@ -784,8 +785,8 @@
     setupInput(meeting);
     startMarkerPoll();
 
-    // 投研圆桌：进入会议室即刷新持久化面板
-    if (meeting.researchMode) {
+    // 投研圆桌 / 通用圆桌：进入会议室即刷新持久化面板
+    if (meeting.researchMode || meeting.roundtableMode) {
       refreshRoundtablePanel(meeting);
     } else {
       _removeRtPanel();
@@ -1299,8 +1300,8 @@
       return;
     }
 
-    // researchMode 专属 toolbar：群策群力 / 总结发言（不展示主驾的"同步/自动同步/分歧检测"）
-    if (meeting.researchMode) {
+    // researchMode / roundtableMode 专属 toolbar：群策群力 / 总结发言（不展示主驾的"同步/自动同步/分歧检测"）
+    if (meeting.researchMode || meeting.roundtableMode) {
       const subs = _getRtSubInfo(meeting);
       const opts = ['claude', 'gemini', 'codex']
         .filter(k => subs[k])
@@ -1400,14 +1401,16 @@
     inputBox.textContent = '';
     inputBox.dataset.placeholder = meeting.researchMode
       ? '输入投研问题，回车发送 → 三家本色独立回答（@debate / @summary @<who> 也可继续手输）'
-      : (meeting.driverMode
-        ? '输入 @ 选副驾，可同时 @gemini @codex'
-        : '输入消息...');
+      : (meeting.roundtableMode
+        ? '圆桌讨论：发普通文本启动一轮 / @debate / @summary @<who> / @<who> 单聊'
+        : (meeting.driverMode
+          ? '输入 @ 选副驾，可同时 @gemini @codex'
+          : '输入消息...'));
 
-    // researchMode：隐藏目标选择（路由由 fanout/debate/summary 决定）
+    // researchMode / roundtableMode：隐藏目标选择（路由由 fanout/debate/summary/private 决定）
     // driverMode：禁用目标选择（路由由 @command 决定）
     if (targetSelect) {
-      if (meeting.researchMode) {
+      if (meeting.researchMode || meeting.roundtableMode) {
         targetSelect.style.display = 'none';
       } else if (meeting.driverMode) {
         targetSelect.style.display = '';
@@ -1420,7 +1423,7 @@
       }
     }
 
-    if (targetSelect && !meeting.researchMode) {
+    if (targetSelect && !meeting.researchMode && !meeting.roundtableMode) {
       targetSelect.innerHTML = '<option value="all">全部</option>';
       for (const sid of meeting.subSessions) {
         const session = sessions ? sessions.get(sid) : null;
@@ -1455,9 +1458,9 @@
       const mid = activeMeetingId;
       const m = meetingData[mid];
       if (!m) return;
-      // researchMode 下 sendTarget 由 fanout/debate/summary 路由决定，不依赖隐藏的 select
+      // researchMode / roundtableMode 下 sendTarget 由 fanout/debate/summary/private 路由决定，不依赖隐藏的 select
       // （select 隐藏后 value 是 ''，不能让它把 m.sendTarget 覆盖成空）
-      if (!m.researchMode) {
+      if (!m.researchMode && !m.roundtableMode) {
         const sel = document.getElementById('mr-input-target');
         if (sel) m.sendTarget = sel.value;
       } else {
