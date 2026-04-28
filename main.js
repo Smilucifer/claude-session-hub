@@ -505,6 +505,25 @@ ipcMain.handle('add-meeting-sub', async (_e, { meetingId, kind, opts }) => {
         sessionOpts.codexMcpEntries = [researchMode.buildResearchMcpEntryForCodex(meetingId, hookPort, HOOK_TOKEN)];
       }
     }
+  } else if (meeting && meeting.roundtableMode) {
+    // 通用圆桌模式：三家平等注入同一份 system prompt（rules + 用户公约合成）。
+    // 不挂 MCP（CLI 自带工具能力即可）。
+    const hubDataDir = getHubDataDir();
+    const covenantText = (typeof meeting.generalRoundtableCovenant === 'string' && meeting.generalRoundtableCovenant.length > 0)
+      ? meeting.generalRoundtableCovenant
+      : generalRoundtableMode.readCovenantSnapshot(hubDataDir, meetingId);
+    if (typeof covenantText === 'string') {
+      generalRoundtableMode.writeCovenantSnapshot(hubDataDir, meetingId, covenantText);
+    }
+    const promptFile = generalRoundtableMode.writeGeneralRoundtablePromptFile(hubDataDir, meetingId, covenantText);
+    if (kind === 'claude') {
+      sessionOpts.appendSystemPromptFile = promptFile;
+    } else if (kind === 'gemini') {
+      sessionOpts.extraEnv = { GEMINI_SYSTEM_MD: promptFile };
+    } else if (kind === 'codex') {
+      sessionOpts.codexInstructionFile = promptFile;
+      sessionOpts.codexBypassApprovals = true;
+    }
   }
 
   const session = sessionManager.createSession(kind, sessionOpts);
@@ -591,6 +610,7 @@ ipcMain.handle('close-meeting', (_e, meetingId) => {
   }
   driverMode.cleanupPromptFiles(getHubDataDir(), meetingId);
   researchMode.cleanupResearchFiles(getHubDataDir(), meetingId);
+  generalRoundtableMode.cleanupGeneralRoundtableFiles(getHubDataDir(), meetingId);
   sendToRenderer('meeting-closed', { meetingId });
   return true;
 });
@@ -1409,6 +1429,12 @@ ipcMain.handle('resume-session', async (_e, meta) => {
         ? meeting.covenantText
         : researchMode.readCovenantSnapshot(hubDataDir, meta.meetingId);
       driverOpts.appendSystemPromptFile = researchMode.writeResearchPromptFile(hubDataDir, meta.meetingId, covenantText);
+    } else if (meeting && meeting.roundtableMode) {
+      const hubDataDir = getHubDataDir();
+      const covenantText = (typeof meeting.generalRoundtableCovenant === 'string' && meeting.generalRoundtableCovenant.length > 0)
+        ? meeting.generalRoundtableCovenant
+        : generalRoundtableMode.readCovenantSnapshot(hubDataDir, meta.meetingId);
+      driverOpts.appendSystemPromptFile = generalRoundtableMode.writeGeneralRoundtablePromptFile(hubDataDir, meta.meetingId, covenantText);
     }
   }
 
