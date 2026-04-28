@@ -46,6 +46,9 @@
       let rest = text.trim();
       const summaryRe = /^@summary\s+@(claude|gemini|codex)\b\s*/i;
       let m;
+      // 注意：`@summary` 必须带 `@<who>` 才会路由到 rt-summary，未带 @<who> 时本 regex 不匹配，
+      // fall through 到下面的 @<who>/@all/纯文本逻辑。结果通常是 rt-fanout，原文照发给三家。
+      // 这是 spec 默认行为；UI 友好提示见后续 Phase 增强。
       if ((m = rest.match(summaryRe))) {
         return { type: 'rt-summary', summarizerKind: m[1].toLowerCase(), text: rest.slice(m[0].length) };
       }
@@ -1531,17 +1534,34 @@
       if (cmd.type === 'rt-private') {
         const kinds = cmd.targetKinds || [];
         const sids = [];
+        const resolvedKinds = [];
+        const failedKinds = [];
         for (const kind of kinds) {
           const sid = findSessionByKind(current, kind);
-          if (sid && !sids.includes(sid)) sids.push(sid);
+          if (sid && !sids.includes(sid)) {
+            sids.push(sid);
+            resolvedKinds.push(kind);
+          } else {
+            failedKinds.push(kind);
+          }
         }
         if (sids.length === 0) {
           console.warn('[meeting-room] rt-private: no matching session for kinds', kinds);
           return;
         }
+        if (failedKinds.length > 0) {
+          console.warn(`[meeting-room] rt-private: partial resolution — sent to [${resolvedKinds.join(',')}], skipped [${failedKinds.join(',')}] (sessions not attached or dormant)`);
+        }
         try {
           await ipcRenderer.invoke('meeting-append-user-turn', { meetingId: meeting.id, text });
         } catch (e) { console.warn('[meeting-room] append-user-turn failed:', e.message); }
+        // ---
+        // 顺序与不变量备注：
+        // 1) terminal-input 是 fire-and-forget（IPC send），私聊 store 是 best-effort async invoke
+        // 2) 极端情况下 send 成功但 store append 失败，UI 仅 console.warn 不阻塞，依赖未来
+        //    transcript-tap 回填 response 字段做兜底
+        // 3) 我们接受这个不变量缺口换取低延迟体验，详情见 spec 私聊段落
+        // ---
         const payload = cmd.text || '';
         for (const sessionId of sids) {
           ipcRenderer.send('terminal-input', { sessionId, data: payload });
@@ -1552,8 +1572,8 @@
             ipcRenderer.send('terminal-input', { sessionId, data: '\r' });
           }, baseDelay + sizeDelay);
         }
-        // 异步写入私聊存储（响应文本后续可由 transcript-tap 回填，MVP 留空）
-        for (const kind of kinds) {
+        // 仅对成功送达的 kinds 写私聊 store，避免给下线 AI 留虚假记录
+        for (const kind of resolvedKinds) {
           ipcRenderer.invoke('roundtable-private:append', {
             meetingId: meeting.id,
             kind,

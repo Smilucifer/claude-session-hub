@@ -65,6 +65,19 @@ assert.deepStrictEqual(parseDriverCommand('@summary @gemini why', RT), { type: '
 assert.deepStrictEqual(parseDriverCommand('@summary @codex', RT), { type: 'rt-summary', summarizerKind: 'codex', text: '' });
 console.log('  ✓ @summary @<who> → rt-summary');
 
+// @summary 无 @<who> 不会路由到 rt-summary，fall through 到 fanout
+assert.deepStrictEqual(parseDriverCommand('@summary', RT), { type: 'rt-fanout', text: '@summary' });
+assert.deepStrictEqual(parseDriverCommand('@summary please conclude', RT), { type: 'rt-fanout', text: '@summary please conclude' });
+console.log('  ✓ @summary without @<who> falls through to rt-fanout (locked behavior)');
+
+// 顺序锁定：@all 优先匹配并消耗 → 后续 @<who> 当字面量留在 text 里
+assert.deepStrictEqual(parseDriverCommand('@all @claude foo', RT), { type: 'rt-fanout', text: '@claude foo' });
+console.log('  ✓ @all @<who> → rt-fanout, @<who> stays as literal');
+
+// @summary 优先匹配 @<who1>，剩余 @<who2> 作为 text 内容
+assert.deepStrictEqual(parseDriverCommand('@summary @claude @gemini hi', RT), { type: 'rt-summary', summarizerKind: 'claude', text: '@gemini hi' });
+console.log('  ✓ @summary @<a> @<b> → rt-summary(a), text contains @<b> literal');
+
 assert.deepStrictEqual(parseDriverCommand('@claude solve', RT), { type: 'rt-private', targetKinds: ['claude'], text: 'solve' });
 assert.deepStrictEqual(parseDriverCommand('@gemini hi', RT), { type: 'rt-private', targetKinds: ['gemini'], text: 'hi' });
 assert.deepStrictEqual(parseDriverCommand('@codex check', RT), { type: 'rt-private', targetKinds: ['codex'], text: 'check' });
