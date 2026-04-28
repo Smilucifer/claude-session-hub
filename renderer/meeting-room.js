@@ -124,6 +124,49 @@
     }
   }
 
+  // --- Tri-state mode toggle (圆桌 / 主驾 / 投研) ---
+
+  function _renderModeToggle(meeting) {
+    if (!meeting) return '';
+    const isRoundtable = !!meeting.roundtableMode;
+    const isDriver = !!meeting.driverMode;
+    const isResearch = !!meeting.researchMode;
+    return `
+      <div class="mr-mode-toggle" role="radiogroup" aria-label="会议模式">
+        <button type="button" class="mr-mode-btn ${isRoundtable ? 'active' : ''}" data-mode="roundtable" title="通用圆桌：三家平等讨论">圆桌</button>
+        <button type="button" class="mr-mode-btn ${isDriver ? 'active' : ''}" data-mode="driver" title="主驾模式：Claude 编码 + 副驾审查">主驾</button>
+        <button type="button" class="mr-mode-btn ${isResearch ? 'active' : ''}" data-mode="research" title="投研圆桌：A 股专题">投研</button>
+      </div>
+    `;
+  }
+
+  function _bindModeToggle(rootEl, meeting) {
+    if (!rootEl || !meeting) return;
+    rootEl.querySelectorAll('.mr-mode-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const mode = btn.getAttribute('data-mode');
+        if (!mode) return;
+        try {
+          if (mode === 'roundtable') {
+            // 通用圆桌：走 toggle-roundtable-mode（含 prompt 文件写盘 + mutex 互斥）
+            const res = await ipcRenderer.invoke('toggle-roundtable-mode', { meetingId: meeting.id, enabled: true });
+            if (res && !res.ok) console.warn('[mode-toggle] roundtable failed:', res.error);
+          } else if (mode === 'driver') {
+            // 主驾 / 投研：复用 update-meeting-sync（互斥逻辑由 core/meeting-room.js updateMeeting 处理）
+            const ok = await ipcRenderer.invoke('update-meeting-sync', { meetingId: meeting.id, fields: { driverMode: true } });
+            if (!ok) console.warn('[mode-toggle] driver failed: update-meeting-sync returned falsy');
+          } else if (mode === 'research') {
+            const covenantText = (meeting.covenantText && typeof meeting.covenantText === 'string') ? meeting.covenantText : '';
+            const ok = await ipcRenderer.invoke('update-meeting-sync', { meetingId: meeting.id, fields: { researchMode: true, covenantText } });
+            if (!ok) console.warn('[mode-toggle] research failed: update-meeting-sync returned falsy');
+          }
+        } catch (e) {
+          console.warn('[mode-toggle] click failed:', e.message);
+        }
+      });
+    });
+  }
+
   function _ensureRtPanel() {
     let panel = document.getElementById('mr-roundtable-panel');
     if (!panel) {
@@ -924,6 +967,7 @@
 
     el.innerHTML = `
       <div class="mr-header-left">
+        ${_renderModeToggle(meeting)}
         <span class="mr-header-title" id="mr-title">${escapeHtml(meeting.title)}</span>${meeting.driverMode ? '<span class="mr-driver-badge">Driver</span>' : ''}
         ${tabsHtml}
       </div>
@@ -941,6 +985,7 @@
     const bbBtn = document.getElementById('mr-btn-blackboard');
     if (bbBtn) bbBtn.addEventListener('click', () => setLayout(meeting.id, 'blackboard'));
     document.getElementById('mr-btn-add-sub').addEventListener('click', () => showAddSubMenu(meeting.id));
+    _bindModeToggle(el, meeting);
     document.getElementById('mr-btn-memo').addEventListener('click', () => { if (typeof toggleMemoPanel === 'function') toggleMemoPanel(); });
     document.getElementById('mr-btn-zoom-out').addEventListener('click', () => { if (typeof applyZoom === 'function') applyZoom(currentZoom - 1); });
     document.getElementById('mr-btn-zoom-in').addEventListener('click', () => { if (typeof applyZoom === 'function') applyZoom(currentZoom + 1); });
