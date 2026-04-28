@@ -7,6 +7,7 @@ const assert = require('assert');
 const TEMP_PROJECT = fs.mkdtempSync(path.join(os.tmpdir(), 'arena-mem-'));
 
 const store = require('../core/arena-memory/store');
+const parser = require('../core/arena-memory/marker-parser');
 
 (async () => {
   // T1.1: getMemoryDir returns <projectCwd>/.arena/memory
@@ -66,6 +67,51 @@ const store = require('../core/arena-memory/store');
   assert.ok(all.includes('## hookPort 默认 3456'), 'old entry kept');
   assert.ok(all.includes('## .arena/ 是项目级目录'), 'new entry added');
   console.log('PASS T2.3 multiple distinct facts accumulate');
+
+  // T3.1: parseMarkers extracts [lesson]/[fact]/[decision] from copilot text
+  const sample1 = `OK: 方案合理，但有几个隐患。
+
+[lesson] PTY 输入空格触发 readline 回显，下次走 sendKeys
+[fact] hookPort 默认 3456，碰撞向后 fallback
+[decision]: 选 react-window，因为 immer 包大小翻倍 #frontend
+`;
+  const m1 = parser.parseMarkers(sample1, 'gemini');
+  assert.strictEqual(m1.length, 3, 'three markers');
+  assert.deepStrictEqual(m1.map((x) => x.kind), ['lesson', 'fact', 'decision']);
+  assert.strictEqual(m1[0].who, 'gemini');
+  assert.ok(m1[0].content.startsWith('PTY 输入空格'), 'lesson content trimmed');
+  assert.ok(m1[2].tags.includes('frontend'), 'decision tag extracted');
+  console.log('PASS T3.1 parseMarkers extracts three kinds');
+
+  // T3.2: edge cases
+  assert.deepStrictEqual(parser.parseMarkers('', 'gemini'), []);
+  assert.deepStrictEqual(parser.parseMarkers('OK: no markers here', 'codex'), []);
+
+  // 中文冒号
+  const sample2 = '[fact]：使用了中文冒号';
+  const m2 = parser.parseMarkers(sample2, 'gemini');
+  assert.strictEqual(m2.length, 1);
+  assert.strictEqual(m2[0].content, '使用了中文冒号');
+
+  // 不应误抓 markdown 内容（[lesson] 不在行首）
+  const sample3 = 'See section [lesson] for details';
+  assert.deepStrictEqual(parser.parseMarkers(sample3, 'codex'), []);
+
+  console.log('PASS T3.2 parseMarkers handles edge cases');
+
+  // T3.3: ## 记忆 section with multiple markers
+  const sample4 = `FLAG: 几处隐患。
+
+详细分析：xxxxx
+
+## 记忆
+[lesson] PTY 写法注意
+[fact] 端口 3456
+[decision] 选 A 方案
+`;
+  const m4 = parser.parseMarkers(sample4, 'gemini');
+  assert.strictEqual(m4.length, 3, 'three markers in 记忆 section');
+  console.log('PASS T3.3 parseMarkers handles ## 记忆 section');
 
   console.log('---all tests passed---');
 })().catch((e) => { console.error('FAIL', e); process.exit(1); });
