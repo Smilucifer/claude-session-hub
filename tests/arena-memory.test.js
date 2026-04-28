@@ -113,5 +113,21 @@ const parser = require('../core/arena-memory/marker-parser');
   assert.strictEqual(m4.length, 3, 'three markers in 记忆 section');
   console.log('PASS T3.3 parseMarkers handles ## 记忆 section');
 
+  // T3.4: CRLF tolerance + content guards (post-review fix)
+  const sample5 = '[fact] hookPort 默认 3456\r\n[lesson] PTY 注意 #pty\r\n';
+  const m5 = parser.parseMarkers(sample5, 'gemini');
+  assert.strictEqual(m5.length, 2, 'CRLF tolerated, both markers parsed');
+  assert.strictEqual(m5[0].kind, 'fact');
+  assert.strictEqual(m5[1].kind, 'lesson');
+  assert.deepStrictEqual(m5[1].tags, ['pty'], 'tag stripped after CRLF');
+
+  // colon-only rejected
+  assert.deepStrictEqual(parser.parseMarkers('[lesson]:', 'gemini'), []);
+
+  // all-tags-no-content rejected
+  assert.deepStrictEqual(parser.parseMarkers('[fact] #aa #bb', 'gemini'), []);
+
+  console.log('PASS T3.4 CRLF + content guards');
+
   console.log('---all tests passed---');
 })().catch((e) => { console.error('FAIL', e); process.exit(1); });
