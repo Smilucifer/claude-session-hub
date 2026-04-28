@@ -1236,6 +1236,51 @@ ipcMain.handle('update-meeting-sync', (_e, { meetingId, fields }) => {
 // Sprint 1: research-mode covenant 模板（renderer 创建会议室对话框预填用）
 ipcMain.handle('get-research-covenant-template', () => researchMode.COVENANT_TEMPLATE);
 
+// 通用圆桌：开关 + 公约写盘 + 私聊存储
+ipcMain.handle('toggle-roundtable-mode', (_e, { meetingId, enabled, covenant } = {}) => {
+  const m = meetingManager.getMeeting(meetingId);
+  if (!m) return { ok: false, error: 'meeting not found' };
+  const fields = { roundtableMode: !!enabled };
+  if (typeof covenant === 'string') fields.generalRoundtableCovenant = covenant;
+  let updated;
+  try {
+    updated = meetingManager.updateMeeting(meetingId, fields);
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+  if (!updated) return { ok: false, error: 'update failed' };
+  // Persist covenant file when enabling (consistent state for resume)
+  if (enabled) {
+    const text = typeof covenant === 'string' ? covenant : (updated.generalRoundtableCovenant || '');
+    try {
+      generalRoundtableMode.writeCovenantSnapshot(getHubDataDir(), meetingId, text);
+      generalRoundtableMode.writeGeneralRoundtablePromptFile(getHubDataDir(), meetingId, text);
+    } catch (e) {
+      console.warn(`[toggle-roundtable] write prompt files failed: ${e.message}`);
+    }
+  }
+  sendToRenderer('meeting-updated', { meeting: updated });
+  return { ok: true, meeting: updated };
+});
+
+ipcMain.handle('roundtable-private:append', (_e, { meetingId, kind, userInput, response } = {}) => {
+  try {
+    generalRoundtablePrivateStore.appendPrivateTurn(getHubDataDir(), meetingId, kind, userInput, response);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+ipcMain.handle('roundtable-private:list', (_e, { meetingId, kind } = {}) => {
+  try {
+    return generalRoundtablePrivateStore.listPrivateTurns(getHubDataDir(), meetingId, kind);
+  } catch (e) {
+    console.warn(`[roundtable-private:list] failed: ${e.message}`);
+    return kind ? [] : { claude: [], gemini: [], codex: [] };
+  }
+});
+
 ipcMain.handle('get-meetings', () => {
   return meetingManager.getAllMeetings();
 });
