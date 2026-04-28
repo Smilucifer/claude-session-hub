@@ -509,10 +509,12 @@ ipcMain.handle('add-meeting-sub', async (_e, { meetingId, kind, opts }) => {
     // 通用圆桌模式：三家平等注入同一份 system prompt（rules + 用户公约合成）。
     // 不挂 MCP（CLI 自带工具能力即可）。
     const hubDataDir = getHubDataDir();
-    const covenantText = (typeof meeting.generalRoundtableCovenant === 'string' && meeting.generalRoundtableCovenant.length > 0)
+    // 与 research-mode 对齐语义：meeting 字段是空字符串时尊重为"用户已清空"（不回退 snapshot），
+    // snapshot 仅在非空时持久化
+    const covenantText = (typeof meeting.generalRoundtableCovenant === 'string')
       ? meeting.generalRoundtableCovenant
       : generalRoundtableMode.readCovenantSnapshot(hubDataDir, meetingId);
-    if (typeof covenantText === 'string') {
+    if (covenantText && covenantText.trim().length > 0) {
       generalRoundtableMode.writeCovenantSnapshot(hubDataDir, meetingId, covenantText);
     }
     const promptFile = generalRoundtableMode.writeGeneralRoundtablePromptFile(hubDataDir, meetingId, covenantText);
@@ -1258,6 +1260,13 @@ ipcMain.handle('toggle-roundtable-mode', (_e, { meetingId, enabled, covenant } =
     } catch (e) {
       console.warn(`[toggle-roundtable] write prompt files failed: ${e.message}`);
     }
+  } else {
+    // 关闭模式时清理盘上 prompt/covenant/private 文件，避免下次开启被旧值复活
+    try {
+      generalRoundtableMode.cleanupGeneralRoundtableFiles(getHubDataDir(), meetingId);
+    } catch (e) {
+      console.warn(`[toggle-roundtable] cleanup files failed: ${e.message}`);
+    }
   }
   sendToRenderer('meeting-updated', { meeting: updated });
   return { ok: true, meeting: updated };
@@ -1476,7 +1485,7 @@ ipcMain.handle('resume-session', async (_e, meta) => {
       driverOpts.appendSystemPromptFile = researchMode.writeResearchPromptFile(hubDataDir, meta.meetingId, covenantText);
     } else if (meeting && meeting.roundtableMode) {
       const hubDataDir = getHubDataDir();
-      const covenantText = (typeof meeting.generalRoundtableCovenant === 'string' && meeting.generalRoundtableCovenant.length > 0)
+      const covenantText = (typeof meeting.generalRoundtableCovenant === 'string')
         ? meeting.generalRoundtableCovenant
         : generalRoundtableMode.readCovenantSnapshot(hubDataDir, meta.meetingId);
       driverOpts.appendSystemPromptFile = generalRoundtableMode.writeGeneralRoundtablePromptFile(hubDataDir, meta.meetingId, covenantText);
