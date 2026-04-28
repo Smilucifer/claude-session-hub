@@ -1176,3 +1176,36 @@
   padding: 4px 10px; border-radius: 999px;
   background: rgba(255,255,255,.04);
 }
+
+/* === 私聊角标 + 私聊抽屉 Tab === */
+.mr-rt-private-badge {
+  display: inline-block;
+  background: rgba(183, 133, 245, 0.18);
+  color: #d4b3ff;
+  border-radius: 8px;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.mr-rt-tl-tab.private {
+  border-left: 1px dashed var(--line, #2a3245);
+  margin-left: 6px;
+}
+.mr-rt-tl-private-item {
+  background: rgba(183, 133, 245, 0.06);
+  border-left: 3px solid rgba(183, 133, 245, 0.6);
+  padding: 8px 12px;
+  margin: 6px 0;
+  border-radius: 4px;
+}
+.mr-rt-tl-private-ts {
+  color: var(--ink-2, #a0a8b9);
+  font-size: 11px;
+  margin-top: 4px;
+}
+.mr-rt-tl-loading {
+  padding: 18px;
+  color: var(--ink-2, #a0a8b9);
+}

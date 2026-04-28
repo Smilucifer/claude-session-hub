@@ -105,6 +105,9 @@
   // partialBy: 当前进行中轮次的部分回答 { sid: { text, status } } — 单家完成立即更新
   const _rtPanelState = {};
   let _rtHistoryExpanded = false;
+  // 私聊计数缓存：{ [meetingId]: { claude: N, gemini: N, codex: N } }
+  // 在 refreshRoundtablePanel 里 best-effort 拉，用于卡片右上角 💬 角标
+  const _privateCountCache = {};
 
   // markdown 渲染（用项目已有的 marked + DOMPurify）
   let _markedCache = null;
@@ -152,10 +155,12 @@
     return subs;
   }
 
-  function _renderRtCards(state, subs, currentMode, partialBy) {
+  function _renderRtCards(state, subs, currentMode, partialBy, meeting) {
     const lastTurn = state.turns.length > 0 ? state.turns[state.turns.length - 1] : null;
     const summarizerKind = state.currentSummarizerKind || null;
     const cards = [];
+    const meetingId = meeting && meeting.id;
+    const countMap = (meetingId && _privateCountCache[meetingId]) || {};
     for (const kind of ['claude', 'gemini', 'codex']) {
       const sub = subs[kind];
       if (!sub) continue;
@@ -203,9 +208,13 @@
       const standbyHint = isStandby
         ? '<span class="mr-rt-standby-hint">上轮回答（等总结）</span>'
         : '';
+      const privateCount = countMap[kind] || 0;
+      const privateBadge = privateCount > 0
+        ? `<span class="mr-rt-private-badge" title="有 ${privateCount} 条私聊">💬 ${privateCount}</span>`
+        : '';
       cards.push(`<div class="${cardCls.join(' ')}" data-rt-sid="${sub.sid}" data-rt-kind="${kind}" role="button" tabindex="0" title="点击查看 ${labelDisplay} 的全部历史回答">
         <div class="mr-rt-card-head">
-          <span class="mr-rt-card-name">${labelDisplay}${summarizerBadge}</span>
+          <span class="mr-rt-card-name">${labelDisplay}${summarizerBadge}${privateBadge}</span>
           <span class="mr-rt-status ${status}">${statusLabel}${standbyHint}</span>
         </div>
         ${previewHtml}
@@ -239,7 +248,7 @@
     const mode = state.currentMode || 'idle';
     const modeLabel = { idle: '待命', fanout: '提问中', debate: '辩论中', summary: '综合中' }[mode] || mode;
     const partialBy = state._partialBy || null;
-    const cards = _renderRtCards(state, subs, mode, partialBy);
+    const cards = _renderRtCards(state, subs, mode, partialBy, meeting);
     const history = _renderRtHistory(state);
     // 首发提醒：完成过 1 轮后消失
     const firstRunHint = state.turns.length === 0
@@ -275,6 +284,17 @@
       return;
     }
     if (!state) return;
+    // 私聊计数缓存（best-effort，不阻塞 panel 渲染）
+    try {
+      const counts = await ipcRenderer.invoke('roundtable-private:list', { meetingId: meeting.id });
+      _privateCountCache[meeting.id] = {
+        claude: ((counts && counts.claude) || []).length,
+        gemini: ((counts && counts.gemini) || []).length,
+        codex:  ((counts && counts.codex)  || []).length,
+      };
+    } catch (e) {
+      console.warn('[meeting-room] private count cache refresh failed:', e.message);
+    }
     const prev = _rtPanelState[meeting.id];
     const optimistic = _rtOptimisticTurn[meeting.id];
     if (optimistic && (!state.currentMode || state.currentMode === 'idle')) {
@@ -359,6 +379,14 @@
       </button>`;
     }).join('');
 
+    // 私聊 tab：放最右，data-tab-idx = turnsWithAns.length 作为哨兵
+    const privateTabIdx = turnsWithAns.length;
+    const privateTabHtml = `<button type="button" class="mr-rt-tl-tab private" data-tab-idx="${privateTabIdx}" title="${escapeHtml(headerLabel)} 的私聊历史">
+      <span class="mr-rt-tl-tab-turn">💬 私聊</span>
+    </button>`;
+    const tabsHtmlWithPrivate = tabsHtml + privateTabHtml;
+    const hasAnyTab = turnsWithAns.length > 0 || true; // 总是显示私聊 tab
+
     overlay.innerHTML = `
       <div class="mr-rt-tl-backdrop" data-rt-tl-close="1"></div>
       <aside class="mr-rt-tl-drawer mr-rt-tl-${escapeHtml(kind)}" role="dialog" aria-label="${escapeHtml(headerLabel)} 时间线">
@@ -367,21 +395,47 @@
           <span class="mr-rt-tl-drawer-meta">共 ${turnsWithAns.length} 轮</span>
           <button type="button" class="mr-rt-tl-close" data-rt-tl-close="1" aria-label="关闭">×</button>
         </header>
-        ${turnsWithAns.length > 0 ? `<nav class="mr-rt-tl-tabs" role="tablist">${tabsHtml}</nav>` : ''}
+        ${hasAnyTab ? `<nav class="mr-rt-tl-tabs" role="tablist">${tabsHtmlWithPrivate}</nav>` : ''}
         <div class="mr-rt-tl-content" id="mr-rt-tl-content">${renderTurnBody(turnsWithAns[0])}</div>
       </aside>
     `;
     overlay.style.display = 'block';
 
-    // Tab 切换
+    // Tab 切换：私聊 tab（idx === privateTabIdx）异步拉 list；其他 tab 走 renderTurnBody
     const contentEl = overlay.querySelector('#mr-rt-tl-content');
+    const renderTurnOrPrivate = async (idx) => {
+      if (idx === privateTabIdx) {
+        let list = [];
+        try {
+          list = await ipcRenderer.invoke('roundtable-private:list', { meetingId: meeting.id, kind });
+        } catch (e) {
+          console.warn('[meeting-room] private list fetch failed:', e.message);
+        }
+        if (!Array.isArray(list) || list.length === 0) {
+          return '<div class="mr-rt-tl-empty">尚无与该 AI 的私聊。</div>';
+        }
+        return list.map(turn => {
+          const ans = (turn.by && turn.by[sid]) || turn.answer || '';
+          const userIn = turn.userInput || '';
+          const ts = turn.ts ? new Date(turn.ts).toLocaleString() : '';
+          return `<div class="mr-rt-tl-private-item">
+            <div class="mr-rt-tl-user">用户：${escapeHtml(userIn)}</div>
+            ${ans ? `<div class="mr-rt-tl-body">${_renderMarkdown(ans)}</div>` : ''}
+            <div class="mr-rt-tl-private-ts">${escapeHtml(ts)}</div>
+          </div>`;
+        }).join('');
+      }
+      return renderTurnBody(turnsWithAns[idx]);
+    };
+
     overlay.querySelectorAll('.mr-rt-tl-tab').forEach(btn => {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', async () => {
         overlay.querySelectorAll('.mr-rt-tl-tab').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         const idx = parseInt(btn.getAttribute('data-tab-idx') || '0', 10);
         if (contentEl) {
-          contentEl.innerHTML = renderTurnBody(turnsWithAns[idx]);
+          contentEl.innerHTML = '<div class="mr-rt-tl-loading">加载中…</div>';
+          contentEl.innerHTML = await renderTurnOrPrivate(idx);
           contentEl.scrollTop = 0;
         }
       });
