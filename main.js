@@ -1239,7 +1239,15 @@ ipcMain.handle('update-meeting-sync', (_e, { meetingId, fields }) => {
 ipcMain.handle('get-research-covenant-template', () => researchMode.COVENANT_TEMPLATE);
 
 // 通用圆桌：开关 + 公约写盘 + 私聊存储
+function _isValidMeetingId(id) {
+  // 仅允许 uuid 风格的字母数字+连字符；阻止任何路径分隔符或控制字符
+  return typeof id === 'string' && /^[a-zA-Z0-9_\-]+$/.test(id) && id.length > 0 && id.length < 256;
+}
+
 ipcMain.handle('toggle-roundtable-mode', (_e, { meetingId, enabled, covenant } = {}) => {
+  if (!_isValidMeetingId(meetingId)) {
+    return { ok: false, error: 'invalid meetingId' };
+  }
   const m = meetingManager.getMeeting(meetingId);
   if (!m) return { ok: false, error: 'meeting not found' };
   const fields = { roundtableMode: !!enabled };
@@ -1260,19 +1268,16 @@ ipcMain.handle('toggle-roundtable-mode', (_e, { meetingId, enabled, covenant } =
     } catch (e) {
       console.warn(`[toggle-roundtable] write prompt files failed: ${e.message}`);
     }
-  } else {
-    // 关闭模式时清理盘上 prompt/covenant/private 文件，避免下次开启被旧值复活
-    try {
-      generalRoundtableMode.cleanupGeneralRoundtableFiles(getHubDataDir(), meetingId);
-    } catch (e) {
-      console.warn(`[toggle-roundtable] cleanup files failed: ${e.message}`);
-    }
   }
+  // 注：关闭模式不清理文件——清理在 close-meeting 时统一执行（避免用户切换模式查看其他视图后丢失私聊历史）
   sendToRenderer('meeting-updated', { meeting: updated });
   return { ok: true, meeting: updated };
 });
 
 ipcMain.handle('roundtable-private:append', (_e, { meetingId, kind, userInput, response } = {}) => {
+  if (!_isValidMeetingId(meetingId)) {
+    return { ok: false, error: 'invalid meetingId' };
+  }
   try {
     generalRoundtablePrivateStore.appendPrivateTurn(getHubDataDir(), meetingId, kind, userInput, response);
     return { ok: true };
@@ -1282,6 +1287,9 @@ ipcMain.handle('roundtable-private:append', (_e, { meetingId, kind, userInput, r
 });
 
 ipcMain.handle('roundtable-private:list', (_e, { meetingId, kind } = {}) => {
+  if (!_isValidMeetingId(meetingId)) {
+    return kind ? [] : { claude: [], gemini: [], codex: [] };
+  }
   try {
     return generalRoundtablePrivateStore.listPrivateTurns(getHubDataDir(), meetingId, kind);
   } catch (e) {

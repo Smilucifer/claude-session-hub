@@ -467,7 +467,7 @@
           return '<div class="mr-rt-tl-empty">尚无与该 AI 的私聊。</div>';
         }
         return list.map(turn => {
-          const ans = (turn.by && turn.by[sid]) || turn.answer || '';
+          const ans = turn.response || '';
           const userIn = turn.userInput || '';
           const ts = turn.ts ? new Date(turn.ts).toLocaleString() : '';
           return `<div class="mr-rt-tl-private-item">
@@ -1692,9 +1692,6 @@
         if (failedKinds.length > 0) {
           console.warn(`[meeting-room] rt-private: partial resolution — sent to [${resolvedKinds.join(',')}], skipped [${failedKinds.join(',')}] (sessions not attached or dormant)`);
         }
-        try {
-          await ipcRenderer.invoke('meeting-append-user-turn', { meetingId: meeting.id, text });
-        } catch (e) { console.warn('[meeting-room] append-user-turn failed:', e.message); }
         // ---
         // 顺序与不变量备注：
         // 1) terminal-input 是 fire-and-forget（IPC send），私聊 store 是 best-effort async invoke
