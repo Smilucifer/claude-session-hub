@@ -565,9 +565,9 @@ class GeminiTap extends EventEmitter {
     if (isJsonl) {
       // Gemini 0.39+ JSONL: tail for lines with type:"gemini" and tokens.total
       const onLine = (obj) => {
-        if (obj?.type === 'gemini' && obj.tokens && obj.tokens.total != null) {
-          const content = typeof obj.content === 'string' ? obj.content : null;
-          if (content) emitIfComplete(content);
+        if (obj?.type === 'gemini' && obj.tokens && obj.tokens.total != null
+            && typeof obj.content === 'string' && obj.content.trim().length > 0) {
+          emitIfComplete(obj.content);
         }
       };
       const tail = new JsonlTail(sessionPath, onLine);

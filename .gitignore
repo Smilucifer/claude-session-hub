@@ -11,3 +11,11 @@ test-scroll-jump.js
 logo-preview.html
 PROJECT.html
 *.exe
+
+# Ad-hoc debug scripts and one-off captures (tests/ subdir convention: _ prefix = non-product)
+tests/_*.js
+tests/_*.html
+tests/_*.png
+
+# Per-meeting runtime artifacts (covenant snapshots, session state)
+.arena/

@@ -853,50 +853,22 @@ body.theme-light .minimap-tick:hover {
 }
 
 .prompt-line-marker {
-  position: absolute;
-  left: 0;
-  right: 12px;
-  border-left: 3px solid transparent;
-  border-image: linear-gradient(180deg, #58a6ff, #bc8cff, #ff7b72) 1;
-  background: linear-gradient(90deg, rgba(88, 166, 255, 0.20) 0%, transparent 70%);
-  box-shadow: inset 3px 0 12px -2px rgba(88, 166, 255, 0.25);
-  animation: neon-breathe 2.5s ease-in-out infinite alternate;
-  overflow: hidden;
-}
-.prompt-line-marker::after {
-  content: '';
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(90deg, #58a6ff, #bc8cff, #39d353, transparent);
-  background-size: 200% 100%;
-  animation: shimmer 3s linear infinite;
-}
-@keyframes neon-breathe {
-  0%   { box-shadow: inset 3px 0 12px -2px rgba(88, 166, 255, 0.15); }
-  100% { box-shadow: inset 3px 0 18px -2px rgba(88, 166, 255, 0.35); }
-}
-@keyframes shimmer {
-  0%   { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+  display: none;
 }
 
 .prompt-line-marker-active {
-  /* Reserved class slot — leave empty for future per-active styling. */
+  display: none;
 }
 
 body.theme-light .prompt-line-marker {
-  background: linear-gradient(90deg, rgba(9, 105, 218, 0.08) 0%, transparent 40%);
-  box-shadow: inset 3px 0 12px -2px rgba(9, 105, 218, 0.15);
+  display: none;
 }
 
 .prompt-highlight {
   position: absolute;
   left: 0;
   right: 12px;
-  background: rgba(88, 166, 255, 0.18);
+  background: rgba(210, 153, 34, 0.25);
   pointer-events: none;
   z-index: 4;
   display: none;
@@ -1816,30 +1788,16 @@ body.theme-light .prompt-nav-btn:active:not(:disabled) {
 
 /* --- Floating input bar (visible when scrolled away from bottom) --- */
 .floating-input-bar {
-  position: absolute;
-  bottom: 8px;
-  left: 8px;
-  right: 20px;
-  display: flex;
+  display: none;
   align-items: flex-end;
   gap: 8px;
-  padding: 10px 12px;
-  background: rgba(22, 27, 34, 0.95);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.3);
-  z-index: 10;
-  opacity: 0;
-  transform: translateY(8px);
-  pointer-events: none;
-  transition: opacity 0.2s ease, transform 0.2s ease;
+  padding: 8px 12px;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
 }
 .floating-input-bar.visible {
-  opacity: 1;
-  transform: translateY(0);
-  pointer-events: auto;
+  display: flex;
 }
 .floating-input-box {
   flex: 1;
@@ -1910,8 +1868,7 @@ body.theme-light .prompt-nav-btn:active:not(:disabled) {
 
 /* Light theme overrides for floating input */
 body.theme-light .floating-input-bar {
-  background: rgba(255, 255, 255, 0.95);
-  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.1);
+  background: var(--bg-secondary);
 }
 body.theme-light .floating-input-send {
   background: var(--accent-blue, #0969da);

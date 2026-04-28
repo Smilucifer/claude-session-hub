@@ -1287,12 +1287,7 @@ function mountMinimap(sessionId, termContainer, terminal) {
       let endLine = i;
       while (endLine + 1 < total) {
         const next = buf.getLine(endLine + 1);
-        if (!next) break;
-        if (next.isWrapped) { endLine++; continue; }
-        const nextText = next.translateToString(true);
-        if (!nextText || !nextText.trim()) break;
-        if (AI_MARKERS_RE.test(nextText)) break;
-        if (PROMPT_LINE_RE.test(nextText)) break;
+        if (!next || !next.isWrapped) break;
         endLine++;
       }
       found.push({ line: i, endLine, text: q });
@@ -1365,7 +1360,7 @@ function mountMinimap(sessionId, termContainer, terminal) {
     const ren = terminal._core._renderService;
     if (!ren || !ren.dimensions) return;
     const cellH = ren.dimensions.css.cell.height;
-    const viewY = buf.viewportY;
+    const viewY = isNaN(buf.viewportY) ? buf.baseY : buf.viewportY;
     const rows = terminal.rows;
     const markerFrag = document.createDocumentFragment();
     for (const t of ticks) {
@@ -1541,11 +1536,6 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   const bar = document.createElement('div');
   bar.className = 'floating-input-bar';
 
-  const scrollBtn = document.createElement('button');
-  scrollBtn.className = 'floating-scroll-btn';
-  scrollBtn.title = '滚动到底部 (Esc)';
-  scrollBtn.textContent = '↓';
-
   const inputBox = document.createElement('div');
   inputBox.className = 'floating-input-box';
   inputBox.contentEditable = 'true';
@@ -1556,22 +1546,12 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   sendBtn.title = '发送 (Enter)';
   sendBtn.textContent = '▶';
 
-  bar.append(scrollBtn, inputBox, sendBtn);
-  termContainer.appendChild(bar);
+  bar.append(inputBox, sendBtn);
+  bar.classList.add('visible');
 
-  function isAtBottom() {
-    const vp = termContainer.querySelector('.xterm-viewport');
-    if (vp && vp.scrollHeight > vp.clientHeight) {
-      return vp.scrollTop + vp.clientHeight >= vp.scrollHeight - 5;
-    }
-    const buf = terminal.buffer.active;
-    if (isNaN(buf.viewportY) || isNaN(buf.baseY)) return true;
-    return buf.viewportY >= buf.baseY;
-  }
-
-  function updateVisibility() {
-    bar.classList.toggle('visible', !isAtBottom());
-  }
+  const panel = termContainer.closest('.terminal-panel');
+  if (panel) panel.appendChild(bar);
+  else termContainer.appendChild(bar);
 
   function sendInput() {
     const text = inputBox.innerText;
@@ -1582,26 +1562,6 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     terminal.focus();
   }
 
-  function scrollToBottom() {
-    terminal.scrollToBottom();
-    const vp = termContainer.querySelector('.xterm-viewport');
-    if (vp) vp.scrollTop = vp.scrollHeight;
-    terminal.focus();
-  }
-
-  let vp = termContainer.querySelector('.xterm-viewport');
-  const onVpScroll = () => updateVisibility();
-  if (vp) vp.addEventListener('scroll', onVpScroll, { passive: true });
-
-  const scrollSub = terminal.onScroll(() => updateVisibility());
-  const renderSub = terminal.onRender(() => {
-    if (!vp) {
-      vp = termContainer.querySelector('.xterm-viewport');
-      if (vp) vp.addEventListener('scroll', onVpScroll, { passive: true });
-    }
-    updateVisibility();
-  });
-
   inputBox.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -1610,7 +1570,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     }
     if (e.key === 'Escape') {
       e.preventDefault();
-      scrollToBottom();
+      terminal.focus();
     }
   });
 
@@ -1619,22 +1579,11 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     sendInput();
   });
 
-  scrollBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    scrollToBottom();
-  });
-
   bar.addEventListener('click', (e) => e.stopPropagation());
   bar.addEventListener('mousedown', (e) => e.stopPropagation());
 
-  updateVisibility();
-
   return {
-    updateVisibility,
     dispose() {
-      if (vp) vp.removeEventListener('scroll', onVpScroll);
-      scrollSub.dispose();
-      renderSub.dispose();
       if (bar.parentNode) bar.parentNode.removeChild(bar);
     },
   };
@@ -1835,6 +1784,17 @@ function closeResumeModal() {
 const createMeetingModalEl = document.getElementById('create-meeting-modal');
 const createMeetingConfirmEl = document.getElementById('create-meeting-confirm');
 
+let _researchCovenantTemplateCache = null;
+async function _ensureResearchCovenantTemplate() {
+  if (_researchCovenantTemplateCache != null) return _researchCovenantTemplateCache;
+  try {
+    _researchCovenantTemplateCache = await ipcRenderer.invoke('get-research-covenant-template');
+  } catch (e) {
+    _researchCovenantTemplateCache = '';
+  }
+  return _researchCovenantTemplateCache;
+}
+
 function openCreateMeetingModal() {
   createMeetingModalEl.style.display = 'flex';
   createMeetingConfirmEl.disabled = false;
@@ -1842,6 +1802,14 @@ function openCreateMeetingModal() {
   for (const cb of document.querySelectorAll('.create-meeting-cb')) cb.checked = true;
   const driverRadio = document.querySelector('input[name="meeting-mode"][value="driver"]');
   if (driverRadio) driverRadio.checked = true;
+  // 预填投研公约模板（首次拉取，之后缓存）
+  _ensureResearchCovenantTemplate().then((tpl) => {
+    const ta = document.getElementById('create-meeting-covenant-text');
+    if (ta && (!ta.value || ta.dataset.fromTemplate === '1')) {
+      ta.value = tpl || '';
+      ta.dataset.fromTemplate = '1';
+    }
+  });
   _syncMeetingModeUI();
 }
 
@@ -1855,7 +1823,9 @@ async function submitCreateMeeting() {
   if (kinds.length === 0) return;
 
   const modeRadio = document.querySelector('input[name="meeting-mode"]:checked');
-  const isDriverMode = modeRadio && modeRadio.value === 'driver';
+  const meetingMode = modeRadio ? modeRadio.value : 'driver';
+  const isDriverMode = meetingMode === 'driver';
+  const isResearchMode = meetingMode === 'research';
 
   createMeetingConfirmEl.disabled = true;
   createMeetingConfirmEl.textContent = '创建中...';
@@ -1871,6 +1841,15 @@ async function submitCreateMeeting() {
     if (isDriverMode) {
       await ipcRenderer.invoke('update-meeting-sync', { meetingId: meeting.id, fields: { driverMode: true } });
       meeting.driverMode = true;
+    } else if (isResearchMode) {
+      const ta = document.getElementById('create-meeting-covenant-text');
+      const covenantText = ta ? (ta.value || '') : '';
+      await ipcRenderer.invoke('update-meeting-sync', {
+        meetingId: meeting.id,
+        fields: { researchMode: true, covenantText },
+      });
+      meeting.researchMode = true;
+      meeting.covenantText = covenantText;
     }
     meetings[meeting.id] = meeting;
 
@@ -1915,17 +1894,69 @@ for (const radio of document.querySelectorAll('input[name="meeting-mode"]')) {
 
 function _syncMeetingModeUI() {
   const isDriver = document.querySelector('input[name="meeting-mode"][value="driver"]')?.checked;
+  const isResearch = document.querySelector('input[name="meeting-mode"][value="research"]')?.checked;
   const claudeCb = document.querySelector('.create-meeting-cb[data-kind="claude"]');
+  const geminiCb = document.querySelector('.create-meeting-cb[data-kind="gemini"]');
+  const codexCb = document.querySelector('.create-meeting-cb[data-kind="codex"]');
   const desc = document.getElementById('meeting-mode-desc');
-  if (isDriver && claudeCb) {
-    claudeCb.checked = true;
-    claudeCb.disabled = true;
-  } else if (claudeCb) {
-    claudeCb.disabled = false;
+  const covenantBox = document.getElementById('create-meeting-covenant');
+
+  // 先重置所有 checkbox 为可选（避免切换 mode 后 disable 状态残留）
+  for (const cb of document.querySelectorAll('.create-meeting-cb')) cb.disabled = false;
+
+  if (isDriver) {
+    // 主驾模式强制 Claude（Gemini/Codex 副驾可选）
+    if (claudeCb) { claudeCb.checked = true; claudeCb.disabled = true; }
+  } else if (isResearch) {
+    // 投研圆桌：三家平等强制全员（disable 防止用户取消）
+    if (claudeCb) { claudeCb.checked = true; claudeCb.disabled = true; }
+    if (geminiCb) { geminiCb.checked = true; geminiCb.disabled = true; }
+    if (codexCb) { codexCb.checked = true; codexCb.disabled = true; }
   }
+  // free 模式：所有可选（已被前面重置）
+
+  // mode 描述文案
   if (desc) {
-    desc.style.display = isDriver ? 'block' : 'none';
+    if (isDriver) {
+      desc.textContent = 'Claude 主驾执行，Gemini/Codex 仅审查副驾';
+      desc.style.display = 'block';
+    } else if (isResearch) {
+      desc.textContent = '三家平等本色辩论；自动注入投资公约 + 数据接入工具';
+      desc.style.display = 'block';
+    } else {
+      desc.style.display = 'none';
+    }
   }
+  // covenant 编辑器仅在投研圆桌模式显示
+  if (covenantBox) {
+    covenantBox.style.display = isResearch ? 'block' : 'none';
+  }
+}
+
+// covenant 重置默认按钮 + textarea input listener
+function _initCovenantUIListeners() {
+  const resetBtn = document.getElementById('create-meeting-covenant-reset');
+  if (resetBtn) {
+    resetBtn.addEventListener('click', async () => {
+      const tpl = await _ensureResearchCovenantTemplate();
+      const ta = document.getElementById('create-meeting-covenant-text');
+      if (ta) {
+        ta.value = tpl || '';
+        ta.dataset.fromTemplate = '1';
+      }
+    });
+  }
+  // 用户改过 textarea 后清掉 fromTemplate 标记，避免下次打开 modal 被覆盖
+  const ta = document.getElementById('create-meeting-covenant-text');
+  if (ta) {
+    ta.addEventListener('input', () => { ta.dataset.fromTemplate = '0'; });
+  }
+}
+// readyState 兜底：renderer.js 加载时 DOM 可能已 ready，DOMContentLoaded 不会再触发
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', _initCovenantUIListeners);
+} else {
+  _initCovenantUIListeners();
 }
 
 // --- Create Team Room modal ---
@@ -2751,12 +2782,6 @@ function onTerminalOutput(sessionId, dataLen) {
     const wasRunning = session.status === 'running';
     if (wasRunning) session.status = 'idle';
 
-    const _fc = terminalCache.get(sessionId);
-    if (_fc) {
-      flushFoldState(sessionId, _fc.terminal);
-      if (foldToolBlocks) createFoldDecorations(sessionId);
-    }
-
     readTerminalPreview(sessionId);
 
     // Semantic signal: unread/time bump only when the last-question signature
@@ -2797,228 +2822,9 @@ const CODEX_PLACEHOLDER_RE = new RegExp(
   `[›> ]*${_A}I?m?prove${_A}\\s?${_A}documentation${_A}\\s?${_A}in${_A}\\s?${_A}@[^\\s]*`, 'g'
 );
 
-// --- Tool block folding (Claude sessions only) ---
-const foldStates = new Map();
-let foldToolBlocks = true;
-const sessionFoldStore = new Map();
-const foldDecoStates = new Map();
-const foldTimers = new Map();
-
-function stripAnsiCodes(str) {
-  return str.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
-}
-
-function processForFolding(sessionId, data) {
-  if (!foldToolBlocks) return data;
-  let state = foldStates.get(sessionId);
-  if (!state) {
-    state = { partial: '', folding: false, foldedCount: 0, foldedLines: [] };
-    foldStates.set(sessionId, state);
-  }
-
-  const combined = state.partial + data;
-  const lastNL = combined.lastIndexOf('\n');
-
-  if (lastNL === -1) {
-    if (state.folding || stripAnsiCodes(combined).includes('●')) {
-      state.partial = combined;
-      return '';
-    }
-    state.partial = '';
-    return combined;
-  }
-
-  const complete = combined.substring(0, lastNL + 1);
-  state.partial = combined.substring(lastNL + 1);
-
-  let output = '';
-  const lines = complete.split('\n');
-  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
-
-  if (!sessionFoldStore.has(sessionId)) sessionFoldStore.set(sessionId, []);
-  const store = sessionFoldStore.get(sessionId);
-
-  for (const line of lines) {
-    const plain = stripAnsiCodes(line).replace(/\r/g, '');
-    const hasBullet = plain.includes('●');
-    const isToolBullet = hasBullet && /●\s*\S+\(/.test(plain);
-
-    if (isToolBullet) {
-      if (state.folding && state.foldedCount > 0) {
-        store.push(state.foldedLines.join('\n'));
-        output += `\x1b[2m    ⋯ ${state.foldedCount} lines\x1b[0m\r\n`;
-      }
-      state.folding = true;
-      state.foldedCount = 0;
-      state.foldedLines = [];
-      output += line + '\n';
-    } else if (hasBullet || /❯/.test(plain)) {
-      if (state.folding && state.foldedCount > 0) {
-        store.push(state.foldedLines.join('\n'));
-        output += `\x1b[2m    ⋯ ${state.foldedCount} lines\x1b[0m\r\n`;
-      }
-      state.folding = false;
-      state.foldedCount = 0;
-      state.foldedLines = [];
-      output += line + '\n';
-    } else if (state.folding) {
-      state.foldedCount++;
-      state.foldedLines.push(line);
-    } else {
-      output += line + '\n';
-    }
-  }
-
-  return output;
-}
-
-function flushFoldState(sessionId, terminal) {
-  const state = foldStates.get(sessionId);
-  if (!state) return;
-  let output = '';
-  if (state.folding && state.foldedCount > 0) {
-    if (!sessionFoldStore.has(sessionId)) sessionFoldStore.set(sessionId, []);
-    sessionFoldStore.get(sessionId).push(state.foldedLines.join('\n'));
-    output += `\x1b[2m    ⋯ ${state.foldedCount} lines\x1b[0m\r\n`;
-  }
-  if (state.partial && !state.folding) {
-    output += state.partial;
-  }
-  state.partial = '';
-  state.folding = false;
-  state.foldedCount = 0;
-  state.foldedLines = [];
-  if (output && terminal) terminal.write(output);
-}
-
-// Scan buffer for fold indicators & text bullets, create decorations
-function createFoldDecorations(sessionId) {
-  const cached = terminalCache.get(sessionId);
-  if (!cached || !cached.terminal) return;
-  const terminal = cached.terminal;
-  const buf = terminal.buffer.active;
-  const store = sessionFoldStore.get(sessionId) || [];
-
-  let ds = foldDecoStates.get(sessionId);
-  if (!ds) { ds = { lastLine: 0, foldIdx: 0, decos: [] }; foldDecoStates.set(sessionId, ds); }
-
-  const cursorAbs = buf.baseY + buf.cursorY;
-
-  for (let y = ds.lastLine; y < buf.length; y++) {
-    const line = buf.getLine(y);
-    if (!line) continue;
-    let text = '';
-    for (let x = 0; x < line.length; x++) {
-      const c = line.getCell(x);
-      if (c) text += c.getChars();
-    }
-    const trimmed = text.trim();
-
-    if (/⋯\s*\d+\s*lines/.test(trimmed) && ds.foldIdx < store.length) {
-      const content = store[ds.foldIdx++];
-      const marker = terminal.registerMarker(y - cursorAbs);
-      if (!marker) continue;
-      const deco = terminal.registerDecoration({ marker, anchor: 'left', width: terminal.cols, height: 1, layer: 'top' });
-      if (deco) {
-        deco.onRender(el => {
-          if (el.dataset.init) return;
-          el.dataset.init = '1';
-          el.className = 'fold-indicator-deco';
-          el.textContent = trimmed;
-          el.addEventListener('click', (e) => {
-            e.stopPropagation();
-            showFoldPopup(content, el.getBoundingClientRect(), sessionId);
-          });
-        });
-        ds.decos.push(deco);
-      }
-    } else if (trimmed.includes('●') && !/●\s*\S+\(/.test(trimmed)) {
-      // Text bullet — add highlight accent
-      let blockHeight = 1;
-      for (let yy = y + 1; yy < buf.length; yy++) {
-        const nl = buf.getLine(yy);
-        if (!nl) break;
-        let nt = '';
-        for (let x = 0; x < nl.length; x++) { const c = nl.getCell(x); if (c) nt += c.getChars(); }
-        if (nt.trim() === '' || nt.includes('●') || /❯/.test(nt)) break;
-        blockHeight++;
-      }
-      const marker = terminal.registerMarker(y - cursorAbs);
-      if (!marker) continue;
-      const deco = terminal.registerDecoration({ marker, anchor: 'left', height: blockHeight, layer: 'bottom' });
-      if (deco) {
-        deco.onRender(el => {
-          if (el.dataset.init) return;
-          el.dataset.init = '1';
-          el.className = 'fold-text-highlight';
-        });
-        ds.decos.push(deco);
-      }
-    }
-  }
-  if (ds.foldIdx >= store.length) {
-    ds.lastLine = buf.length;
-  }
-}
-
-function disposeFoldDecorations(sessionId) {
-  const ds = foldDecoStates.get(sessionId);
-  if (!ds) return;
-  for (const d of ds.decos) try { d.dispose(); } catch {}
-  ds.decos = [];
-  ds.lastLine = 0;
-  ds.foldIdx = 0;
-}
-
-// Fold popup
-const foldPopupEl = document.createElement('div');
-foldPopupEl.id = 'fold-popup';
-foldPopupEl.className = 'fold-popup';
-foldPopupEl.style.display = 'none';
-foldPopupEl.innerHTML = '<div class="fold-popup-header"><span class="fold-popup-title">Folded content</span><button class="fold-popup-close">✕</button></div><pre class="fold-popup-body"></pre>';
-document.body.appendChild(foldPopupEl);
-foldPopupEl.querySelector('.fold-popup-close').addEventListener('click', () => { foldPopupEl.style.display = 'none'; });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && foldPopupEl.style.display !== 'none') foldPopupEl.style.display = 'none'; });
-
-function showFoldPopup(content, anchorRect, sessionId) {
-  const body = foldPopupEl.querySelector('.fold-popup-body');
-  const cleaned = stripAnsiCodes(content);
-  body.textContent = cleaned;
-  foldPopupEl.style.display = 'flex';
-  const popH = Math.min(400, cleaned.split('\n').length * 18 + 50);
-  foldPopupEl.style.height = popH + 'px';
-  let top = anchorRect.bottom + 4;
-  if (top + popH > window.innerHeight) top = anchorRect.top - popH - 4;
-  foldPopupEl.style.top = Math.max(4, top) + 'px';
-  foldPopupEl.style.left = Math.max(4, anchorRect.left) + 'px';
-  foldPopupEl.style.maxWidth = (window.innerWidth - anchorRect.left - 20) + 'px';
-}
-
-// Global fold toggle
-function toggleFoldMode() {
-  foldToolBlocks = !foldToolBlocks;
-  const btn = document.getElementById('btn-fold-toggle');
-  if (btn) {
-    btn.textContent = foldToolBlocks ? '⋯' : '≡';
-    btn.title = foldToolBlocks ? '折叠模式 (点击切换为原始模式)' : '原始模式 (点击切换为折叠模式)';
-    btn.classList.toggle('active', foldToolBlocks);
-  }
-  if (!foldToolBlocks) {
-    for (const [sid] of foldDecoStates) disposeFoldDecorations(sid);
-  }
-}
-
-// Create fold toggle button dynamically (static HTML gets replaced by terminal setup)
-(function createFoldToggleBtn() {
-  const btn = document.createElement('button');
-  btn.id = 'btn-fold-toggle';
-  btn.className = 'btn-fold-toggle active';
-  btn.title = '折叠模式 (点击切换为原始模式)';
-  btn.textContent = '⋯';
-  btn.addEventListener('click', toggleFoldMode);
-  const tp = document.getElementById('terminal-panel');
-  if (tp) tp.appendChild(btn);
-})();
+// Tool block folding 已废弃（2026-04-28）：之前 Claude session 的 ● tool 块下方
+// 非 tool 行被改写成 "⋯ N lines" + xterm decoration 弹窗，长会话 buffer 滚动 +
+// Codex/Gemini 路径不一致会渲染叠字错位。所有 kind 的 terminal-data 现在统一直写。
 
 ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
   const cached = terminalCache.get(sessionId);
@@ -3035,16 +2841,6 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
     _cursorDebounce.set(sessionId, setTimeout(() => {
       cached.terminal.write('\x1b[?25h');
     }, 150));
-  } else if (!sess || sess.kind === 'claude' || sess.kind === 'claude-resume' || !sess.kind) {
-    const processed = processForFolding(sessionId, data);
-    if (processed) cached.terminal.write(processed);
-    if (foldToolBlocks) {
-      if (foldTimers.has(sessionId)) clearTimeout(foldTimers.get(sessionId));
-      foldTimers.set(sessionId, setTimeout(() => {
-        foldTimers.delete(sessionId);
-        createFoldDecorations(sessionId);
-      }, 300));
-    }
   } else {
     cached.terminal.write(data);
   }

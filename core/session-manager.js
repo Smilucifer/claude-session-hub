@@ -289,7 +289,16 @@ class SessionManager extends EventEmitter {
         // Level 2 degradation: no sid recorded → use --last
         cmd = ' codex resume --last --full-auto';
       } else {
-        cmd = ' codex --full-auto --model gpt-5.5';
+        // Research mode：完全 bypass approvals + sandbox（含 MCP 工具调用、shell 命令、文件写）
+        // 避免任何 "Allow ... ?" 弹窗阻塞投研讨论流程；
+        // 安全约束完全靠 prompt/covenant 软约束（已强化"不要改代码 / 不要 git / 不要删除"）
+        if (opts.codexBypassApprovals) {
+          cmd = ' codex --dangerously-bypass-approvals-and-sandbox --model gpt-5.5';
+        } else {
+          cmd = ' codex --full-auto --model gpt-5.5';
+        }
+        // 注：曾尝试 --no-alt-screen 改善观感，实测无明显改善 + Enter 提交失效 → 撤回。
+        // 渲染观感问题改由"持久化圆桌面板"（直接展示干净回答预览）绕过。
         if (opts.codexInstructionFile) {
           cmd += ` -c "model_instructions_file=${opts.codexInstructionFile.replace(/\\/g, '\\\\')}"`;
         }

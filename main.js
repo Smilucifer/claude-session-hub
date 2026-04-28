@@ -16,9 +16,12 @@ const meetingStore = require('./core/meeting-store.js');
 const { SummaryEngine } = require('./core/summary-engine');
 const summaryEngine = new SummaryEngine();
 const { TranscriptTap } = require('./core/transcript-tap');
+const { createUsageFilter } = require('./core/usage-filter.js');
 const transcriptTap = new TranscriptTap();
 const { DeepSummaryService } = require('./core/deep-summary-service.js');
 const driverMode = require('./core/driver-mode.js');
+const researchMode = require('./core/research-mode.js');
+const lindangBridge = require('./core/lindang-bridge.js');
 const { GeminiCliProvider } = require('./core/summary-providers/gemini-cli.js');
 const { DeepSeekProvider } = require('./core/summary-providers/deepseek-api.js');
 const { loadConfig: loadDeepSummaryConfig } = require('./core/deep-summary-config.js');
@@ -459,6 +462,38 @@ ipcMain.handle('add-meeting-sub', (_e, { meetingId, kind, opts }) => {
     } else if (kind === 'codex') {
       sessionOpts.codexInstructionFile = driverMode.writeCopilotPromptFile(hubDataDir, meetingId, 'codex');
     }
+  } else if (meeting && meeting.researchMode) {
+    // 投研圆桌模式：三家平等注入同一份 system prompt（rules + 用户公约合成）。
+    // Sprint 1 范围：仅 prompt 文件注入。MCP 工具集 / 轮次状态机在后续 Sprint。
+    const hubDataDir = getHubDataDir();
+    // 用 ?? 而非 || ：仅 null/undefined 时回退 snapshot；空字符串视为用户刻意清空，保留
+    const covenantText = (typeof meeting.covenantText === 'string')
+      ? meeting.covenantText
+      : researchMode.readCovenantSnapshot(hubDataDir, meetingId);
+    // 持久化非空 covenant 到 snapshot，resume 时可还原（空字符串不写 snapshot 文件）
+    if (covenantText && covenantText.trim().length > 0) {
+      researchMode.writeCovenantSnapshot(hubDataDir, meetingId, covenantText);
+    }
+    const promptFile = researchMode.writeResearchPromptFile(hubDataDir, meetingId, covenantText);
+    if (kind === 'claude') {
+      sessionOpts.appendSystemPromptFile = promptFile;
+      // Sprint 3：注入 MCP config（fetch_lindang_stock 等 3 工具）
+      if (hookPort) {
+        sessionOpts.mcpConfigFile = researchMode.writeResearchMcpConfig(hubDataDir, meetingId, hookPort, HOOK_TOKEN, 'claude');
+      } else {
+        console.warn('[hub] research-mode Claude in meeting ' + meetingId + ' but hookPort unavailable — MCP tools unavailable, fallback to LinDangAgent Bash + WebFetch');
+      }
+    } else if (kind === 'gemini') {
+      sessionOpts.extraEnv = { GEMINI_SYSTEM_MD: promptFile };
+      // Gemini MCP 注入留 TODO（gemini mcp add 全局污染路径，Sprint 3.7 处理）
+    } else if (kind === 'codex') {
+      sessionOpts.codexInstructionFile = promptFile;
+      sessionOpts.codexBypassApprovals = true;
+      // Sprint 3：通过 -c "mcp_servers.X.*" 临时注入 MCP（不污染全局 ~/.codex/config.toml）
+      if (hookPort) {
+        sessionOpts.codexMcpEntries = [researchMode.buildResearchMcpEntryForCodex(meetingId, hookPort, HOOK_TOKEN)];
+      }
+    }
   }
 
   const session = sessionManager.createSession(kind, sessionOpts);
@@ -494,6 +529,7 @@ ipcMain.handle('close-meeting', (_e, meetingId) => {
     sessionManager.closeSession(sid);
   }
   driverMode.cleanupPromptFiles(getHubDataDir(), meetingId);
+  researchMode.cleanupResearchFiles(getHubDataDir(), meetingId);
   sendToRenderer('meeting-closed', { meetingId });
   return true;
 });
@@ -647,6 +683,258 @@ async function executeReview(meetingId, { userText, triggerType }) {
     _reviewInProgress = false;
   }
 }
+
+// =====================================================================
+// Roundtable Mode (Sprint 2): fanout / debate / summary 三种轮次
+// =====================================================================
+const roundtable = require('./core/roundtable-orchestrator.js');
+let _roundtableInProgress = new Set(); // 同会议室单一并发：set of meetingId
+
+const _RT_READY_MARKERS = {
+  // Claude 启动 buffer 含大量 ANSI/box 字符，文本匹配易失败 → 空 markers 走 buffer 长度兜底
+  claude: [],
+  gemini: ['Type your message', 'YOLO', 'gemini-'],
+  codex: ['gpt-5.5', 'gpt-5.4', 'Context 100%', 'send'],
+};
+
+// timeout 提到 60s 兜底（Claude Opus 1M 启动 + 配置加载在慢机可能 30s+）
+async function _rtWaitCliReady(sid, kind, maxMs = 60000) {
+  const need = _RT_READY_MARKERS[kind] || [];
+  const start = Date.now();
+  while (Date.now() - start < maxMs) {
+    const buf = sessionManager.getSessionBuffer(sid) || '';
+    // 空 markers：buffer 至少 1500 字符就认为启动完成（启动屏 + 提示符通常 >2KB）
+    if (need.length === 0) { if (buf.length >= 1500) return true; }
+    else if (need.some(m => buf.includes(m))) return true;
+    await new Promise(r => setTimeout(r, 300));
+  }
+  return false;
+}
+
+// 发送 prompt 到 PTY 并发回车
+// 保护机制：markers 出现 ≠ 真接受输入（Gemini OAuth init / Codex 启动 init phase 仍在跑）
+// → markers ready 后额外加 stabilize 缓冲，确保 prompt 不被吞
+async function _rtSendToPty(sid, prompt, kind) {
+  if (kind === 'claude') {
+    // Claude TUI 用 alt-screen，buffer 抓取不可靠 → fire-and-forget 8s 初始化
+    await new Promise(r => setTimeout(r, 8000));
+  } else if (kind === 'gemini') {
+    // Gemini markers 出现快但 OAuth/auth init 慢 → markers 后再等 8s 稳定期
+    const ready = await _rtWaitCliReady(sid, kind, 60000);
+    if (!ready) return false;
+    await new Promise(r => setTimeout(r, 8000));
+  } else if (kind === 'codex') {
+    // Codex 启动 init phase 也需缓冲（含 MCP server spawn）
+    const ready = await _rtWaitCliReady(sid, kind, 60000);
+    if (!ready) return false;
+    await new Promise(r => setTimeout(r, 5000));
+  } else {
+    const ready = await _rtWaitCliReady(sid, kind, 60000);
+    if (!ready) return false;
+  }
+  sessionManager.writeToSession(sid, prompt);
+  const baseDelay = kind === 'codex' ? 500 : 250;
+  const sizeDelay = Math.min(Math.floor(prompt.length / 100) * 10, 500);
+  await new Promise(r => setTimeout(r, baseDelay + sizeDelay));
+  sessionManager.writeToSession(sid, '\r');
+  return true;
+}
+
+// 等待指定 sid 的 turn-complete 事件，返回 { sid, status, text }
+// onPartial 回调（如提供）：单家完成时立即调用，让面板单卡片刷新（不必等 Promise.all）
+function _rtWaitTurnComplete(sid, label, watchdogMs, onPartial) {
+  return new Promise(resolve => {
+    let settled = false;
+    const handler = (ev) => {
+      if (ev.hubSessionId !== sid || settled) return;
+      settled = true;
+      transcriptTap.removeListener('turn-complete', handler);
+      clearTimeout(watchdog);
+      const result = { sid, label, status: 'completed', text: ev.text || '' };
+      if (typeof onPartial === 'function') {
+        try { onPartial(result); } catch (e) { console.warn('[roundtable] onPartial error:', e.message); }
+      }
+      resolve(result);
+    };
+    transcriptTap.on('turn-complete', handler);
+    const watchdog = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      transcriptTap.removeListener('turn-complete', handler);
+      const result = { sid, label, status: 'timeout', text: '' };
+      if (typeof onPartial === 'function') {
+        try { onPartial(result); } catch {}
+      }
+      resolve(result);
+    }, watchdogMs);
+  });
+}
+
+// 主调度：mode = 'fanout' | 'debate' | 'summary'
+// userInput: 用户输入（fanout 是问题，debate 是补充，summary 可空）
+// summarizerKind: 仅 summary 用，'claude' / 'gemini' / 'codex'
+async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKind }) {
+  if (_roundtableInProgress.has(meetingId)) {
+    return { status: 'busy', turnNum: null };
+  }
+  _roundtableInProgress.add(meetingId);
+  try {
+    const meeting = meetingManager.getMeeting(meetingId);
+    if (!meeting || !meeting.researchMode) {
+      return { status: 'error', reason: 'not research mode', turnNum: null };
+    }
+
+    // 收集三家活跃 sid + kind 映射
+    const subs = (meeting.subSessions || [])
+      .map(sid => {
+        const s = sessionManager.getSession(sid);
+        return s && s.status !== 'dormant' ? { sid, kind: s.kind, label: s.title || s.kind || 'AI' } : null;
+      })
+      .filter(Boolean);
+    if (subs.length === 0) return { status: 'no_subs', turnNum: null };
+
+    const labelMap = new Map(subs.map(x => [x.sid, x.label]));
+    const sidLabelFn = (sid) => labelMap.get(sid) || 'AI';
+    const sidByKind = (kind) => subs.find(x => x.kind === kind)?.sid;
+
+    const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId);
+
+    // 决定本轮的目标 sid 集合 + 拼 per-sid prompt
+    const targets = []; // [{ sid, kind, label, prompt }]
+    let turnNum;
+
+    if (mode === 'fanout') {
+      turnNum = orch.beginTurn('fanout');
+      const prompt = orch.buildFanoutPrompt(turnNum, userInput, null);
+      for (const x of subs) targets.push({ ...x, prompt });
+    } else if (mode === 'debate') {
+      const last = orch.getLastTurn();
+      if (!last) {
+        orch.rollbackTurn(orch.state.currentTurn + 1); // 没启动也无所谓
+        return { status: 'error', reason: '没有上一轮可中转，请先用 fanout 提问', turnNum: null };
+      }
+      turnNum = orch.beginTurn('debate');
+      for (const x of subs) {
+        const prompt = orch.buildDebatePrompt(turnNum, userInput, last, x.sid, sidLabelFn);
+        targets.push({ ...x, prompt });
+      }
+    } else if (mode === 'summary') {
+      const targetSid = summarizerKind ? sidByKind(summarizerKind) : null;
+      if (!targetSid) {
+        return { status: 'error', reason: `summarizer ${summarizerKind} 不在会议室或未活跃`, turnNum: null };
+      }
+      turnNum = orch.beginTurn('summary');
+      orch.state.currentSummarizerKind = summarizerKind;
+      orch._saveState();
+      sendToRenderer('roundtable-state-update', { meetingId });
+      const target = subs.find(x => x.sid === targetSid);
+      const prompt = orch.buildSummaryPrompt(turnNum, target.sid, sidLabelFn);
+      targets.push({ ...target, prompt });
+    } else {
+      return { status: 'error', reason: 'unknown mode', turnNum: null };
+    }
+
+    // 并行发送到所有目标 PTY
+    const sentTargets = [];
+    await Promise.all(targets.map(async (t) => {
+      const ok = await _rtSendToPty(t.sid, t.prompt, t.kind);
+      if (ok) {
+        sentTargets.push(t);
+        console.log(`[roundtable] turn ${turnNum} ${mode} sent to ${t.kind}(${t.sid.slice(0,8)})`);
+      } else {
+        console.log(`[roundtable] turn ${turnNum} ${mode} skip ${t.kind}(${t.sid.slice(0,8)}): not ready`);
+      }
+    }));
+    if (sentTargets.length === 0) {
+      orch.rollbackTurn(turnNum);
+      return { status: 'no_sent', turnNum };
+    }
+
+    // 等所有 sent 的 turn-complete；单家完成立即推 partial-update 给 renderer 单卡片刷新
+    console.log(`[roundtable] turn ${turnNum} waiting for ${sentTargets.length} turn-complete`);
+    const results = await Promise.all(sentTargets.map(t =>
+      _rtWaitTurnComplete(t.sid, t.label, roundtable.TURN_WATCHDOG_MS, (partial) => {
+        console.log(`[roundtable] turn ${turnNum} partial: ${partial.label} ${partial.status} (${partial.text.length} chars)`);
+        sendToRenderer('roundtable-partial-update', {
+          meetingId, turnNum, mode,
+          sid: partial.sid, label: partial.label,
+          status: partial.status, text: partial.text,
+        });
+      })
+    ));
+
+    // 持久化轮记录
+    const byMap = {};
+    for (const r of results) byMap[r.sid] = r.text || '';
+    const meta = {};
+    if (mode === 'summary') {
+      meta.summarizer = summarizerKind;
+      meta.summarizerSid = sentTargets[0]?.sid || null;
+      const title = roundtable.extractDecisionTitle(results[0]?.text || '');
+      if (title) meta.decisionTitle = title;
+    }
+    orch.completeTurn(turnNum, mode, userInput || '', byMap, meta);
+
+    // E2 选项：summary 后写决策档案到 .arena/sessions/<datetime>-<title>.md
+    if (mode === 'summary') {
+      try {
+        const claudeSid = sidByKind('claude');
+        const claudeSession = claudeSid ? sessionManager.getSession(claudeSid) : null;
+        const projectCwd = claudeSession ? claudeSession.cwd : null;
+        if (projectCwd) {
+          const sessionsDir = path.join(projectCwd, '.arena', 'sessions');
+          fs.mkdirSync(sessionsDir, { recursive: true });
+          const ts = new Date();
+          const stamp = `${ts.getFullYear()}-${String(ts.getMonth()+1).padStart(2,'0')}-${String(ts.getDate()).padStart(2,'0')}-${String(ts.getHours()).padStart(2,'0')}${String(ts.getMinutes()).padStart(2,'0')}`;
+          const titleSlug = (meta.decisionTitle || `session-${turnNum}`).replace(/[\\/:*?"<>|]/g, '_').slice(0, 60);
+          const fileName = `${stamp}-${titleSlug}.md`;
+          const lines = [
+            `# 投研圆桌决策档案`,
+            `- 标题：${meta.decisionTitle || '(未提供)'}`,
+            `- 总结人：${meta.summarizer || 'unknown'}`,
+            `- 完成时间：${ts.toLocaleString('zh-CN')}`,
+            `- 会议室：${meetingId}`,
+            `- 历史轮数：${orch.state.turns.length}`,
+            '',
+            `## 最终意见（${meta.summarizer}）`,
+            '',
+            results[0]?.text || '(无输出)',
+            '',
+            `## 全部历史轮次`,
+            '',
+          ];
+          for (const t of orch.state.turns) {
+            lines.push(`### 第 ${t.n} 轮 · ${t.mode}`);
+            if (t.userInput) lines.push(`**用户输入**：${t.userInput}`);
+            for (const [sid, text] of Object.entries(t.by || {})) {
+              lines.push('', `#### ${sidLabelFn(sid)}`, text || '(无输出)');
+            }
+            lines.push('');
+          }
+          fs.writeFileSync(path.join(sessionsDir, fileName), lines.join('\n'), 'utf-8');
+          console.log(`[roundtable] decision archived: ${fileName}`);
+          meta.archivedTo = fileName;
+        }
+      } catch (e) {
+        console.warn('[roundtable] archive failed:', e.message);
+      }
+    }
+
+    sendToRenderer('roundtable-turn-complete', { meetingId, turnNum, mode, results, meta });
+    return { status: 'completed', turnNum, results, meta };
+  } finally {
+    _roundtableInProgress.delete(meetingId);
+  }
+}
+
+ipcMain.handle('roundtable:turn', async (_e, args) => {
+  return await dispatchRoundtableTurn(args.meetingId, args);
+});
+
+ipcMain.handle('roundtable:get-state', (_e, { meetingId }) => {
+  const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId);
+  return orch.getState();
+});
 
 // IPC for renderer @review
 ipcMain.handle('driver-execute-review', async (_e, { meetingId, userText, triggerType }) => {
@@ -832,6 +1120,9 @@ ipcMain.handle('update-meeting-sync', (_e, { meetingId, fields }) => {
   return !!updated;
 });
 
+// Sprint 1: research-mode covenant 模板（renderer 创建会议室对话框预填用）
+ipcMain.handle('get-research-covenant-template', () => researchMode.COVENANT_TEMPLATE);
+
 ipcMain.handle('get-meetings', () => {
   return meetingManager.getAllMeetings();
 });
@@ -1016,6 +1307,13 @@ ipcMain.handle('resume-session', (_e, meta) => {
       } else {
         console.warn(`[hub] resuming driver-mode Claude session in meeting ${meta.meetingId} but hookPort unavailable — falling back to plain Claude (no driver rules, no MCP tools).`);
       }
+    } else if (meeting && meeting.researchMode) {
+      const hubDataDir = getHubDataDir();
+      // resume 优先用 meeting.covenantText（已 restoreMeeting 恢复），snapshot 兜底
+      const covenantText = (typeof meeting.covenantText === 'string' && meeting.covenantText.length > 0)
+        ? meeting.covenantText
+        : researchMode.readCovenantSnapshot(hubDataDir, meta.meetingId);
+      driverOpts.appendSystemPromptFile = researchMode.writeResearchPromptFile(hubDataDir, meta.meetingId, covenantText);
     }
   }
 
@@ -1229,7 +1527,11 @@ const hookServer = http.createServer((req, res) => {
   const isStatus = req.method === 'POST' && req.url === '/api/status';
   const isTeamResponse = req.method === 'POST' && req.url === '/api/team/response';
   const isDriverReview = req.method === 'POST' && req.url === '/api/driver/request-review';
-  if (!isHook && !isStatus && !isTeamResponse && !isDriverReview) {
+  const isResearchFetchStock = req.method === 'POST' && req.url === '/api/research/fetch-stock';
+  const isResearchFetchConcept = req.method === 'POST' && req.url === '/api/research/fetch-concept';
+  const isResearchFetchSector = req.method === 'POST' && req.url === '/api/research/fetch-sector';
+  const isResearchFetch = isResearchFetchStock || isResearchFetchConcept || isResearchFetchSector;
+  if (!isHook && !isStatus && !isTeamResponse && !isDriverReview && !isResearchFetch) {
     res.writeHead(404); res.end('{}'); return;
   }
 
@@ -1261,6 +1563,34 @@ const hookServer = http.createServer((req, res) => {
         : `${scope || ''}${open_risks ? `\n关注点：${open_risks}` : ''}`;
       sendToRenderer('driver-auto-review', { meetingId, triggerType, claudeText });
       res.writeHead(200); res.end('{"ok":true}');
+      return;
+    }
+
+    // Research mode MCP callbacks (loopback)：fetch_lindang_stock / fetch_concept_stocks / fetch_sector_overview
+    if (isResearchFetch) {
+      if (parsed.token !== HOOK_TOKEN) { res.writeHead(403); res.end('{}'); return; }
+      const { meetingId, kind, symbol, name, concept, top_n, sector } = parsed;
+      const meeting = meetingId ? meetingManager.getMeeting(meetingId) : null;
+      if (!meeting || !meeting.researchMode) {
+        res.writeHead(400); res.end('{"error":"not research mode"}'); return;
+      }
+      const t0 = Date.now();
+      let result;
+      try {
+        if (isResearchFetchStock) {
+          result = await lindangBridge.fetchStock(symbol, name);
+        } else if (isResearchFetchConcept) {
+          result = await lindangBridge.fetchConcept(concept, top_n || 10);
+        } else {
+          result = await lindangBridge.fetchSector(sector);
+        }
+      } catch (e) {
+        result = { ok: false, error: 'bridge throw: ' + e.message };
+      }
+      const elapsed = Date.now() - t0;
+      console.log(`[research] ${req.url.split('/').pop()} kind=${kind} elapsed=${elapsed}ms ok=${result.ok}`);
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(result));
       return;
     }
     // Team MCP callback — no hook token required (loopback only)
@@ -1310,13 +1640,14 @@ const hookServer = http.createServer((req, res) => {
           latestUserMessage,
         });
       } else {
+        const filtered = claudeUsageFilter.filter(parsed.usage5h, parsed.usage7d);
         sendToRenderer('status-event', {
           sessionId: parsed.sessionId,
           contextPct: parsed.contextPct,
           contextUsed: parsed.contextUsed,
           contextMax: parsed.contextMax,
-          usage5h: parsed.usage5h,
-          usage7d: parsed.usage7d,
+          usage5h: filtered.usage5h,
+          usage7d: filtered.usage7d,
           model: parsed.model,
           sessionName: parsed.sessionName,
           cwd: parsed.cwd,
@@ -1324,7 +1655,7 @@ const hookServer = http.createServer((req, res) => {
           linesAdded: parsed.linesAdded,
           linesRemoved: parsed.linesRemoved,
         });
-        if (parsed.usage5h || parsed.usage7d) cacheAccountUsage({ usage5h: parsed.usage5h, usage7d: parsed.usage7d });
+        if (filtered.anyAccepted) cacheAccountUsage({ usage5h: filtered.usage5h, usage7d: filtered.usage7d });
         if (teamSessionManager) {
           teamSessionManager.updateStatusForSession(parsed.sessionId, parsed);
         }
@@ -1361,10 +1692,21 @@ function listenWithFallback() {
 // restart without waiting for the first statusline callback.
 const USAGE_CACHE_FILE = path.join(getHubDataDir(), 'usage-cache.json');
 
+// See core/usage-filter.js for why this filter exists (rate_limits monotonic
+// within a window — stale low-pct snapshots from idle sessions must not
+// overwrite the true usage from heavy sessions).
+const claudeUsageFilter = createUsageFilter();
+try { claudeUsageFilter.seed(loadUsageCache().claude); } catch {}
+
 function cacheAccountUsage(data) {
   try {
     const existing = loadUsageCache();
-    if (data.usage5h) existing.claude = { usage5h: data.usage5h, usage7d: data.usage7d, ts: Date.now() };
+    const cur = existing.claude || {};
+    existing.claude = {
+      usage5h: data.usage5h || cur.usage5h || null,
+      usage7d: data.usage7d || cur.usage7d || null,
+      ts: Date.now(),
+    };
     fs.mkdirSync(path.dirname(USAGE_CACHE_FILE), { recursive: true });
     fs.writeFileSync(USAGE_CACHE_FILE, JSON.stringify(existing));
   } catch {}
@@ -1397,11 +1739,34 @@ function stripAnsi(str) {
 
 function parseGeminiUsage(plain) {
   const result = {};
-  // Gemini CLI footer: "(95% context left)" — actual context window usage
+  // Gemini CLI footer 多种写法（不同版本 / locale）：
+  //   (95% context left)  / (95% remaining) / · 95% context left / · 95% left
+  //   N% context remaining / (N% 上下文剩余)（中文 locale）
+  // 取最后一个匹配（buffer 末尾的 footer 才是当前实时数据，否则是历史滚动）
+  const leftPatterns = [
+    /\((\d+)%\s*context\s*left\)/gi,
+    /\((\d+)%\s*context\s*remaining\)/gi,
+    /\((\d+)%\s*left\)/gi,
+    /\((\d+)%\s*remaining\)/gi,
+    /·\s*(\d+)%\s*context\s*left/gi,
+    /·\s*(\d+)%\s*left/gi,
+    /(\d+)%\s*context\s*remaining/gi,
+    /(\d+)%\s*上下文\s*剩余/gi,
+  ];
+  for (const re of leftPatterns) {
+    let m;
+    let last = null;
+    while ((m = re.exec(plain)) !== null) last = m;
+    if (last) {
+      result.contextPct = 100 - parseInt(last[1], 10);
+      break;
+    }
+  }
+  // 旧主正则保留（顺手匹配 model + ctx）
   const leftMatch = plain.match(/(gemini[-\w.]+)\s*\((\d+)%\s*context\s*left\)/i);
   if (leftMatch) {
     result.model = { id: leftMatch[1], displayName: SessionManager.geminiDisplayName(leftMatch[1]) };
-    result.contextPct = 100 - parseInt(leftMatch[2], 10);
+    if (result.contextPct == null) result.contextPct = 100 - parseInt(leftMatch[2], 10);
   }
   // Gemini CLI footer quota column: "N% used" — API quota, NOT context window
   const usedMatch = plain.match(/(gemini[-\w.]*[a-z])\s*(\d+)%\s*used/i);

@@ -21,22 +21,405 @@
   // are accessible via the global lexical scope. We access them directly.
 
   // --- Driver Mode: @command parser ---
+  // 支持组合：`@gemini @codex 帮我看下` → 同时发给 gemini + codex
+  // `@review` 全局审查路径，与其他 @ 混用时优先生效
   function parseDriverCommand(text, meeting) {
-    if (!meeting || !meeting.driverMode) return { type: 'normal', text, targets: null };
-    const trimmed = text.trim();
-    if (/^@review\b/i.test(trimmed) || /^@审查\b/.test(trimmed)) {
-      return { type: 'review', text: trimmed.replace(/^@(?:review|审查)\s*/i, '').trim() };
+    if (!meeting) return { type: 'normal', text, targets: null };
+
+    // Research mode: 三家平等圆桌，独立语法（@debate / @summary @<who> / 默认 fanout）
+    if (meeting.researchMode) {
+      let rest = text.trim();
+      const summaryRe = /^@summary\s+@(claude|gemini|codex)\b\s*/i;
+      const debateRe = /^@debate\b\s*/i;
+      let m;
+      if ((m = rest.match(summaryRe))) {
+        return { type: 'rt-summary', summarizerKind: m[1].toLowerCase(), text: rest.slice(m[0].length) };
+      }
+      if ((m = rest.match(debateRe))) {
+        return { type: 'rt-debate', text: rest.slice(m[0].length) };
+      }
+      return { type: 'rt-fanout', text: rest };
     }
-    if (/^@gemini\b/i.test(trimmed)) {
-      return { type: 'direct', targetKind: 'gemini', text: trimmed.replace(/^@gemini\s*/i, '').trim() };
+
+    if (!meeting.driverMode) return { type: 'normal', text, targets: null };
+    let rest = text.trim();
+    const targets = [];
+    let wantReview = false;
+    const tokenRe = /^@(review|审查|gemini|codex|claude)\b\s*/i;
+    while (true) {
+      const m = rest.match(tokenRe);
+      if (!m) break;
+      const tok = m[1].toLowerCase();
+      if (tok === 'review' || tok === '审查') {
+        wantReview = true;
+      } else if (!targets.includes(tok)) {
+        targets.push(tok);
+      }
+      rest = rest.slice(m[0].length);
     }
-    if (/^@codex\b/i.test(trimmed)) {
-      return { type: 'direct', targetKind: 'codex', text: trimmed.replace(/^@codex\s*/i, '').trim() };
-    }
-    if (/^@claude\b/i.test(trimmed)) {
-      return { type: 'direct', targetKind: 'claude', text: trimmed.replace(/^@claude\s*/i, '').trim() };
-    }
+    if (wantReview) return { type: 'review', text: rest };
+    if (targets.length > 0) return { type: 'direct', targetKinds: targets, text: rest };
     return { type: 'driver-only', text };
+  }
+
+  // --- Roundtable Mode: 持久化圆桌面板（始终显示当前状态 + 历史）---
+  // _rtPanelState[meetingId] 缓存渲染状态，避免 IPC 频繁调用
+  // partialBy: 当前进行中轮次的部分回答 { sid: { text, status } } — 单家完成立即更新
+  const _rtPanelState = {};
+  let _rtHistoryExpanded = false;
+
+  // markdown 渲染（用项目已有的 marked + DOMPurify）
+  let _markedCache = null;
+  let _domPurifyCache = null;
+  function _renderMarkdown(text) {
+    if (!text) return '';
+    try {
+      if (!_markedCache) _markedCache = require('marked').marked;
+      if (!_domPurifyCache) _domPurifyCache = require('dompurify');
+      return _domPurifyCache.sanitize(_markedCache.parse(text, { breaks: true, gfm: true }));
+    } catch (e) {
+      // 回退到纯文本（escapeHtml）
+      return escapeHtml(text).replace(/\n/g, '<br>');
+    }
+  }
+
+  function _ensureRtPanel() {
+    let panel = document.getElementById('mr-roundtable-panel');
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.id = 'mr-roundtable-panel';
+      panel.className = 'mr-rt-panel';
+      const container = terminalsEl();
+      if (container && container.parentElement) container.parentElement.insertBefore(panel, container);
+    }
+    return panel;
+  }
+
+  function _removeRtPanel() {
+    const p = document.getElementById('mr-roundtable-panel');
+    if (p && p.parentElement) p.remove();
+  }
+
+  // sub session 信息（kind/label/sid）— 用于把 by 字段映射到三家卡片
+  function _getRtSubInfo(meeting) {
+    const subs = { claude: null, gemini: null, codex: null };
+    if (!meeting || !meeting.subSessions) return subs;
+    for (const sid of meeting.subSessions) {
+      const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
+      if (!s) continue;
+      if (s.kind === 'claude' && !subs.claude) subs.claude = { sid, label: s.title || 'Claude' };
+      else if (s.kind === 'gemini' && !subs.gemini) subs.gemini = { sid, label: s.title || 'Gemini' };
+      else if (s.kind === 'codex' && !subs.codex) subs.codex = { sid, label: s.title || 'Codex' };
+    }
+    return subs;
+  }
+
+  function _renderRtCards(state, subs, currentMode, partialBy) {
+    const lastTurn = state.turns.length > 0 ? state.turns[state.turns.length - 1] : null;
+    const summarizerKind = state.currentSummarizerKind || null;
+    const cards = [];
+    for (const kind of ['claude', 'gemini', 'codex']) {
+      const sub = subs[kind];
+      if (!sub) continue;
+      // 优先级：partialBy（in-progress 单家完成） > lastTurn.by（已完整持久化的轮）
+      const partial = partialBy ? partialBy[sub.sid] : null;
+      let status = 'idle';
+      let preview = '';
+      let isStandby = false; // summary 轮非 summarizer 卡片的"维持上轮预览"状态
+
+      if (partial) {
+        // 当前轮已收到这家的部分结果
+        status = partial.status === 'timeout' ? 'timeout' : 'completed';
+        preview = partial.text || '';
+      } else if (currentMode && currentMode !== 'idle') {
+        // 当前正在跑某轮但本家还没回
+        if (currentMode === 'summary' && summarizerKind && summarizerKind !== kind) {
+          // 非 summarizer：保持上一轮（debate）的回答展示，不进入 thinking
+          status = lastTurn && lastTurn.by[sub.sid] ? 'completed' : 'idle';
+          preview = lastTurn ? (lastTurn.by[sub.sid] || '') : '';
+          isStandby = true;
+        } else {
+          status = 'thinking';
+          // 思考中也展示上一轮预览（保留历史）
+          preview = lastTurn ? (lastTurn.by[sub.sid] || '') : '';
+        }
+      } else if (lastTurn && lastTurn.by[sub.sid]) {
+        status = 'completed';
+        preview = lastTurn.by[sub.sid];
+      }
+
+      const isSummarizer = currentMode === 'summary' && summarizerKind === kind;
+      const statusLabel = { idle: '待命', thinking: '思考中', completed: '已答', timeout: '超时' }[status] || status;
+      const previewClipped = preview ? preview.slice(0, 600) : '';
+      const previewHtml = preview
+        ? `<div class="mr-rt-card-preview">${_renderMarkdown(previewClipped)}${preview.length > 600 ? '<div class="mr-rt-card-more">… 点卡片看全文</div>' : ''}</div>`
+        : '<div class="mr-rt-card-empty">尚无回答</div>';
+      const labelDisplay = { claude: 'Claude', gemini: 'Gemini', codex: 'Codex' }[kind];
+      const cardCls = ['mr-rt-card', kind];
+      if (status === 'thinking') cardCls.push('active');
+      if (isSummarizer) cardCls.push('summarizer');
+      if (isStandby) cardCls.push('standby');
+      const summarizerBadge = isSummarizer
+        ? '<span class="mr-rt-summarizer-badge" title="本轮总结人">★ 总结人</span>'
+        : '';
+      const standbyHint = isStandby
+        ? '<span class="mr-rt-standby-hint">上轮回答（等总结）</span>'
+        : '';
+      cards.push(`<div class="${cardCls.join(' ')}" data-rt-sid="${sub.sid}" data-rt-kind="${kind}" role="button" tabindex="0" title="点击查看 ${labelDisplay} 的全部历史回答">
+        <div class="mr-rt-card-head">
+          <span class="mr-rt-card-name">${labelDisplay}${summarizerBadge}</span>
+          <span class="mr-rt-status ${status}">${statusLabel}${standbyHint}</span>
+        </div>
+        ${previewHtml}
+      </div>`);
+    }
+    return cards.join('');
+  }
+
+  function _renderRtHistory(state) {
+    if (!state.turns || state.turns.length === 0) return '';
+    const items = state.turns.map(t => {
+      const userIn = (t.userInput || '').slice(0, 60);
+      const meta = t.decisionTitle ? ` · 标题: ${escapeHtml(t.decisionTitle.slice(0, 40))}` : '';
+      return `<div class="mr-rt-history-item">
+        <span class="mr-rt-history-turn">第 ${t.n} 轮</span>
+        <span class="mr-rt-history-mode ${escapeHtml(t.mode)}">${escapeHtml(t.mode)}</span>
+        <span class="mr-rt-history-input">${escapeHtml(userIn)}${(t.userInput || '').length > 60 ? '…' : ''}</span>
+        <span class="mr-rt-history-meta">${meta}</span>
+      </div>`;
+    }).join('');
+    const expanded = _rtHistoryExpanded;
+    const toggle = `<span class="mr-rt-history-toggle" id="mr-rt-history-toggle">${expanded ? '▾' : '▸'} 历史轮次（${state.turns.length}）</span>`;
+    return `<div class="mr-rt-history">
+      ${toggle}
+      <div class="mr-rt-history-list" style="display:${expanded ? 'flex' : 'none'}">${items}</div>
+    </div>`;
+  }
+
+  function _renderRtPanelHtml(state, meeting) {
+    const subs = _getRtSubInfo(meeting);
+    const mode = state.currentMode || 'idle';
+    const modeLabel = { idle: '待命', fanout: '提问中', debate: '辩论中', summary: '综合中' }[mode] || mode;
+    const partialBy = state._partialBy || null;
+    const cards = _renderRtCards(state, subs, mode, partialBy);
+    const history = _renderRtHistory(state);
+    // 首发提醒：完成过 1 轮后消失
+    const firstRunHint = state.turns.length === 0
+      ? `<div class="mr-rt-firstrun-hint">⏱ <strong>首次发送较慢</strong>（约 25 秒）— 三家 CLI 需要冷启动 + OAuth 验证。后续轮次会快很多。</div>`
+      : '';
+    return `
+      <div class="mr-rt-header">
+        <span class="mr-rt-title">投研圆桌</span>
+        <span class="mr-rt-meta">
+          <span>已 ${state.turns.length} 轮</span>
+          <span class="mr-rt-mode-tag ${mode}">${escapeHtml(modeLabel)}</span>
+        </span>
+      </div>
+      ${firstRunHint}
+      <div class="mr-rt-cards">${cards}</div>
+      ${history}
+    `;
+  }
+
+  // 主渲染：从 IPC 拿最新 state 后重绘。
+  // 乐观字段（currentMode/currentSummarizerKind）的保留条件：**只有 _rtOptimisticTurn[id] 还在**
+  // —— 也就是 IPC 还在飞行中。IPC resolve 后 _rtOptimisticTurn 已被 clearOptimistic 清，
+  // 此时 server state 真实状态（含 idle）才被采纳。
+  // partialBy 单独保留：轮中单家完成 IPC 推 partial-update，这是轮内增量，独立处理。
+  async function refreshRoundtablePanel(meeting) {
+    if (!meeting || !meeting.researchMode) { _removeRtPanel(); return; }
+    let state;
+    try {
+      state = await ipcRenderer.invoke('roundtable:get-state', { meetingId: meeting.id });
+    } catch (e) {
+      console.error('[roundtable] get-state failed:', e.message);
+      return;
+    }
+    if (!state) return;
+    const prev = _rtPanelState[meeting.id];
+    const optimistic = _rtOptimisticTurn[meeting.id];
+    if (optimistic && (!state.currentMode || state.currentMode === 'idle')) {
+      // IPC 飞行期间 + server 还没 begin → 显示乐观态
+      state.currentMode = optimistic.mode;
+      if (optimistic.summarizerKind) state.currentSummarizerKind = optimistic.summarizerKind;
+    }
+    // partialBy 独立保留（轮中增量，不依赖 optimistic 标记）
+    if (prev && prev._partialBy) state._partialBy = prev._partialBy;
+    _rtPanelState[meeting.id] = state;
+    const panel = _ensureRtPanel();
+    panel.innerHTML = _renderRtPanelHtml(state, meeting);
+    _bindRtPanelEvents(panel, meeting);
+  }
+
+  // 绑定 panel 内部所有交互（折叠 / 卡片点击）。每次 innerHTML 重绘后都要重新调用。
+  function _bindRtPanelEvents(panel, meeting) {
+    const toggle = panel.querySelector('#mr-rt-history-toggle');
+    if (toggle) {
+      toggle.addEventListener('click', () => {
+        _rtHistoryExpanded = !_rtHistoryExpanded;
+        refreshRoundtablePanel(meeting);
+      });
+    }
+    panel.querySelectorAll('.mr-rt-card[data-rt-sid]').forEach(card => {
+      const open = () => {
+        const sid = card.getAttribute('data-rt-sid');
+        const kind = card.getAttribute('data-rt-kind');
+        _openRtTimeline(meeting, sid, kind);
+      };
+      card.addEventListener('click', open);
+      card.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); open(); }
+      });
+    });
+  }
+
+  // ---- AI 时间线浮层 ----------------------------------------------------
+  // 点击任意卡片 → 打开右侧抽屉，顶部 Tab 列轮次（最新在最左 = 默认 active），点 Tab 切换内容。
+  function _openRtTimeline(meeting, sid, kind) {
+    const state = _rtPanelState[meeting.id];
+    if (!state || !Array.isArray(state.turns)) return;
+
+    const labelDisplay = { claude: 'Claude', gemini: 'Gemini', codex: 'Codex' }[kind] || kind;
+    const subs = _getRtSubInfo(meeting);
+    const sub = subs[kind];
+    const headerLabel = sub && sub.label ? sub.label : labelDisplay;
+
+    // 收集该 sid 有回答的轮次，按 turn n 倒序（最新在最左）
+    const turnsWithAns = state.turns
+      .filter(t => (t.by || {})[sid])
+      .sort((a, b) => b.n - a.n);
+
+    let overlay = document.getElementById('mr-rt-timeline-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'mr-rt-timeline-overlay';
+      overlay.className = 'mr-rt-tl-overlay';
+      document.body.appendChild(overlay);
+    }
+
+    const renderTurnBody = (turn) => {
+      if (!turn) return '<div class="mr-rt-tl-empty">该 AI 还没有可显示的历史回答。</div>';
+      const text = (turn.by || {})[sid] || '';
+      const userIn = (turn.userInput || '').trim();
+      const userBlock = userIn
+        ? `<div class="mr-rt-tl-user">用户输入：${escapeHtml(userIn.slice(0, 400))}${userIn.length > 400 ? '…' : ''}</div>`
+        : '';
+      const decisionTag = turn.decisionTitle
+        ? `<div class="mr-rt-tl-decision-row">📌 决策标题：${escapeHtml(turn.decisionTitle)}</div>`
+        : '';
+      return `${decisionTag}${userBlock}<div class="mr-rt-tl-body">${_renderMarkdown(text)}</div>`;
+    };
+
+    const tabsHtml = turnsWithAns.map((t, i) => {
+      const modeLabel = { fanout: '提问', debate: '辩论', summary: '综合' }[t.mode] || t.mode;
+      const isLatest = i === 0;
+      return `<button type="button" class="mr-rt-tl-tab ${isLatest ? 'active' : ''}" data-tab-idx="${i}" title="第 ${t.n} 轮 · ${escapeHtml(modeLabel)}">
+        <span class="mr-rt-tl-tab-turn">第 ${t.n} 轮</span>
+        <span class="mr-rt-tl-tab-mode ${escapeHtml(t.mode)}">${escapeHtml(modeLabel)}</span>
+        ${isLatest ? '<span class="mr-rt-tl-tab-latest">最新</span>' : ''}
+      </button>`;
+    }).join('');
+
+    overlay.innerHTML = `
+      <div class="mr-rt-tl-backdrop" data-rt-tl-close="1"></div>
+      <aside class="mr-rt-tl-drawer mr-rt-tl-${escapeHtml(kind)}" role="dialog" aria-label="${escapeHtml(headerLabel)} 时间线">
+        <header class="mr-rt-tl-drawer-head">
+          <span class="mr-rt-tl-drawer-title">${escapeHtml(headerLabel)} · 历史回答</span>
+          <span class="mr-rt-tl-drawer-meta">共 ${turnsWithAns.length} 轮</span>
+          <button type="button" class="mr-rt-tl-close" data-rt-tl-close="1" aria-label="关闭">×</button>
+        </header>
+        ${turnsWithAns.length > 0 ? `<nav class="mr-rt-tl-tabs" role="tablist">${tabsHtml}</nav>` : ''}
+        <div class="mr-rt-tl-content" id="mr-rt-tl-content">${renderTurnBody(turnsWithAns[0])}</div>
+      </aside>
+    `;
+    overlay.style.display = 'block';
+
+    // Tab 切换
+    const contentEl = overlay.querySelector('#mr-rt-tl-content');
+    overlay.querySelectorAll('.mr-rt-tl-tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        overlay.querySelectorAll('.mr-rt-tl-tab').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const idx = parseInt(btn.getAttribute('data-tab-idx') || '0', 10);
+        if (contentEl) {
+          contentEl.innerHTML = renderTurnBody(turnsWithAns[idx]);
+          contentEl.scrollTop = 0;
+        }
+      });
+    });
+
+    const closeAll = () => {
+      overlay.style.display = 'none';
+      document.removeEventListener('keydown', escHandler);
+    };
+    const escHandler = (ev) => { if (ev.key === 'Escape') closeAll(); };
+    overlay.querySelectorAll('[data-rt-tl-close]').forEach(el => {
+      el.addEventListener('click', closeAll);
+    });
+    document.addEventListener('keydown', escHandler);
+  }
+
+  // 乐观态生命周期：renderer 在 IPC 飞行期间用 _rtOptimisticTurn 标记自己写的乐观字段，
+  // 一旦 IPC resolve / reject 或 server 推 turn-complete，就清掉这个标记 —— 之后 refresh
+  // 拿到的 server state（含 idle）就是真值，merge 不再覆盖。
+  // 不用单纯依赖 cached.currentMode 比对，避免轮次完成后 server.idle 被永远 merge 成乐观值。
+  const _rtOptimisticTurn = {}; // { [meetingId]: { mode, summarizerKind, t } }
+
+  // 兼容旧调用名（handleMeetingSend 还在用 renderRoundtableBanner）
+  function renderRoundtableBanner(meeting, result) {
+    refreshRoundtablePanel(meeting);
+    const cached = _rtPanelState[meeting.id];
+    if (cached) renderToolbar(meeting);
+  }
+
+  // 投研圆桌触发器：按钮/输入框统一入口。立即给 UI pending 反馈，再异步 invoke IPC。
+  function triggerRoundtable(meeting, mode, opts = {}) {
+    const cached = _rtPanelState[meeting.id];
+    // 立即写本地乐观状态 + 标 _rtOptimisticTurn（IPC 完成后清掉）
+    _rtOptimisticTurn[meeting.id] = {
+      mode,
+      summarizerKind: mode === 'summary' ? (opts.summarizerKind || 'claude') : null,
+      t: Date.now(),
+    };
+    if (cached) {
+      cached.currentMode = mode;
+      if (mode === 'summary') {
+        cached.currentSummarizerKind = opts.summarizerKind || 'claude';
+      } else {
+        delete cached.currentSummarizerKind;
+      }
+      cached._partialBy = null;
+    }
+    refreshRoundtablePanel(meeting);
+    renderToolbar(meeting); // 立即把按钮 disable，状态条改"⏳ 处理中…"
+
+    const clearOptimistic = () => {
+      delete _rtOptimisticTurn[meeting.id];
+      const c = _rtPanelState[meeting.id];
+      if (c) {
+        // 不强写 idle —— 让 refresh 从 server 拿真值。但本地乐观字段必须先清，否则 merge 会保留它。
+        c.currentMode = null; // null = 触发 merge 分支用 server 真值
+        delete c.currentSummarizerKind;
+      }
+      refreshRoundtablePanel(meeting);
+      renderToolbar(meeting);
+    };
+
+    ipcRenderer.invoke('roundtable:turn', {
+      meetingId: meeting.id,
+      mode,
+      userInput: opts.userInput || '',
+      summarizerKind: opts.summarizerKind || null,
+    }).then((result) => {
+      // 不论 completed / busy / error / no_sent，IPC 已返回 → 清乐观态，后续完全信任 server
+      console.log('[roundtable] turn IPC resolved:', result && result.status, 'turn=', result && result.turnNum);
+      clearOptimistic();
+    }).catch((e) => {
+      console.error('[roundtable] turn IPC failed:', e.message);
+      clearOptimistic();
+    });
+    meeting.lastMessageTime = Date.now();
+    ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { lastMessageTime: meeting.lastMessageTime } });
   }
 
   function findSessionByKind(meeting, kind) {
@@ -57,125 +440,26 @@
     });
   }
 
-  // --- Driver Mode: trigger review ---
+  // --- Driver Mode: trigger review (thin renderer layer, logic in main.js executeReview) ---
   async function triggerReview(meeting, userText, triggerType) {
-    const copilotSids = getCopilotSids(meeting);
-    if (copilotSids.length === 0) {
-      console.warn('[driver] no copilot sessions available for review');
-      return;
-    }
-
-    // Write .arena/context.md snapshot
+    renderReviewBanner(meeting, { status: 'pending' });
     try {
-      await ipcRenderer.invoke('driver-write-context', { meetingId: meeting.id, arenaDir: '.arena' });
-    } catch {}
-
-    // Optionally ask Claude to summarize first
-    let claudeSummary = '';
-    if (_driverSummaryEnabled) {
-      try {
-        const instruction = await ipcRenderer.invoke('driver-summarize-instruction');
-        if (instruction && meeting.driverSessionId) {
-          ipcRenderer.send('terminal-input', { sessionId: meeting.driverSessionId, data: instruction });
-          await new Promise(r => setTimeout(r, 120));
-          ipcRenderer.send('terminal-input', { sessionId: meeting.driverSessionId, data: '\r' });
-          // Wait for Claude to respond (poll transcript tap)
-          for (let i = 0; i < 10; i++) {
-            await new Promise(r => setTimeout(r, 2000));
-            const text = await ipcRenderer.invoke('get-last-assistant-text', meeting.driverSessionId);
-            if (text && text.includes('当前目标') || text && text.includes('已完成')) {
-              claudeSummary = text;
-              break;
-            }
-          }
-          if (!claudeSummary) {
-            claudeSummary = await ipcRenderer.invoke('get-last-assistant-text', meeting.driverSessionId) || '';
-          }
-        }
-      } catch (e) {
-        console.warn('[driver] Claude summary failed:', e.message);
+      const result = await ipcRenderer.invoke('driver-execute-review', {
+        meetingId: meeting.id, userText, triggerType,
+      });
+      if (result.status === 'completed' && result.reviewId) {
+        meeting.pendingReviewId = result.reviewId;
+        meetingData[meeting.id] = meeting;
       }
-    }
-
-    // Get Claude's last output
-    let claudeLastOutput = '';
-    try {
-      claudeLastOutput = await ipcRenderer.invoke('get-last-assistant-text', meeting.driverSessionId) || '';
-    } catch {}
-
-    // Get recent timeline
-    let recentTimeline = '';
-    try {
-      recentTimeline = await ipcRenderer.invoke('driver-recent-timeline', { meetingId: meeting.id, count: 10 });
-    } catch {}
-
-    // Build per-copilot role-specific review prompts
-    const promptMap = {};
-    for (const sid of copilotSids) {
-      const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
-      const kind = s ? s.kind : 'unknown';
-      promptMap[sid] = buildReviewPayloadRenderer({
-        kind,
-        triggerType,
-        triggerText: userText,
-        claudeSummary,
-        claudeLastOutput,
-        recentTimeline,
-        userText,
-      });
-    }
-
-    // Show "审查中..." indicator
-    renderReviewResult(meeting, [{ sid: 'pending', verdict: 'PENDING', reason: '审查中...' }]);
-
-    // Send per-copilot prompts and wait
-    try {
-      const results = await ipcRenderer.invoke('driver-request-review', {
-        meetingId: meeting.id,
-        promptMap,
-        timeoutMs: 120000,
-      });
-
-      // Enhance results with session labels
-      const enhanced = results.map(r => {
-        const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(r.sid) : null;
-        return { ...r, label: s ? (s.title || s.kind || 'AI') : 'AI' };
-      });
-
-      renderReviewResult(meeting, enhanced);
-
-      // Process results: FLAG → send reminder to Claude
-      for (const r of enhanced) {
-        if (r.verdict === 'FLAG' && meeting.driverSessionId) {
-          const reminder = `[副驾提醒 from ${r.label}] ${r.reason}`;
-          ipcRenderer.send('terminal-input', { sessionId: meeting.driverSessionId, data: reminder + '\r' });
-        }
-      }
+      renderReviewBanner(meeting, result);
     } catch (e) {
       console.error('[driver] review failed:', e.message);
-      renderReviewResult(meeting, [{ sid: 'error', verdict: 'FLAG', reason: '审查流程异常: ' + e.message, label: 'System' }]);
+      renderReviewBanner(meeting, { status: 'error', reviewers: {} });
     }
   }
 
-  function buildReviewPayloadRenderer({ kind, triggerType, claudeSummary, claudeLastOutput, recentTimeline, userText }) {
-    const roleLabel = kind === 'gemini'
-      ? '你是架构审查副驾（Gemini）。请从方案/架构/需求理解角度审查。'
-      : '你是代码实现审查副驾（Codex）。请从代码正确性/边界条件/测试遗漏角度审查。';
-
-    const sections = ['=== 审查请求 ===', `角色: ${roleLabel}`, `触发: ${triggerType}`, ''];
-    if (claudeSummary) { sections.push('--- Claude 任务摘要 ---', claudeSummary.slice(0, 5000), ''); }
-    if (recentTimeline) { sections.push('--- 近期对话 ---', recentTimeline.slice(0, 8000), ''); }
-    if (claudeLastOutput) { sections.push('--- Claude 最近操作 ---', claudeLastOutput.slice(0, 10000), ''); }
-    if (userText) { sections.push('--- 用户补充 ---', userText, ''); }
-    sections.push('如需更多上下文，可读取 .arena/context.md 或项目源码文件。');
-    sections.push('', '请用以下格式回复（第一行必须是判定）:', 'OK|FLAG|BLOCKER: 一句话理由');
-    let payload = sections.join('\n');
-    if (payload.length > 20000) payload = payload.slice(0, 20000) + '\n[…已截断]';
-    return payload;
-  }
-
-  // --- Driver Mode: render review result banner ---
-  function renderReviewResult(meeting, results) {
+  // --- Driver Mode: render review banner (status notification, no verdict parsing) ---
+  function renderReviewBanner(meeting, result) {
     let bar = document.getElementById('mr-review-bar');
     if (!bar) {
       bar = document.createElement('div');
@@ -186,40 +470,33 @@
       }
     }
 
-    const isPending = results.length === 1 && results[0].verdict === 'PENDING';
-    if (isPending) {
+    if (result.status === 'pending') {
       bar.innerHTML = '<div class="mr-review-header">审查中...</div>';
       bar.className = 'mr-review-bar';
       return;
     }
 
-    let html = '<div class="mr-review-header">审查结果</div>';
-    for (const r of results) {
-      const cls = r.verdict === 'OK' ? 'mr-review-ok'
-        : r.verdict === 'BLOCKER' ? 'mr-review-blocker'
-        : 'mr-review-flag';
-      const label = r.label || r.sid || 'AI';
-      html += `<div class="mr-review-item ${cls}">
-        <span class="mr-review-agent">${escapeHtml(label)}</span>
-        <span class="mr-review-verdict">${escapeHtml(r.verdict)}</span>
-        <span class="mr-review-reason">${escapeHtml(r.reason || '')}</span>
-      </div>`;
+    if (result.status === 'busy') {
+      bar.innerHTML = '<div class="mr-review-header">审查进行中，请等待当前审查完成</div>';
+      bar.className = 'mr-review-bar';
+      setTimeout(() => { if (bar.parentElement) bar.remove(); }, 5000);
+      return;
     }
 
-    const hasBlocker = results.some(r => r.verdict === 'BLOCKER');
-    if (hasBlocker) {
-      html += `<div class="mr-review-actions">
-        <button class="mr-review-btn mr-review-override" onclick="document.getElementById('mr-review-bar').remove()">覆盖继续</button>
-        <button class="mr-review-btn mr-review-abort" onclick="document.getElementById('mr-review-bar').remove()">中止</button>
+    const reviewers = result.reviewers ? Object.values(result.reviewers) : [];
+    let html = '<div class="mr-review-header">审查完成</div>';
+    for (const r of reviewers) {
+      const statusLabel = r.status === 'completed' ? '完成' : r.status === 'timeout' ? '超时' : '异常';
+      const summary = (r.text || '').trim().slice(0, 200);
+      html += `<div class="mr-review-item mr-review-neutral">
+        <span class="mr-review-agent">${escapeHtml(r.label || 'AI')}</span>
+        <span class="mr-review-verdict">${escapeHtml(statusLabel)}</span>
+        <span class="mr-review-reason">${escapeHtml(summary)}${(r.text || '').length > 200 ? '…' : ''}</span>
       </div>`;
     }
-
     bar.innerHTML = html;
     bar.className = 'mr-review-bar';
-
-    if (!hasBlocker) {
-      setTimeout(() => { if (bar.parentElement) bar.remove(); }, 5000);
-    }
+    setTimeout(() => { if (bar.parentElement) bar.remove(); }, 15000);
   }
 
   function escapeHtml(str) {
@@ -233,6 +510,217 @@
     if (!meeting || !meeting.driverMode) return;
     triggerReview(meeting, claudeText || '', triggerType);
   });
+
+  // Roundtable 轮次完成：清掉 partialBy + 乐观标记（防止 turn-complete 比 IPC.then 更早），
+  // 从 IPC 拉最终 state（含 turn N 已持久化）
+  ipcRenderer.on('roundtable-turn-complete', (_event, { meetingId }) => {
+    const meeting = meetingData[meetingId];
+    if (meeting && meeting.researchMode && meetingId === activeMeetingId) {
+      delete _rtOptimisticTurn[meetingId];
+      const cached = _rtPanelState[meetingId];
+      if (cached) {
+        cached._partialBy = null;
+        // 让 refresh 用 server 真值（idle）覆盖
+        cached.currentMode = null;
+        delete cached.currentSummarizerKind;
+      }
+      refreshRoundtablePanel(meeting);
+      if (cached) renderToolbar(meeting);
+    }
+  });
+
+  // Roundtable state 元数据变更（如 summary 启动写入 currentSummarizerKind）
+  ipcRenderer.on('roundtable-state-update', (_event, { meetingId }) => {
+    const meeting = meetingData[meetingId];
+    if (meeting && meeting.researchMode && meetingId === activeMeetingId) {
+      refreshRoundtablePanel(meeting);
+    }
+  });
+
+  // Roundtable 单家 partial-update：单卡片立即刷新，不等所有家完成
+  ipcRenderer.on('roundtable-partial-update', (_event, { meetingId, sid, status, text }) => {
+    const meeting = meetingData[meetingId];
+    if (!meeting || !meeting.researchMode || meetingId !== activeMeetingId) return;
+    const cached = _rtPanelState[meetingId];
+    if (!cached) {
+      // 首次：直接 refresh（拉 state），下次 partial 才能本地更新
+      refreshRoundtablePanel(meeting);
+      return;
+    }
+    if (!cached._partialBy) cached._partialBy = {};
+    cached._partialBy[sid] = { text: text || '', status: status || 'completed' };
+    // 直接本地重渲染（不调 IPC，省一次 round-trip）
+    const panel = _ensureRtPanel();
+    panel.innerHTML = _renderRtPanelHtml(cached, meeting);
+    _bindRtPanelEvents(panel, meeting);
+  });
+
+  // --- Driver Mode: @-mention 弹框状态机 ---
+  // 用户在 mr-input-box 输入 `@` 后弹出选项框，方向键/Tab/Enter 选择，避免手敲。
+  // 仅在 driverMode === true 时启用（普通模式没有 @ 路由语义）。
+  const mentionState = {
+    active: false,
+    items: [],
+    filtered: [],
+    selectedIdx: 0,
+    query: '',
+    atIndex: -1,
+    textNode: null,
+  };
+
+  function resetMention() {
+    mentionState.active = false;
+    mentionState.items = [];
+    mentionState.filtered = [];
+    mentionState.selectedIdx = 0;
+    mentionState.query = '';
+    mentionState.atIndex = -1;
+    mentionState.textNode = null;
+    const popup = document.getElementById('mr-mention-popup');
+    if (popup) {
+      popup.style.display = 'none';
+      popup.innerHTML = '';
+    }
+  }
+
+  // 主驾模式下 @ 弹框的候选项。@review 走全审查，其他三个直送对应 PTY。
+  function buildMentionItems(meeting) {
+    const items = [];
+    items.push({ id: 'review', label: 'review', subtitle: '全审查（Gemini + Codex）', iconText: '审', iconCls: 'icon-review' });
+    if (findSessionByKind(meeting, 'gemini')) {
+      items.push({ id: 'gemini', label: 'gemini', subtitle: '架构副驾（直送）', iconText: 'G', iconCls: 'icon-gemini' });
+    }
+    if (findSessionByKind(meeting, 'codex')) {
+      items.push({ id: 'codex', label: 'codex', subtitle: '代码副驾（直送）', iconText: 'C', iconCls: 'icon-codex' });
+    }
+    if (findSessionByKind(meeting, 'claude')) {
+      items.push({ id: 'claude', label: 'claude', subtitle: '主驾（默认目标）', iconText: 'CL', iconCls: 'icon-claude' });
+    }
+    return items;
+  }
+
+  function filterMention(query) {
+    const q = (query || '').toLowerCase();
+    if (!q) return mentionState.items.slice();
+    return mentionState.items.filter(it =>
+      it.label.toLowerCase().includes(q) || it.id.toLowerCase().includes(q)
+    );
+  }
+
+  function renderMentionPopup() {
+    const popup = document.getElementById('mr-mention-popup');
+    if (!popup) return;
+    const items = mentionState.filtered;
+    if (items.length === 0) { resetMention(); return; }
+    if (mentionState.selectedIdx >= items.length) mentionState.selectedIdx = 0;
+    popup.innerHTML = items.map((it, i) => `
+      <div class="mr-mention-item ${i === mentionState.selectedIdx ? 'active' : ''}" data-idx="${i}">
+        <span class="mr-mention-icon ${it.iconCls}">${escapeHtml(it.iconText)}</span>
+        <span class="mr-mention-name">@${escapeHtml(it.label)}</span>
+        <span class="mr-mention-sub">${escapeHtml(it.subtitle)}</span>
+      </div>
+    `).join('');
+    popup.style.display = 'block';
+    const activeEl = popup.querySelector('.mr-mention-item.active');
+    if (activeEl && activeEl.scrollIntoView) {
+      activeEl.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  // 检测光标位置前是否刚输入了 `@xxx`，是的话激活弹框
+  function detectMention(meeting) {
+    if (!meeting || !meeting.driverMode) { resetMention(); return; }
+    const inputBox = document.getElementById('mr-input-box');
+    if (!inputBox) { resetMention(); return; }
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) { resetMention(); return; }
+    const range = sel.getRangeAt(0);
+    if (!range.collapsed) { resetMention(); return; }
+    const node = range.startContainer;
+    if (!inputBox.contains(node) || node.nodeType !== Node.TEXT_NODE) {
+      resetMention();
+      return;
+    }
+    const offset = range.startOffset;
+    const text = node.nodeValue.slice(0, offset);
+    // 触发条件：行首或空白后紧跟 @xxx（光标在 xxx 末尾）
+    const m = text.match(/(^|\s)@([^\s@]*)$/);
+    if (!m) { resetMention(); return; }
+    const query = m[2];
+    const atIndex = offset - query.length - 1;
+
+    if (!mentionState.active) {
+      mentionState.items = buildMentionItems(meeting);
+      mentionState.selectedIdx = 0;
+      mentionState.active = true;
+    }
+    mentionState.query = query;
+    mentionState.atIndex = atIndex;
+    mentionState.textNode = node;
+    mentionState.filtered = filterMention(query);
+    renderMentionPopup();
+  }
+
+  function commitMention() {
+    const items = mentionState.filtered;
+    if (!items || items.length === 0) { resetMention(); return; }
+    const it = items[mentionState.selectedIdx] || items[0];
+    const node = mentionState.textNode;
+    const atIndex = mentionState.atIndex;
+    if (!node || atIndex < 0) { resetMention(); return; }
+    const text = node.nodeValue;
+    const sel = window.getSelection();
+    const caretOffset = (sel && sel.rangeCount && sel.getRangeAt(0).startContainer === node)
+      ? sel.getRangeAt(0).startOffset
+      : (atIndex + 1 + mentionState.query.length);
+    const before = text.slice(0, atIndex);
+    const after = text.slice(caretOffset);
+    const insertion = `@${it.label} `;
+    node.nodeValue = before + insertion + after;
+    const newOffset = before.length + insertion.length;
+    const range = document.createRange();
+    range.setStart(node, newOffset);
+    range.setEnd(node, newOffset);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    resetMention();
+  }
+
+  function onMentionKeydown(e) {
+    if (!mentionState.active) return;
+    const n = mentionState.filtered.length;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (n > 0) {
+        mentionState.selectedIdx = (mentionState.selectedIdx + 1) % n;
+        renderMentionPopup();
+      }
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (n > 0) {
+        mentionState.selectedIdx = (mentionState.selectedIdx - 1 + n) % n;
+        renderMentionPopup();
+      }
+      return;
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      if (n > 0) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        commitMention();
+      }
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      resetMention();
+    }
+  }
 
   const panelEl = () => document.getElementById('meeting-room-panel');
   const headerEl = () => document.getElementById('mr-header');
@@ -257,6 +745,13 @@
     renderToolbar(meeting);
     setupInput(meeting);
     startMarkerPoll();
+
+    // 投研圆桌：进入会议室即刷新持久化面板
+    if (meeting.researchMode) {
+      refreshRoundtablePanel(meeting);
+    } else {
+      _removeRtPanel();
+    }
   }
 
   function closeMeetingPanel() {
@@ -489,7 +984,16 @@
       if (typeof loadGpuRenderer === 'function') loadGpuRenderer(cached);
     }
     cached.terminal.refresh(0, cached.terminal.rows - 1);
+    // Sync scroll area to prevent stale scrollHeight locking
+    try {
+      const vpInst = cached.terminal._core && cached.terminal._core.viewport;
+      if (vpInst && typeof vpInst.syncScrollArea === 'function') {
+        vpInst.syncScrollArea(true);
+      }
+    } catch (_) {}
     cached.terminal.scrollToBottom();
+    const vp = cached.container.querySelector('.xterm-viewport');
+    if (vp) vp.scrollTop = vp.scrollHeight;
   }
 
   function subModelBadgeHtml(session) {
@@ -676,18 +1180,57 @@
     requestAnimationFrame(_refit);
   }
 
+  const _savedScrollPos = {}; // sessionId → { viewportY, vpScrollTop }
+
   function switchFocusTab(meeting, newSid) {
     const container = terminalsEl();
     if (!container) return;
+
+    // Save scroll position of the previously focused terminal
+    const prevSid = meeting.focusedSub || meeting.subSessions[0];
+    if (prevSid && prevSid !== newSid) {
+      const prev = subTerminals[prevSid];
+      if (prev && prev.terminal) {
+        const pvp = prev.container && prev.container.querySelector('.xterm-viewport');
+        _savedScrollPos[prevSid] = {
+          viewportY: prev.terminal.buffer.active.viewportY,
+          vpScrollTop: pvp ? pvp.scrollTop : 0,
+          atBottom: pvp ? (pvp.scrollTop + pvp.clientHeight >= pvp.scrollHeight - 5) : true,
+        };
+      }
+    }
+
     const slots = container.querySelectorAll('.mr-sub-slot');
     for (const slot of slots) {
       slot.style.display = slot.dataset.sessionId === newSid ? '' : 'none';
     }
-    // Use robust fit with rAF loop — single rAF often fires before layout propagates
     robustFit(newSid);
     setTimeout(() => {
       const cached = subTerminals[newSid];
-      if (cached && cached.terminal) cached.terminal.scrollToBottom();
+      if (!cached || !cached.terminal) return;
+      // Sync xterm's internal scroll area — same pattern as renderer.js showSession
+      try {
+        const vpInst = cached.terminal._core && cached.terminal._core.viewport;
+        if (vpInst && typeof vpInst.syncScrollArea === 'function') {
+          vpInst.syncScrollArea(true);
+        }
+      } catch (_) {}
+
+      // Restore saved position or scroll to bottom for fresh tabs
+      const saved = _savedScrollPos[newSid];
+      const vp = cached.container && cached.container.querySelector('.xterm-viewport');
+      if (saved && !saved.atBottom) {
+        try { cached.terminal.scrollToLine(saved.viewportY); } catch (_) {}
+        if (vp) vp.scrollTop = saved.vpScrollTop;
+      } else {
+        cached.terminal.scrollToBottom();
+        if (vp) vp.scrollTop = vp.scrollHeight;
+        requestAnimationFrame(() => {
+          if (vp) vp.scrollTop = vp.scrollHeight;
+          try { cached.terminal.scrollToBottom(); } catch (_) {}
+        });
+      }
+      cached.terminal.focus();
     }, 100);
   }
 
@@ -715,6 +1258,48 @@
       if (typeof MeetingBlackboard !== 'undefined') {
         MeetingBlackboard.renderBlackboardToolbar(meeting, el);
       }
+      return;
+    }
+
+    // researchMode 专属 toolbar：群策群力 / 总结发言（不展示主驾的"同步/自动同步/分歧检测"）
+    if (meeting.researchMode) {
+      const subs = _getRtSubInfo(meeting);
+      const opts = ['claude', 'gemini', 'codex']
+        .filter(k => subs[k])
+        .map(k => `<option value="${k}">${ {claude:'Claude',gemini:'Gemini',codex:'Codex'}[k] }</option>`)
+        .join('');
+      const cached = _rtPanelState[meeting.id];
+      const inProgress = cached && cached.currentMode && cached.currentMode !== 'idle';
+      const disabledAttr = inProgress ? 'disabled' : '';
+      const turns = cached ? (cached.turns || []).length : 0;
+      const debateDisabled = (turns < 1 || inProgress) ? 'disabled' : '';
+      el.innerHTML = `
+        <div class="mr-rt-toolbar">
+          <button class="mr-rt-tb-btn primary" id="mr-rt-debate-btn" ${debateDisabled} title="让三家结合对方观点重新发言（基于上一轮）">🤝 群策群力</button>
+          <span class="mr-rt-tb-divider"></span>
+          <label class="mr-rt-tb-pick">
+            <span class="mr-rt-tb-pick-label">总结人:</span>
+            <select id="mr-rt-summary-pick" ${disabledAttr}>${opts || '<option disabled>无可用 AI</option>'}</select>
+          </label>
+          <button class="mr-rt-tb-btn warm" id="mr-rt-summary-btn" ${debateDisabled} title="让选中的 AI 综合所有轮次给最终意见">📝 总结发言</button>
+          <span class="mr-rt-tb-status" id="mr-rt-tb-status">${inProgress ? '⏳ 处理中…' : (turns === 0 ? '先发个问题让三家本色发言' : `已 ${turns} 轮`)}</span>
+        </div>
+      `;
+      const debateBtn = el.querySelector('#mr-rt-debate-btn');
+      const summaryBtn = el.querySelector('#mr-rt-summary-btn');
+      const pick = el.querySelector('#mr-rt-summary-pick');
+      if (debateBtn) debateBtn.addEventListener('click', () => {
+        if (debateBtn.hasAttribute('disabled')) return;
+        const inputBox = document.getElementById('mr-input-box');
+        const extra = inputBox ? inputBox.innerText.trim() : '';
+        triggerRoundtable(meeting, 'debate', { userInput: extra });
+        if (inputBox) inputBox.textContent = '';
+      });
+      if (summaryBtn) summaryBtn.addEventListener('click', () => {
+        if (summaryBtn.hasAttribute('disabled')) return;
+        const summarizerKind = pick ? pick.value : 'claude';
+        triggerRoundtable(meeting, 'summary', { summarizerKind });
+      });
       return;
     }
 
@@ -775,20 +1360,29 @@
     if (!inputBox || !sendBtn) return;
 
     inputBox.textContent = '';
-    inputBox.dataset.placeholder = meeting.driverMode
-      ? '输入指令给 Claude（@review @gemini @codex 触发副驾）'
-      : '输入消息...';
+    inputBox.dataset.placeholder = meeting.researchMode
+      ? '输入投研问题，回车发送 → 三家本色独立回答（@debate / @summary @<who> 也可继续手输）'
+      : (meeting.driverMode
+        ? '输入 @ 选副驾，可同时 @gemini @codex'
+        : '输入消息...');
 
-    // Driver mode: disable target select (routing via @commands)
-    if (meeting.driverMode && targetSelect) {
-      targetSelect.style.opacity = '0.4';
-      targetSelect.style.pointerEvents = 'none';
-    } else if (targetSelect) {
-      targetSelect.style.opacity = '';
-      targetSelect.style.pointerEvents = '';
+    // researchMode：隐藏目标选择（路由由 fanout/debate/summary 决定）
+    // driverMode：禁用目标选择（路由由 @command 决定）
+    if (targetSelect) {
+      if (meeting.researchMode) {
+        targetSelect.style.display = 'none';
+      } else if (meeting.driverMode) {
+        targetSelect.style.display = '';
+        targetSelect.style.opacity = '0.4';
+        targetSelect.style.pointerEvents = 'none';
+      } else {
+        targetSelect.style.display = '';
+        targetSelect.style.opacity = '';
+        targetSelect.style.pointerEvents = '';
+      }
     }
 
-    if (targetSelect) {
+    if (targetSelect && !meeting.researchMode) {
       targetSelect.innerHTML = '<option value="all">全部</option>';
       for (const sid of meeting.subSessions) {
         const session = sessions ? sessions.get(sid) : null;
@@ -823,24 +1417,82 @@
       const mid = activeMeetingId;
       const m = meetingData[mid];
       if (!m) return;
-      const sel = document.getElementById('mr-input-target');
-      if (sel) m.sendTarget = sel.value;
+      // researchMode 下 sendTarget 由 fanout/debate/summary 路由决定，不依赖隐藏的 select
+      // （select 隐藏后 value 是 ''，不能让它把 m.sendTarget 覆盖成空）
+      if (!m.researchMode) {
+        const sel = document.getElementById('mr-input-target');
+        if (sel) m.sendTarget = sel.value;
+      } else {
+        m.sendTarget = 'all';
+      }
       handleMeetingSend(text, m);
       if (box) box.textContent = '';
     };
 
     sendBtn.addEventListener('click', doSend);
 
+    // @ 弹框：input 事件监听打字，keydown 优先让弹框处理方向键/Enter/Tab/Escape
+    inputBox.addEventListener('input', () => {
+      const m = meetingData[activeMeetingId];
+      if (m) detectMention(m);
+    });
+
     inputBox.addEventListener('keydown', (e) => {
+      // 弹框激活时优先消费方向键/Enter/Tab/Escape
+      if (mentionState.active) {
+        onMentionKeydown(e);
+        if (e.defaultPrevented) return;
+      }
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         doSend();
       }
     });
+
+    // 失焦关闭弹框（点击其他区域）
+    inputBox.addEventListener('blur', () => {
+      // 短暂延迟，让 popup 的 mousedown 先触发 commitMention
+      setTimeout(() => resetMention(), 150);
+    });
+
+    // 点击弹框项直接提交
+    const popup = document.getElementById('mr-mention-popup');
+    if (popup) {
+      popup.addEventListener('mousedown', (e) => {
+        const item = e.target.closest('.mr-mention-item');
+        if (item) {
+          e.preventDefault();
+          mentionState.selectedIdx = parseInt(item.dataset.idx || '0', 10);
+          commitMention();
+          // commitMention 后焦点回到 inputBox
+          inputBox.focus();
+        }
+      });
+    }
   }
 
   async function handleMeetingSend(text, meeting) {
     const current = meetingData[meeting.id] || meeting;
+
+    // --- Research Mode routing 优先 ---
+    // 路由完全由 fanout/debate/summary 决定，不依赖 sendTarget/validTargets。
+    // 必须在 validTargets 检查前判定，否则 researchMode 下 sendTarget = 'all' / subSessions 为空时会被拦掉。
+    if (current.researchMode) {
+      const cmd = parseDriverCommand(text, current);
+      if (cmd.type === 'rt-fanout' || cmd.type === 'rt-debate' || cmd.type === 'rt-summary') {
+        const mode = cmd.type === 'rt-fanout' ? 'fanout' : cmd.type === 'rt-debate' ? 'debate' : 'summary';
+        // 也写入 meeting timeline（黑板视图回放用）
+        try {
+          await ipcRenderer.invoke('meeting-append-user-turn', { meetingId: meeting.id, text });
+        } catch (e) { console.warn('[meeting-room] append-user-turn failed:', e.message); }
+        triggerRoundtable(current, mode, {
+          userInput: cmd.text || '',
+          summarizerKind: cmd.summarizerKind || null,
+        });
+        return;
+      }
+    }
+
     const targets = current.sendTarget === 'all' ? current.subSessions : [current.sendTarget];
 
     // Single defensive filter: only sub-sessions still in the meeting and not dormant.
@@ -850,24 +1502,11 @@
       return s && s.status !== 'dormant';
     });
 
-    // Phase A: compute incremental context BEFORE appending user turn.
-    // This way the just-typed user message does NOT leak into its own injection.
-    // Cursor advance here uses the pre-append timeline state.
-    const contextBySid = {};
-    if (meeting.syncContext) {
-      for (const sessionId of validTargets) {
-        const result = await ipcRenderer.invoke('meeting-incremental-context', {
-          meetingId: meeting.id, targetSid: sessionId,
-        });
-        if (result && result.turns && result.turns.length > 0) {
-          contextBySid[sessionId] = formatIncrementalContext(result.turns, sessions);
-        }
-      }
-    }
-
     // Phase B: append user turn to timeline. Always do this (even when no valid
     // targets) so Feed UI history is complete.
     await ipcRenderer.invoke('meeting-append-user-turn', { meetingId: meeting.id, text });
+
+    const contextBySid = {};
 
     if (validTargets.length === 0) {
       console.warn('[meeting-room] handleMeetingSend: no valid targets, message recorded in timeline only');
@@ -880,7 +1519,6 @@
     if (current.driverMode) {
       const cmd = parseDriverCommand(text, current);
       if (cmd.type === 'review') {
-        renderReviewResult(current, [{ sid: 'pending', verdict: 'PENDING', reason: '审查中...' }]);
         triggerReview(current, cmd.text, 'user-review');
         meeting.lastMessageTime = Date.now();
         ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { lastMessageTime: meeting.lastMessageTime } });
@@ -888,31 +1526,34 @@
       }
       let driverTargets;
       if (cmd.type === 'direct') {
-        const sid = findSessionByKind(current, cmd.targetKind);
-        driverTargets = sid ? [sid] : [];
-        // For @gemini/@codex with summary enabled, prepend context
-        if (_driverSummaryEnabled && cmd.targetKind !== 'claude') {
-          let claudeLastOutput = '';
-          try { claudeLastOutput = await ipcRenderer.invoke('get-last-assistant-text', current.driverSessionId) || ''; } catch {}
-          let recentTl = '';
-          try { recentTl = await ipcRenderer.invoke('driver-recent-timeline', { meetingId: meeting.id, count: 5 }); } catch {}
-          const ctx = (recentTl ? recentTl + '\n' : '') + (claudeLastOutput ? '--- Claude 最近输出 ---\n' + claudeLastOutput.slice(0, 5000) + '\n---\n' : '');
-          if (ctx && driverTargets.length > 0) {
-            contextBySid[driverTargets[0]] = ctx;
-          }
+        const kinds = cmd.targetKinds || (cmd.targetKind ? [cmd.targetKind] : []);
+        const sids = [];
+        for (const kind of kinds) {
+          const sid = findSessionByKind(current, kind);
+          if (sid && !sids.includes(sid)) sids.push(sid);
         }
+        driverTargets = sids;
       } else {
         driverTargets = current.driverSessionId ? [current.driverSessionId] : validTargets;
       }
-      // Use driverTargets instead of validTargets
+
+      // Inject pendingReviewId hint when sending to Claude
+      let pendingHint = '';
+      if (current.pendingReviewId && driverTargets.includes(current.driverSessionId)) {
+        pendingHint = `[系统提示] 副驾审查已完成，请先读取 .arena/reviews/${current.pendingReviewId}.md 并处理。\n`;
+        current.pendingReviewId = null;
+        ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { pendingReviewId: null } });
+      }
+
       for (const sessionId of driverTargets) {
-        const payload = (contextBySid[sessionId] || '') + (cmd.text || text);
+        const payload = pendingHint + (contextBySid[sessionId] || '') + (cmd.text || text);
         ipcRenderer.send('terminal-input', { sessionId, data: payload });
         const session = sessions ? sessions.get(sessionId) : null;
-        const enterDelay = session && session.kind === 'codex' ? 300 : 80;
+        const baseDelay = session && session.kind === 'codex' ? 400 : 200;
+        const sizeDelay = Math.min(Math.floor(payload.length / 100) * 10, 500);
         setTimeout(() => {
           ipcRenderer.send('terminal-input', { sessionId, data: '\r' });
-        }, enterDelay);
+        }, baseDelay + sizeDelay);
       }
       meeting.lastMessageTime = Date.now();
       ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { lastMessageTime: meeting.lastMessageTime } });
@@ -924,10 +1565,11 @@
       const payload = (contextBySid[sessionId] || '') + text;
       ipcRenderer.send('terminal-input', { sessionId, data: payload });
       const session = sessions ? sessions.get(sessionId) : null;
-      const enterDelay = session && session.kind === 'codex' ? 300 : 80;
+      const baseDelay = session && session.kind === 'codex' ? 400 : 200;
+      const sizeDelay = Math.min(Math.floor(payload.length / 100) * 10, 500);
       setTimeout(() => {
         ipcRenderer.send('terminal-input', { sessionId, data: '\r' });
-      }, enterDelay);
+      }, baseDelay + sizeDelay);
     }
 
     meeting.lastMessageTime = Date.now();
