@@ -1512,8 +1512,9 @@
     // --- Research Mode routing 优先 ---
     // 路由完全由 fanout/debate/summary 决定，不依赖 sendTarget/validTargets。
     // 必须在 validTargets 检查前判定，否则 researchMode 下 sendTarget = 'all' / subSessions 为空时会被拦掉。
-    if (current.researchMode) {
+    if (current.researchMode || current.roundtableMode) {
       const cmd = parseDriverCommand(text, current);
+      // 公共轮次：fanout / debate / summary 走 orchestrator
       if (cmd.type === 'rt-fanout' || cmd.type === 'rt-debate' || cmd.type === 'rt-summary') {
         const mode = cmd.type === 'rt-fanout' ? 'fanout' : cmd.type === 'rt-debate' ? 'debate' : 'summary';
         // 也写入 meeting timeline（黑板视图回放用）
@@ -1524,6 +1525,44 @@
           userInput: cmd.text || '',
           summarizerKind: cmd.summarizerKind || null,
         });
+        return;
+      }
+      // 私聊：单家或多家但非全员，不入轮次
+      if (cmd.type === 'rt-private') {
+        const kinds = cmd.targetKinds || [];
+        const sids = [];
+        for (const kind of kinds) {
+          const sid = findSessionByKind(current, kind);
+          if (sid && !sids.includes(sid)) sids.push(sid);
+        }
+        if (sids.length === 0) {
+          console.warn('[meeting-room] rt-private: no matching session for kinds', kinds);
+          return;
+        }
+        try {
+          await ipcRenderer.invoke('meeting-append-user-turn', { meetingId: meeting.id, text });
+        } catch (e) { console.warn('[meeting-room] append-user-turn failed:', e.message); }
+        const payload = cmd.text || '';
+        for (const sessionId of sids) {
+          ipcRenderer.send('terminal-input', { sessionId, data: payload });
+          const session = sessions ? sessions.get(sessionId) : null;
+          const baseDelay = session && session.kind === 'codex' ? 400 : 200;
+          const sizeDelay = Math.min(Math.floor(payload.length / 100) * 10, 500);
+          setTimeout(() => {
+            ipcRenderer.send('terminal-input', { sessionId, data: '\r' });
+          }, baseDelay + sizeDelay);
+        }
+        // 异步写入私聊存储（响应文本后续可由 transcript-tap 回填，MVP 留空）
+        for (const kind of kinds) {
+          ipcRenderer.invoke('roundtable-private:append', {
+            meetingId: meeting.id,
+            kind,
+            userInput: payload,
+            response: '',
+          }).catch(e => console.warn('[meeting-room] private append failed:', e.message));
+        }
+        meeting.lastMessageTime = Date.now();
+        ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { lastMessageTime: meeting.lastMessageTime } });
         return;
       }
     }
