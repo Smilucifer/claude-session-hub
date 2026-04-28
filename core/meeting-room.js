@@ -92,6 +92,18 @@ class MeetingRoomManager {
   updateMeeting(meetingId, fields) {
     const m = this.meetings.get(meetingId);
     if (!m) return null;
+    // Loud-fail on ambiguous mode input: callers must set at most one mode to true at a time.
+    // Without this guard, the three sequential mutex if-blocks below would silently zero out
+    // ALL mode flags when 2+ modes are set true together, leaving the meeting in undefined state.
+    const trueCount = ['roundtableMode', 'researchMode', 'driverMode']
+      .filter(k => fields[k] === true).length;
+    if (trueCount > 1) {
+      throw new Error(`Cannot set multiple modes to true simultaneously: ${JSON.stringify({
+        roundtableMode: fields.roundtableMode,
+        researchMode: fields.researchMode,
+        driverMode: fields.driverMode,
+      })}`);
+    }
     const allowed = [
       'title', 'layout', 'focusedSub', 'syncContext', 'sendTarget', 'pinned',
       'lastMessageTime', 'status', 'lastScene', 'driverMode', 'driverSessionId',
