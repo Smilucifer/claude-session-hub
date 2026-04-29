@@ -54,7 +54,7 @@ const RESEARCH_RULES_TEMPLATE = `# 投研圆桌规则（Research Roundtable）
 
 ### 优先级 2：MCP 工具（如可用）
 - \`fetch_lindang_stock\` / \`fetch_concept_stocks\` / \`fetch_sector_overview\`（Sprint 3 后启用）
-- \`ai-team.*\` 等全局 MCP 工具（系统已自动批准）
+- 其他已批准的全局 MCP 工具
 
 ### 优先级 3：自身联网（LinDangAgent + MCP 不够时 fallback）
 - WebFetch / WebSearch（Claude）/ Google Search grounding（Gemini）/ web_search（Codex）

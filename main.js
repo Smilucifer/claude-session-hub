@@ -6,7 +6,6 @@ const http = require('http');
 const os = require('os');
 let QRCode = null;
 const { SessionManager } = require('./core/session-manager.js');
-const { TeamSessionManager } = require('./core/team-session-manager.js');
 const stateStore = require('./core/state-store.js');
 const { createMobileServer } = require('./core/mobile-server.js');
 const mobileAuth = require('./core/mobile-auth.js');
@@ -272,7 +271,6 @@ const HOOK_TOKEN = crypto.randomBytes(16).toString('hex');
 
 let hookPort = null;  // set after listen() succeeds
 let mobileSrv = null; // set after app.whenReady startup
-let teamSessionManager = null; // set after hookPort is known
 
 let mainWindow;
 const sessionManager = new SessionManager();
@@ -1384,7 +1382,7 @@ ipcMain.handle('resume-session', async (_e, meta) => {
   const isGeminiOrCodex = (meta.kind === 'gemini' || meta.kind === 'codex');
 
   // If resuming a driver-mode Claude session, re-inject the rules + MCP config
-  // (--mcp-config does work with --resume; we verified team-room reuses the same flag).
+  // (--mcp-config works with --resume).
   // hookPort 不可用时退化为普通 session（同 add-meeting-sub 的处理），避免 Claude
   // 收到"必须调用 MCP 工具"指令但没有工具可调，让安全约束悬空。
   let driverOpts = {};
@@ -1632,14 +1630,13 @@ const hookServer = http.createServer((req, res) => {
 
   const isHook = req.method === 'POST' && req.url.startsWith('/api/hook/');
   const isStatus = req.method === 'POST' && req.url === '/api/status';
-  const isTeamResponse = req.method === 'POST' && req.url === '/api/team/response';
   const isDriverReview = req.method === 'POST' && req.url === '/api/driver/request-review';
   const isDriverRemember = req.method === 'POST' && req.url === '/api/driver/remember';
   const isResearchFetchStock = req.method === 'POST' && req.url === '/api/research/fetch-stock';
   const isResearchFetchConcept = req.method === 'POST' && req.url === '/api/research/fetch-concept';
   const isResearchFetchSector = req.method === 'POST' && req.url === '/api/research/fetch-sector';
   const isResearchFetch = isResearchFetchStock || isResearchFetchConcept || isResearchFetchSector;
-  if (!isHook && !isStatus && !isTeamResponse && !isDriverReview && !isDriverRemember && !isResearchFetch) {
+  if (!isHook && !isStatus && !isDriverReview && !isDriverRemember && !isResearchFetch) {
     res.writeHead(404); res.end('{}'); return;
   }
 
@@ -1769,20 +1766,6 @@ const hookServer = http.createServer((req, res) => {
       res.end(JSON.stringify(result));
       return;
     }
-    // Team MCP callback — no hook token required (loopback only)
-    if (isTeamResponse) {
-      if (teamSessionManager && parsed.room_id && parsed.character_id && parsed.content) {
-        teamSessionManager.onResponse(parsed.room_id, parsed.character_id, parsed.content, parsed.event_id);
-        sendToRenderer('team-response', {
-          roomId: parsed.room_id,
-          characterId: parsed.character_id,
-          content: parsed.content,
-          eventId: parsed.event_id,
-        });
-      }
-      res.writeHead(200); res.end('{"ok":true}');
-      return;
-    }
     if (parsed.token !== HOOK_TOKEN) {
       res.writeHead(403); res.end('{}'); return;
     }
@@ -1832,9 +1815,6 @@ const hookServer = http.createServer((req, res) => {
           linesRemoved: parsed.linesRemoved,
         });
         if (filtered.anyAccepted) cacheAccountUsage({ usage5h: filtered.usage5h, usage7d: filtered.usage7d });
-        if (teamSessionManager) {
-          teamSessionManager.updateStatusForSession(parsed.sessionId, parsed);
-        }
       }
     }
     res.writeHead(200); res.end('{}');
@@ -2171,8 +2151,6 @@ app.whenReady().then(async () => {
   if (hookPort) {
     console.log(`[hub] hook server listening on 127.0.0.1:${hookPort}`);
     sessionManager.hookPort = hookPort;
-    teamSessionManager = new TeamSessionManager(sessionManager, hookPort);
-    teamBridge.setTeamSessionManager(teamSessionManager);
   } else {
     console.warn('[hub] hook server failed to bind — falling back to silence detection');
   }
@@ -2199,82 +2177,8 @@ app.whenReady().then(async () => {
   }
 });
 
-// --- AI Team Room IPC ---
-const { TeamBridge } = require('./core/team-bridge.js');
-const teamBridge = new TeamBridge();
-// TeamSessionManager is wired to teamBridge lazily after hookPort is known
-// (see app.whenReady). teamBridge._teamSessionManager is set there too.
-
-ipcMain.handle('team:isInitialized', () => teamBridge.isInitialized());
-ipcMain.handle('team:loadRooms', () => teamBridge._getCachedRooms());
-ipcMain.handle('team:loadCharacters', () => teamBridge._getCachedCharacters());
-ipcMain.handle('team:warm', (_, roomId) => teamBridge.warmRoom(roomId));
-ipcMain.handle('team:getEvents', (_, roomId, limit) => teamBridge.getEvents(roomId, limit));
-ipcMain.handle('team:getWiki', (_, roomId) => teamBridge.getWiki(roomId));
-ipcMain.handle('team:ask', async (event, roomId, message, mode) => {
-  try {
-    const result = await teamBridge.askTeam(roomId, message, (type, data) => {
-      const sender = event.sender;
-      if (sender && !sender.isDestroyed()) {
-        sender.send('team:event', { type, data, roomId });
-      }
-    }, 300000, mode || null);
-    return result;
-  } catch (e) {
-    return { code: 1, stderr: e.message, error: true };
-  }
-});
-
-ipcMain.handle('team:huddle', async (event, roomId) => {
-  try {
-    const result = await teamBridge.huddle(roomId, (type, data) => {
-      const sender = event.sender;
-      if (sender && !sender.isDestroyed()) {
-        sender.send('team:event', { type, data, roomId });
-      }
-    });
-    return result;
-  } catch (e) {
-    return { code: 1, stderr: e.message, error: true };
-  }
-});
-
-ipcMain.handle('team:synthesize', async (event, roomId) => {
-  try {
-    const result = await teamBridge.synthesize(roomId, (type, data) => {
-      const sender = event.sender;
-      if (sender && !sender.isDestroyed()) {
-        sender.send('team:event', { type, data, roomId });
-      }
-    });
-    return result;
-  } catch (e) {
-    return { code: 1, stderr: e.message, error: true };
-  }
-});
-
-ipcMain.handle('team:readFile', async (_, filePath) => {
-  const resolved = path.resolve(filePath);
-  const content = fs.readFileSync(resolved, 'utf-8');
-  if (content.length > 8192) return content.slice(0, 8192) + '\n... (截断，原文件 ' + content.length + ' 字符)';
-  return content;
-});
-
-ipcMain.handle('team:createRoom', async (_, name, memberIds) => {
-  return teamBridge.createRoom(name, memberIds);
-});
-
-ipcMain.handle('team:getRoomPreviews', () => teamBridge.getRoomPreviews());
-ipcMain.handle('team:deleteRoom', (_, roomId) => teamBridge.deleteRoom(roomId));
-ipcMain.handle('team:getWikiCandidates', (_, roomId) => teamBridge.getWikiCandidates(roomId));
-ipcMain.handle('team:approveWiki', (_, factId) => teamBridge.approveWiki(factId));
-ipcMain.handle('team:rejectWiki', (_, factId) => teamBridge.rejectWiki(factId));
-ipcMain.handle('team:exportConversation', (_, roomId) => teamBridge.exportConversation(roomId));
-
 app.on('before-quit', async () => {
   stateStore.save({ version: 1, cleanShutdown: true, sessions: lastPersistedSessions, meetings: meetingManager.getAllMeetings() }, { sync: true });
-  try { teamBridge.cleanup(); } catch(e) {}
-  if (teamSessionManager) { try { teamSessionManager.closeAll(); } catch(e) {} }
   if (mobileSrv) { try { await mobileSrv.close(); } catch {} }
   try {
     await meetingStore.flushAll();

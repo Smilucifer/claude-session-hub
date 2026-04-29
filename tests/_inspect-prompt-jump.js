@@ -63,7 +63,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   // Diagnose all panels
   const layoutDiag = await evalJs([
     '(function() {',
-    '  const all = ["terminal-panel","preview-panel","memo-panel","team-room-panel","meeting-room-panel"];',
+    '  const all = ["terminal-panel","preview-panel","memo-panel","meeting-room-panel"];',
     '  const out = {};',
     '  for (const id of all) {',
     '    const el = document.getElementById(id);',

@@ -309,7 +309,6 @@ const btnExpandEl = document.getElementById('btn-expand-sidebar');
 
 let searchQuery = '';
 let contextMenuSessionId = null;
-let contextMenuIsTeamRoom = false;
 
 // Font size — shared across all terminals, persisted
 const FONT_SIZE_KEY = 'claude-hub-font-size';
@@ -522,33 +521,9 @@ function escapeHtml(text) {
 // --- Session list rendering ---
 // Sort: pinned sessions first (by their own time), then unpinned by lastMessageTime.
 // Filter: search query matches title or preview (case-insensitive).
-// Mixed list: regular sessions + AI Team Rooms share the same sort + rendering.
+// Mixed list: regular sessions + meeting rooms share the same sort + rendering.
 function renderSessionList() {
   const regularSessions = Array.from(sessions.values()).filter(s => !s.meetingId);
-
-  // Fold team rooms into the unified list. Preview is "actor: content" format,
-  // time sort uses the latest message's ts; both parallel how regular sessions
-  // work so a team room with a recent reply bubbles up to the top.
-  const teamItems = teamRooms.map(room => {
-    const preview = teamRoomPreviews[room.id];
-    const previewText = preview
-      ? `${teamActorDisplay(preview.actor, preview.actorName)}: ${preview.content}`
-      : (room.members || []).join(', ');
-    const tsSec = preview ? parseInt(preview.ts) : 0;
-    const idTs = room.id ? parseInt(room.id.replace('room-', ''), 10) : 0;
-    const tsMs = tsSec ? tsSec * 1000 : (idTs || Date.now());
-    return {
-      id: room.id,
-      title: room.display_name || room.id,
-      lastMessageTime: tsMs,
-      createdAt: tsMs,
-      lastOutputPreview: previewText,
-      status: 'running',
-      unreadCount: teamRoomUnread[room.id] || 0,
-      _isTeamRoom: true,
-      _room: room,
-    };
-  });
 
   const meetingItems = Object.values(meetings).map(m => ({
     id: m.id,
@@ -563,7 +538,7 @@ function renderSessionList() {
     _meeting: m,
   }));
 
-  const all = regularSessions.concat(teamItems).concat(meetingItems);
+  const all = regularSessions.concat(meetingItems);
 
   const filtered = searchQuery
     ? all.filter(s => {
@@ -577,10 +552,9 @@ function renderSessionList() {
     return b.lastMessageTime - a.lastMessageTime || b.createdAt - a.createdAt;
   });
 
-  // Hide any leftover [Team] PTY sessions from legacy code path — those are
-  // never user-visible entry points; team rooms come in via teamItems above.
+  // Hide any leftover legacy background PTY sessions from the removed room path.
   const visible = sorted.filter(s => !s.title || !s.title.startsWith('[Team] '));
-  const totalCount = regularSessions.length + teamItems.length;
+  const totalCount = regularSessions.length + meetingItems.length;
 
   sessionCountEl.textContent = searchQuery
     ? `${visible.length}/${totalCount}`
@@ -593,26 +567,6 @@ function renderSessionList() {
   sessionListEl.innerHTML = '';
 
   for (const s of visible) {
-    if (s._isTeamRoom) {
-      const isActive = activeTeamRoomId === s.id;
-      const div = document.createElement('div');
-      div.className = 'session-item team-room' + (isActive ? ' selected' : '') + (!isActive && s.unreadCount > 0 ? ' has-unread' : '');
-      div.innerHTML = `
-        <div class="session-item-header">
-          <span class="session-title"><span class="session-status running"></span>${escapeHtml(s.title)}</span>
-          <span class="session-header-right">
-            ${s.unreadCount > 0 && !isActive ? `<span class="unread-badge">${s.unreadCount}</span>` : ''}
-            <span class="session-time">${s.lastMessageTime ? formatTime(s.lastMessageTime) : escapeHtml(s._room.task_mode || 'natural')}</span>
-          </span>
-        </div>
-        <div class="session-preview">${escapeHtml(s.lastOutputPreview)}</div>
-      `;
-      div.addEventListener('click', () => selectTeamRoom(s.id));
-      div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY, true); });
-      sessionListEl.appendChild(div);
-      continue;
-    }
-
     if (s._isMeeting) {
       const isActive = activeMeetingId === s.id;
       const div = document.createElement('div');
@@ -690,24 +644,8 @@ sessionListEl.addEventListener('mousedown', (e) => {
   setTimeout(() => r.remove(), 450);
 });
 
-// --- AI Team Room sidebar ---
-let teamRooms = [];
-let teamRoomPreviews = {};
-let teamRoomUnread = {}; // { roomId: unreadCount } — parallels session.unreadCount
-let teamCharacters = {}; // { id: {display_name, ...} } — cached once per boot
-let activeTeamRoomId = null;
 let activeMeetingId = null;
 let meetings = {};
-
-// Resolve actor id → display name. Team event payloads already include `name`,
-// but historical previews loaded from DB only have actor id, so we fall back
-// to the characters cache.
-function teamActorDisplay(actorId, actorName) {
-  if (actorId === 'user') return '你';
-  if (actorName) return actorName;
-  const ch = teamCharacters[actorId];
-  return (ch && ch.display_name) || actorId;
-}
 
 function formatRelativeTime(ts) {
   if (!ts) return '';
@@ -721,82 +659,14 @@ function formatRelativeTime(ts) {
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
-async function loadTeamRooms() {
-  try {
-    const initialized = await ipcRenderer.invoke('team:isInitialized');
-    if (!initialized) { teamRooms = []; return; }
-    const [rooms, previews, chars] = await Promise.all([
-      ipcRenderer.invoke('team:loadRooms'),
-      ipcRenderer.invoke('team:getRoomPreviews').catch(() => ({})),
-      ipcRenderer.invoke('team:loadCharacters').catch(() => ({})),
-    ]);
-    teamRooms = rooms;
-    teamRoomPreviews = previews || {};
-    teamCharacters = chars || {};
-    renderTeamRooms();
-  } catch (e) {
-    console.warn('[team] loadRooms failed:', e.message);
-    teamRooms = [];
-  }
-}
-
-// Team rooms are now rendered inside renderSessionList with unified sort
-// order. Kept as a thin alias so existing callers (loadTeamRooms etc) just
-// trigger a full re-render without caring about the mixed-list detail.
-function renderTeamRooms() {
-  renderSessionList();
-}
-
-// Delete a team room: IPC delete from DB+YAML, clean client state, hide panel.
-// Called from both header X button (team-room.js) and right-click Close.
-async function deleteTeamRoom(roomId) {
-  if (!roomId) return;
-  try { await ipcRenderer.invoke('team:deleteRoom', roomId); } catch (_) {}
-  teamRooms = teamRooms.filter(r => r.id !== roomId);
-  delete teamRoomPreviews[roomId];
-  delete teamRoomUnread[roomId];
-  if (activeTeamRoomId === roomId) {
-    activeTeamRoomId = null;
-    const trPanel = document.getElementById('team-room-panel');
-    if (trPanel) trPanel.style.display = 'none';
-    if (emptyStateEl) emptyStateEl.style.display = '';
-  }
-  renderSessionList();
-}
-
-function selectTeamRoom(roomId) {
-  savePreviewState();
-  activeSessionId = null;
-  activeMeetingId = null;
-  const mrp = document.getElementById('meeting-room-panel');
-  if (mrp) mrp.style.display = 'none';
-  clearPreviewUI();
-  activeTeamRoomId = roomId;
-  // Opening the room counts as "reading" any queued messages — parallels how
-  // selectSession resets session.unreadCount = 0.
-  if (teamRoomUnread[roomId]) teamRoomUnread[roomId] = 0;
-  if (terminalPanelEl) terminalPanelEl.style.display = 'none';
-  if (emptyStateEl) emptyStateEl.style.display = 'none';
-  const trPanel = document.getElementById('team-room-panel');
-  if (trPanel) trPanel.style.display = 'flex';
-  if (typeof TeamRoom !== 'undefined' && TeamRoom.openRoom) {
-    const room = teamRooms.find(r => r.id === roomId);
-    TeamRoom.openRoom(roomId, room);
-  }
-  renderSessionList();
-  restorePreviewForContext(`teamroom:${roomId}`);
-}
 
 function selectMeeting(meetingId) {
   savePreviewState();
   activeSessionId = null;
-  activeTeamRoomId = null;
   activeMeetingId = meetingId;
 
   if (terminalPanelEl) terminalPanelEl.style.display = 'none';
   if (emptyStateEl) emptyStateEl.style.display = 'none';
-  const trp = document.getElementById('team-room-panel');
-  if (trp) trp.style.display = 'none';
   clearPreviewUI();
 
   const meeting = meetings[meetingId];
@@ -816,30 +686,6 @@ function selectMeeting(meetingId) {
   renderSessionList();
   restorePreviewForContext(`meeting:${meetingId}`);
 }
-
-// Global team:event listener — tracks per-room preview + unread badge so the
-// sidebar updates live when messages arrive for rooms the user isn't viewing.
-// team-room.js has its own listener scoped to the open-room thread; this one
-// is independent and only touches sidebar state.
-ipcRenderer.on('team:event', (_e, payload) => {
-  if (!payload || payload.type !== 'event') return;
-  const rid = payload.roomId;
-  const evt = payload.data;
-  if (!rid || !evt || evt.type !== 'message') return;
-  const content = (evt.content || '').trim();
-  if (!content) return;
-
-  teamRoomPreviews[rid] = {
-    actor: evt.actor || 'system',
-    actorName: evt.name || null,
-    content: content.slice(0, 200),
-    ts: evt.ts || Math.floor(Date.now() / 1000),
-  };
-  if (activeTeamRoomId !== rid) {
-    teamRoomUnread[rid] = (teamRoomUnread[rid] || 0) + 1;
-  }
-  renderSessionList();
-});
 
 // --- Terminal management ---
 // Load GPU renderer. Default is Canvas (stable + GPU-accelerated 2D). WebGL
@@ -1227,7 +1073,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
   if (cached._resizeHandler) window.removeEventListener('resize', cached._resizeHandler);
   const handleResize = () => {
     // Guard: ResizeObserver/resize can fire while the terminal's parent panel
-    // is display:none (e.g. team room is active). Fitting against a zero-width
+    // is display:none (e.g. another workspace panel is active). Fitting against a zero-width
     // container collapses xterm to the minimum 1 col and the canvas stays
     // squeezed even after the panel re-opens.
     if (!cached.container.offsetWidth) return;
@@ -1671,16 +1517,7 @@ function startRename(sessionId, titleSpan) {
 
 // --- Session selection ---
 function selectSession(id) {
-  // Hide team room if showing. Capture whether we're coming *from* a team room
-  // so we can force a re-fit after layout settles — the cached terminal's
-  // xterm canvas stayed with stale dimensions while terminal-panel was
-  // display:none, and the single rAF inside showTerminal is sometimes too
-  // early to see the real width.
   savePreviewState();
-  const wasTeamRoom = activeTeamRoomId != null;
-  activeTeamRoomId = null;
-  const trp = document.getElementById('team-room-panel');
-  if (trp) trp.style.display = 'none';
   activeMeetingId = null;
   const mrp = document.getElementById('meeting-room-panel');
   if (mrp) mrp.style.display = 'none';
@@ -1706,22 +1543,6 @@ function selectSession(id) {
   ipcRenderer.send('focus-session', { sessionId: id });
   renderSessionList();
   showTerminal(id, { focus: switching });
-  // Terminal squeeze fix (ref commit e07ba0b on feature/lite-pty-rooms, never
-  // made it to master before): when coming back from a team room, the first
-  // fit inside showTerminal may run before the flex layout has propagated the
-  // real width to the terminal container, leaving xterm with a shrunken
-  // canvas. Keep rAF-ing until offsetWidth is non-zero, then re-fit + notify
-  // the PTY.
-  if (wasTeamRoom) {
-    const _refit = () => {
-      const c = terminalCache.get(id);
-      if (!c || !c.fitAddon) return;
-      if (!c.container.offsetWidth) { requestAnimationFrame(_refit); return; }
-      try { c.fitAddon.fit(); } catch (_) {}
-      ipcRenderer.send('terminal-resize', { sessionId: id, cols: c.terminal.cols, rows: c.terminal.rows });
-    };
-    requestAnimationFrame(_refit);
-  }
   // Snapshot the current question signature as "read" AFTER showTerminal —
   // on first selection that's when cached.opened flips to true, and
   // getQuestionsSignature needs an opened buffer to read. Calling before
@@ -1747,10 +1568,6 @@ for (const btn of document.querySelectorAll('.new-session-option')) {
     menuEl.style.display = 'none';
     if (btn.dataset.kind === 'meeting') {
       openCreateMeetingModal();
-      return;
-    }
-    if (btn.dataset.kind === 'team-room') {
-      openCreateRoomModal();
       return;
     }
     await ipcRenderer.invoke('create-session', btn.dataset.kind);
@@ -1958,98 +1775,6 @@ if (document.readyState === 'loading') {
 } else {
   _initCovenantUIListeners();
 }
-
-// --- Create Team Room modal ---
-const createRoomModalEl = document.getElementById('create-room-modal');
-const createRoomNameEl = document.getElementById('create-room-name');
-const createRoomMembersEl = document.getElementById('create-room-members');
-const createRoomConfirmEl = document.getElementById('create-room-confirm');
-
-const ROOM_NAME_POOL = [
-  '赤焰','碧风','苍雷','紫潮','银光','金翼','翠岩','玄冰','朱云','墨虹',
-  '烈阳','幽泉','霜月','岚峰','铁壁','惊涛','飞霜','裂空','奔雷','破晓',
-  '星河','龙吟','凤鸣','虎啸','鹤唳','鹰击','狼烟','豹变','麟角','鲲鹏',
-];
-
-function generateRoomName() {
-  const taken = new Set(teamRooms.map(r => r.display_name || ''));
-  for (const name of ROOM_NAME_POOL) {
-    if (!taken.has(name)) return name;
-  }
-  let n = teamRooms.length + 1;
-  while (taken.has(`作战室 ${n}`)) n++;
-  return `作战室 ${n}`;
-}
-
-async function openCreateRoomModal() {
-  createRoomModalEl.style.display = 'flex';
-  createRoomNameEl.value = generateRoomName();
-  createRoomConfirmEl.disabled = false;
-  createRoomConfirmEl.textContent = '创建';
-  createRoomMembersEl.innerHTML = '';
-
-  try {
-    const chars = await ipcRenderer.invoke('team:loadCharacters');
-    const charEntries = Object.entries(chars || {});
-    for (const [id, ch] of charEntries) {
-      const label = document.createElement('label');
-      label.style.cssText = 'display:flex;align-items:center;gap:8px;color:var(--text-primary);font-size:14px;cursor:pointer';
-      label.innerHTML = `<input type="checkbox" class="create-room-cb" data-char-id="${escapeHtml(id)}" checked>
-        ${escapeHtml(ch.display_name || id)} <span style="color:var(--text-secondary);font-size:12px">(${escapeHtml(ch.backing_cli || '')})</span>`;
-      createRoomMembersEl.appendChild(label);
-    }
-  } catch (e) {
-    createRoomMembersEl.innerHTML = '<div style="color:var(--text-secondary)">无法加载角色列表</div>';
-  }
-
-  requestAnimationFrame(() => createRoomNameEl.focus());
-}
-
-function closeCreateRoomModal() {
-  createRoomModalEl.style.display = 'none';
-}
-
-async function submitCreateRoom() {
-  const name = createRoomNameEl.value.trim();
-  if (!name) return;
-  const memberIds = [...document.querySelectorAll('.create-room-cb:checked')]
-    .map(cb => cb.dataset.charId);
-  if (memberIds.length === 0) return;
-
-  createRoomConfirmEl.disabled = true;
-  createRoomConfirmEl.textContent = '创建中...';
-
-  try {
-    const result = await ipcRenderer.invoke('team:createRoom', name, memberIds);
-    closeCreateRoomModal();
-    await loadTeamRooms();
-    if (result && result.id) {
-      selectTeamRoom(result.id);
-    }
-  } catch (e) {
-    console.error('[create-room] failed:', e.message);
-    createRoomConfirmEl.textContent = '失败，重试';
-    createRoomConfirmEl.disabled = false;
-  }
-}
-
-createRoomNameEl.addEventListener('input', () => {
-  createRoomConfirmEl.disabled = !createRoomNameEl.value.trim();
-  createRoomConfirmEl.textContent = '创建';
-});
-
-createRoomNameEl.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !createRoomConfirmEl.disabled) submitCreateRoom();
-  if (e.key === 'Escape') closeCreateRoomModal();
-});
-
-createRoomConfirmEl.addEventListener('click', submitCreateRoom);
-document.getElementById('create-room-cancel').addEventListener('click', closeCreateRoomModal);
-document.getElementById('create-room-close').addEventListener('click', closeCreateRoomModal);
-
-createRoomModalEl.addEventListener('mousedown', (e) => {
-  if (e.target === createRoomModalEl) closeCreateRoomModal();
-});
 
 function renderResumeList(items) {
   if (!items || items.length === 0) {
@@ -2313,7 +2038,6 @@ const sessionPreviewStates = new Map();
 
 function getActiveContextKey() {
   if (activeSessionId) return `session:${activeSessionId}`;
-  if (activeTeamRoomId) return `teamroom:${activeTeamRoomId}`;
   if (activeMeetingId) return `meeting:${activeMeetingId}`;
   return null;
 }
@@ -2369,9 +2093,6 @@ async function openPreviewPanel(filePath) {
     if (document.getElementById('meeting-room-panel').style.display !== 'none'
         && document.getElementById('meeting-room-panel').style.display !== '') {
       previewSourcePanel = 'meeting-room-panel';
-    } else if (document.getElementById('team-room-panel').style.display !== 'none'
-        && document.getElementById('team-room-panel').style.display !== '') {
-      previewSourcePanel = 'team-room-panel';
     } else {
       previewSourcePanel = 'terminal-panel';
     }
@@ -3489,9 +3210,8 @@ searchInputEl.addEventListener('keydown', (e) => {
 });
 
 // --- Context menu (right-click session) ---
-function openContextMenu(sessionId, x, y, isTeamRoom = false) {
+function openContextMenu(sessionId, x, y) {
   contextMenuSessionId = sessionId;
-  contextMenuIsTeamRoom = isTeamRoom;
   contextMenuEl.style.display = 'block';
   contextMenuEl.style.left = `${x}px`;
   contextMenuEl.style.top = `${y}px`;
@@ -3502,21 +3222,15 @@ function openContextMenu(sessionId, x, y, isTeamRoom = false) {
   });
   const pinBtn = contextMenuEl.querySelector('[data-action="pin"]');
   const restartBtn = contextMenuEl.querySelector('[data-action="restart"]');
-  if (isTeamRoom) {
-    if (pinBtn) pinBtn.style.display = 'none';
-    if (restartBtn) restartBtn.style.display = 'none';
-  } else {
-    if (pinBtn) pinBtn.style.display = '';
-    if (restartBtn) restartBtn.style.display = '';
-    const session = sessions.get(sessionId);
-    if (pinBtn && session) pinBtn.textContent = session.pinned ? 'Unpin' : 'Pin to top';
-  }
+  if (pinBtn) pinBtn.style.display = '';
+  if (restartBtn) restartBtn.style.display = '';
+  const session = sessions.get(sessionId);
+  if (pinBtn && session) pinBtn.textContent = session.pinned ? 'Unpin' : 'Pin to top';
 }
 
 function closeContextMenu() {
   contextMenuEl.style.display = 'none';
   contextMenuSessionId = null;
-  contextMenuIsTeamRoom = false;
 }
 
 document.addEventListener('mousedown', (e) => {
@@ -3529,14 +3243,8 @@ for (const btn of contextMenuEl.querySelectorAll('.context-menu-item')) {
   btn.addEventListener('click', async () => {
     const action = btn.dataset.action;
     const sid = contextMenuSessionId;
-    const isTeamRoom = contextMenuIsTeamRoom;
     closeContextMenu();
     if (!sid) return;
-
-    if (isTeamRoom) {
-      if (action === 'close') deleteTeamRoom(sid);
-      return;
-    }
 
     const session = sessions.get(sid);
 
@@ -3795,10 +3503,7 @@ ipcRenderer.on('session-created', (_e, { session }) => {
     return;
   }
   activeSessionId = session.id;
-  activeTeamRoomId = null;
   activeMeetingId = null;
-  const trp = document.getElementById('team-room-panel');
-  if (trp) trp.style.display = 'none';
   const mrp = document.getElementById('meeting-room-panel');
   if (mrp) mrp.style.display = 'none';
   if (terminalPanelEl) terminalPanelEl.style.display = '';
@@ -4119,4 +3824,3 @@ if (document.readyState === 'loading') {
   initMobilePair();
 }
 
-loadTeamRooms();
