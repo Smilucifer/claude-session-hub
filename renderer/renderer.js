@@ -3787,6 +3787,13 @@ ipcRenderer.on('session-created', (_e, { session }) => {
   // meeting room is currently showing this meeting, mount the xterm for
   // any slot that was dormant (dormant slots skip xterm creation).
   if (session.meetingId) {
+    // Pre-create the xterm instance so PTY 'terminal-data' events arriving
+    // before renderTerminals() (which runs only after add-meeting-sub IPC
+    // returns) land in the xterm buffer instead of being silent-dropped at
+    // the terminal-data handler's `if (!cached) return`. Was most visible on
+    // Claude — short startup output → permanent blank PowerShell box in the
+    // meeting room. Gemini/Codex masked the bug via continuous streaming.
+    getOrCreateTerminal(session.id);
     if (wasDormant && typeof MeetingRoom !== 'undefined' &&
         MeetingRoom.getActiveMeetingId() === session.meetingId) {
       MeetingRoom.mountSubTerminal(session.id);
