@@ -41,6 +41,44 @@
       return { type: 'rt-fanout', text: rest };
     }
 
+    // 通用圆桌：默认 fanout，新增 @<who> 单聊语义
+    if (meeting.roundtableMode) {
+      let rest = text.trim();
+      const summaryRe = /^@summary\s+@(claude|gemini|codex)\b\s*/i;
+      let m;
+      // 注意：`@summary` 必须带 `@<who>` 才会路由到 rt-summary，未带 @<who> 时本 regex 不匹配，
+      // fall through 到下面的 @<who>/@all/纯文本逻辑。结果通常是 rt-fanout，原文照发给三家。
+      // 这是 spec 默认行为；UI 友好提示见后续 Phase 增强。
+      if ((m = rest.match(summaryRe))) {
+        return { type: 'rt-summary', summarizerKind: m[1].toLowerCase(), text: rest.slice(m[0].length) };
+      }
+      const debateRe = /^@debate\b\s*/i;
+      if ((m = rest.match(debateRe))) {
+        return { type: 'rt-debate', text: rest.slice(m[0].length) };
+      }
+      const allRe = /^@all\b\s*/i;
+      if ((m = rest.match(allRe))) {
+        return { type: 'rt-fanout', text: rest.slice(m[0].length) };
+      }
+      // @<who> 单家或多家但非全员 → 私聊
+      const targets = [];
+      const tokenRe = /^@(claude|gemini|codex)\b\s*/i;
+      while (true) {
+        const t = rest.match(tokenRe);
+        if (!t) break;
+        const tok = t[1].toLowerCase();
+        if (!targets.includes(tok)) targets.push(tok);
+        rest = rest.slice(t[0].length);
+      }
+      if (targets.length === 3) {
+        return { type: 'rt-fanout', text: rest };
+      }
+      if (targets.length > 0) {
+        return { type: 'rt-private', targetKinds: targets, text: rest };
+      }
+      return { type: 'rt-fanout', text: rest };
+    }
+
     if (!meeting.driverMode) return { type: 'normal', text, targets: null };
     let rest = text.trim();
     const targets = [];
@@ -67,6 +105,9 @@
   // partialBy: 当前进行中轮次的部分回答 { sid: { text, status } } — 单家完成立即更新
   const _rtPanelState = {};
   let _rtHistoryExpanded = false;
+  // 私聊计数缓存：{ [meetingId]: { claude: N, gemini: N, codex: N } }
+  // 在 refreshRoundtablePanel 里 best-effort 拉，用于卡片右上角 💬 角标
+  const _privateCountCache = {};
 
   // markdown 渲染（用项目已有的 marked + DOMPurify）
   let _markedCache = null;
@@ -81,6 +122,58 @@
       // 回退到纯文本（escapeHtml）
       return escapeHtml(text).replace(/\n/g, '<br>');
     }
+  }
+
+  // --- Tri-state mode toggle (圆桌 / 主驾 / 投研) ---
+
+  function _renderModeToggle(meeting) {
+    if (!meeting) return '';
+    const isRoundtable = !!meeting.roundtableMode;
+    const isDriver = !!meeting.driverMode;
+    const isResearch = !!meeting.researchMode;
+    return `
+      <div class="mr-mode-toggle" role="radiogroup" aria-label="会议模式">
+        <button type="button" class="mr-mode-btn ${isRoundtable ? 'active' : ''}" data-mode="roundtable" title="通用圆桌：三家平等讨论">圆桌</button>
+        <button type="button" class="mr-mode-btn ${isDriver ? 'active' : ''}" data-mode="driver" title="主驾模式：Claude 编码 + 副驾审查">主驾</button>
+        <button type="button" class="mr-mode-btn ${isResearch ? 'active' : ''}" data-mode="research" title="投研圆桌：A 股专题">投研</button>
+      </div>
+    `;
+  }
+
+  function _bindModeToggle(rootEl, meeting) {
+    if (!rootEl || !meeting) return;
+    rootEl.querySelectorAll('.mr-mode-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const mode = btn.getAttribute('data-mode');
+        if (!mode) return;
+        try {
+          // 切到非 roundtable 时，先清理 roundtable 的 prompt/covenant/private 文件
+          // （toggle-roundtable-mode handler 在 enabled=false 时会调 cleanupGeneralRoundtableFiles）
+          if (meeting.roundtableMode && mode !== 'roundtable') {
+            try {
+              await ipcRenderer.invoke('toggle-roundtable-mode', { meetingId: meeting.id, enabled: false });
+            } catch (e) {
+              console.warn('[mode-toggle] roundtable cleanup failed (continuing anyway):', e.message);
+            }
+          }
+          if (mode === 'roundtable') {
+            // 通用圆桌：走 toggle-roundtable-mode（含 prompt 文件写盘 + mutex 互斥）
+            const res = await ipcRenderer.invoke('toggle-roundtable-mode', { meetingId: meeting.id, enabled: true });
+            if (res && !res.ok) console.warn('[mode-toggle] roundtable failed:', res.error);
+          } else if (mode === 'driver') {
+            // 主驾 / 投研：复用 update-meeting-sync（互斥逻辑由 core/meeting-room.js updateMeeting 处理）
+            const ok = await ipcRenderer.invoke('update-meeting-sync', { meetingId: meeting.id, fields: { driverMode: true } });
+            if (!ok) console.warn('[mode-toggle] driver failed: update-meeting-sync returned falsy');
+          } else if (mode === 'research') {
+            const covenantText = (meeting.covenantText && typeof meeting.covenantText === 'string') ? meeting.covenantText : '';
+            const ok = await ipcRenderer.invoke('update-meeting-sync', { meetingId: meeting.id, fields: { researchMode: true, covenantText } });
+            if (!ok) console.warn('[mode-toggle] research failed: update-meeting-sync returned falsy');
+          }
+        } catch (e) {
+          console.warn('[mode-toggle] click failed:', e.message);
+        }
+      });
+    });
   }
 
   function _ensureRtPanel() {
@@ -114,10 +207,12 @@
     return subs;
   }
 
-  function _renderRtCards(state, subs, currentMode, partialBy) {
+  function _renderRtCards(state, subs, currentMode, partialBy, meeting) {
     const lastTurn = state.turns.length > 0 ? state.turns[state.turns.length - 1] : null;
     const summarizerKind = state.currentSummarizerKind || null;
     const cards = [];
+    const meetingId = meeting && meeting.id;
+    const countMap = (meetingId && _privateCountCache[meetingId]) || {};
     for (const kind of ['claude', 'gemini', 'codex']) {
       const sub = subs[kind];
       if (!sub) continue;
@@ -165,9 +260,13 @@
       const standbyHint = isStandby
         ? '<span class="mr-rt-standby-hint">上轮回答（等总结）</span>'
         : '';
+      const privateCount = countMap[kind] || 0;
+      const privateBadge = privateCount > 0
+        ? `<span class="mr-rt-private-badge" title="有 ${privateCount} 条私聊">💬 ${privateCount}</span>`
+        : '';
       cards.push(`<div class="${cardCls.join(' ')}" data-rt-sid="${sub.sid}" data-rt-kind="${kind}" role="button" tabindex="0" title="点击查看 ${labelDisplay} 的全部历史回答">
         <div class="mr-rt-card-head">
-          <span class="mr-rt-card-name">${labelDisplay}${summarizerBadge}</span>
+          <span class="mr-rt-card-name">${labelDisplay}${summarizerBadge}${privateBadge}</span>
           <span class="mr-rt-status ${status}">${statusLabel}${standbyHint}</span>
         </div>
         ${previewHtml}
@@ -201,15 +300,16 @@
     const mode = state.currentMode || 'idle';
     const modeLabel = { idle: '待命', fanout: '提问中', debate: '辩论中', summary: '综合中' }[mode] || mode;
     const partialBy = state._partialBy || null;
-    const cards = _renderRtCards(state, subs, mode, partialBy);
+    const cards = _renderRtCards(state, subs, mode, partialBy, meeting);
     const history = _renderRtHistory(state);
     // 首发提醒：完成过 1 轮后消失
     const firstRunHint = state.turns.length === 0
       ? `<div class="mr-rt-firstrun-hint">⏱ <strong>首次发送较慢</strong>（约 25 秒）— 三家 CLI 需要冷启动 + OAuth 验证。后续轮次会快很多。</div>`
       : '';
+    const titleText = (meeting && meeting.researchMode) ? '投研圆桌' : '圆桌讨论';
     return `
       <div class="mr-rt-header">
-        <span class="mr-rt-title">投研圆桌</span>
+        <span class="mr-rt-title">${titleText}</span>
         <span class="mr-rt-meta">
           <span>已 ${state.turns.length} 轮</span>
           <span class="mr-rt-mode-tag ${mode}">${escapeHtml(modeLabel)}</span>
@@ -227,7 +327,7 @@
   // 此时 server state 真实状态（含 idle）才被采纳。
   // partialBy 单独保留：轮中单家完成 IPC 推 partial-update，这是轮内增量，独立处理。
   async function refreshRoundtablePanel(meeting) {
-    if (!meeting || !meeting.researchMode) { _removeRtPanel(); return; }
+    if (!meeting || (!meeting.researchMode && !meeting.roundtableMode)) { _removeRtPanel(); return; }
     let state;
     try {
       state = await ipcRenderer.invoke('roundtable:get-state', { meetingId: meeting.id });
@@ -236,6 +336,17 @@
       return;
     }
     if (!state) return;
+    // 私聊计数缓存（best-effort，不阻塞 panel 渲染）
+    try {
+      const counts = await ipcRenderer.invoke('roundtable-private:list', { meetingId: meeting.id });
+      _privateCountCache[meeting.id] = {
+        claude: ((counts && counts.claude) || []).length,
+        gemini: ((counts && counts.gemini) || []).length,
+        codex:  ((counts && counts.codex)  || []).length,
+      };
+    } catch (e) {
+      console.warn('[meeting-room] private count cache refresh failed:', e.message);
+    }
     const prev = _rtPanelState[meeting.id];
     const optimistic = _rtOptimisticTurn[meeting.id];
     if (optimistic && (!state.currentMode || state.currentMode === 'idle')) {
@@ -320,6 +431,17 @@
       </button>`;
     }).join('');
 
+    // 私聊 tab：放最右，data-tab-idx = turnsWithAns.length 作为哨兵
+    // C1：仅在通用圆桌（roundtableMode）下展示。投研圆桌（researchMode）无私聊概念，
+    // roundtable-private:list 不为 research 路由记录数据，展示空 tab 会破坏现有投研 UX。
+    const showsPrivate = !!(meeting && meeting.roundtableMode);
+    const privateTabIdx = turnsWithAns.length;
+    const privateTabHtml = showsPrivate ? `<button type="button" class="mr-rt-tl-tab private" data-tab-idx="${privateTabIdx}" title="${escapeHtml(headerLabel)} 的私聊历史">
+      <span class="mr-rt-tl-tab-turn">💬 私聊</span>
+    </button>` : '';
+    const tabsHtmlWithPrivate = tabsHtml + privateTabHtml;
+    const hasAnyTab = turnsWithAns.length > 0 || showsPrivate;
+
     overlay.innerHTML = `
       <div class="mr-rt-tl-backdrop" data-rt-tl-close="1"></div>
       <aside class="mr-rt-tl-drawer mr-rt-tl-${escapeHtml(kind)}" role="dialog" aria-label="${escapeHtml(headerLabel)} 时间线">
@@ -328,21 +450,52 @@
           <span class="mr-rt-tl-drawer-meta">共 ${turnsWithAns.length} 轮</span>
           <button type="button" class="mr-rt-tl-close" data-rt-tl-close="1" aria-label="关闭">×</button>
         </header>
-        ${turnsWithAns.length > 0 ? `<nav class="mr-rt-tl-tabs" role="tablist">${tabsHtml}</nav>` : ''}
+        ${hasAnyTab ? `<nav class="mr-rt-tl-tabs" role="tablist">${tabsHtmlWithPrivate}</nav>` : ''}
         <div class="mr-rt-tl-content" id="mr-rt-tl-content">${renderTurnBody(turnsWithAns[0])}</div>
       </aside>
     `;
     overlay.style.display = 'block';
 
-    // Tab 切换
+    // Tab 切换：私聊 tab（idx === privateTabIdx）异步拉 list；其他 tab 走 renderTurnBody
     const contentEl = overlay.querySelector('#mr-rt-tl-content');
+    const renderTurnOrPrivate = async (idx) => {
+      // showsPrivate=false 时不应渲染私聊 tab；防御一手即使 idx 命中哨兵也走普通分支
+      if (showsPrivate && idx === privateTabIdx) {
+        let list = [];
+        try {
+          list = await ipcRenderer.invoke('roundtable-private:list', { meetingId: meeting.id, kind });
+        } catch (e) {
+          console.warn('[meeting-room] private list fetch failed:', e.message);
+        }
+        if (!Array.isArray(list) || list.length === 0) {
+          return '<div class="mr-rt-tl-empty">尚无与该 AI 的私聊。</div>';
+        }
+        return list.map(turn => {
+          const ans = turn.response || '';
+          const userIn = turn.userInput || '';
+          const ts = turn.ts ? new Date(turn.ts).toLocaleString() : '';
+          return `<div class="mr-rt-tl-private-item">
+            <div class="mr-rt-tl-user">用户：${escapeHtml(userIn)}</div>
+            ${ans ? `<div class="mr-rt-tl-body">${_renderMarkdown(ans)}</div>` : ''}
+            <div class="mr-rt-tl-private-ts">${escapeHtml(ts)}</div>
+          </div>`;
+        }).join('');
+      }
+      return renderTurnBody(turnsWithAns[idx]);
+    };
+
     overlay.querySelectorAll('.mr-rt-tl-tab').forEach(btn => {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', async () => {
         overlay.querySelectorAll('.mr-rt-tl-tab').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         const idx = parseInt(btn.getAttribute('data-tab-idx') || '0', 10);
         if (contentEl) {
-          contentEl.innerHTML = renderTurnBody(turnsWithAns[idx]);
+          contentEl.innerHTML = '<div class="mr-rt-tl-loading">加载中…</div>';
+          const result = await renderTurnOrPrivate(idx);
+          // 防御异步竞态：私聊 tab 走 IPC，await 期间用户若已切换到其他 tab，
+          // 此处会用过期数据覆盖新渲染，故先校验 active 标志
+          if (!btn.classList.contains('active')) return;
+          contentEl.innerHTML = result;
           contentEl.scrollTop = 0;
         }
       });
@@ -515,7 +668,7 @@
   // 从 IPC 拉最终 state（含 turn N 已持久化）
   ipcRenderer.on('roundtable-turn-complete', (_event, { meetingId }) => {
     const meeting = meetingData[meetingId];
-    if (meeting && meeting.researchMode && meetingId === activeMeetingId) {
+    if (meeting && (meeting.researchMode || meeting.roundtableMode) && meetingId === activeMeetingId) {
       delete _rtOptimisticTurn[meetingId];
       const cached = _rtPanelState[meetingId];
       if (cached) {
@@ -532,7 +685,7 @@
   // Roundtable state 元数据变更（如 summary 启动写入 currentSummarizerKind）
   ipcRenderer.on('roundtable-state-update', (_event, { meetingId }) => {
     const meeting = meetingData[meetingId];
-    if (meeting && meeting.researchMode && meetingId === activeMeetingId) {
+    if (meeting && (meeting.researchMode || meeting.roundtableMode) && meetingId === activeMeetingId) {
       refreshRoundtablePanel(meeting);
     }
   });
@@ -540,7 +693,7 @@
   // Roundtable 单家 partial-update：单卡片立即刷新，不等所有家完成
   ipcRenderer.on('roundtable-partial-update', (_event, { meetingId, sid, status, text }) => {
     const meeting = meetingData[meetingId];
-    if (!meeting || !meeting.researchMode || meetingId !== activeMeetingId) return;
+    if (!meeting || (!meeting.researchMode && !meeting.roundtableMode) || meetingId !== activeMeetingId) return;
     const cached = _rtPanelState[meetingId];
     if (!cached) {
       // 首次：直接 refresh（拉 state），下次 partial 才能本地更新
@@ -746,8 +899,8 @@
     setupInput(meeting);
     startMarkerPoll();
 
-    // 投研圆桌：进入会议室即刷新持久化面板
-    if (meeting.researchMode) {
+    // 投研圆桌 / 通用圆桌：进入会议室即刷新持久化面板
+    if (meeting.researchMode || meeting.roundtableMode) {
       refreshRoundtablePanel(meeting);
     } else {
       _removeRtPanel();
@@ -784,9 +937,25 @@
       if (activeMeetingId === meetingId) {
         renderHeader(updated);
         renderToolbar(updated);
+        // 模式切换时同步刷新面板与终端容器可见性（E2E 修复）
+        if (updated.researchMode || updated.roundtableMode) {
+          refreshRoundtablePanel(updated);
+        } else {
+          _removeRtPanel();
+        }
+        const term = terminalsEl();
+        if (term) applyModeContainerVisibility(updated, term);
         const prevSubs = prev ? prev.subSessions.join(',') : '';
         const newSubs = updated.subSessions ? updated.subSessions.join(',') : '';
-        if (prevSubs !== newSubs) {
+        // 模式切换需强制重建终端 DOM：roundtableMode 时 renderTerminals 会清空 #mr-terminals，
+        // 切回 driver/research 时 a0561e3 的可见性切换只能 un-hide 容器但内部仍是空的，
+        // 必须 force re-render 才能恢复 xterm 实例。
+        const modeChanged = prev && (
+          (prev.roundtableMode || false) !== (updated.roundtableMode || false) ||
+          (prev.researchMode || false) !== (updated.researchMode || false) ||
+          (prev.driverMode || false) !== (updated.driverMode || false)
+        );
+        if (prevSubs !== newSubs || modeChanged) {
           renderTerminals(updated);
           setupInput(updated);
         }
@@ -823,14 +992,20 @@
       tabsHtml = `<div class="mr-tabs" id="mr-tabs">${tabs}</div>`;
     }
 
+    // 通用圆桌不展示 Focus / Blackboard 切换（layout 概念在该模式下无意义）；
+    // researchMode 保持原行为（按钮显示）以满足 C1：existing researchMode UI behavior MUST be preserved
+    const showLayoutButtons = !meeting.roundtableMode;
+    const layoutButtonsHtml = showLayoutButtons ? `
+        <button class="mr-header-btn ${meeting.layout === 'focus' ? 'active' : ''}" id="mr-btn-focus">Focus</button>
+        <button class="mr-header-btn ${meeting.layout === 'blackboard' ? 'active' : ''}" id="mr-btn-blackboard">Blackboard</button>` : '';
+
     el.innerHTML = `
       <div class="mr-header-left">
+        ${_renderModeToggle(meeting)}
         <span class="mr-header-title" id="mr-title">${escapeHtml(meeting.title)}</span>${meeting.driverMode ? '<span class="mr-driver-badge">Driver</span>' : ''}
         ${tabsHtml}
       </div>
-      <div class="mr-header-right">
-        <button class="mr-header-btn ${meeting.layout === 'focus' ? 'active' : ''}" id="mr-btn-focus">Focus</button>
-        <button class="mr-header-btn ${meeting.layout === 'blackboard' ? 'active' : ''}" id="mr-btn-blackboard">Blackboard</button>
+      <div class="mr-header-right">${layoutButtonsHtml}
         <button class="mr-header-btn" id="mr-btn-add-sub" title="添加子会话">+ 添加</button>
         <button class="btn-zoom btn-memo-toggle ${typeof localStorage !== 'undefined' && localStorage.getItem('claude-hub-memo-open') === 'true' ? 'active' : ''}" id="mr-btn-memo" title="Toggle memo panel"><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M2 3.5A1.5 1.5 0 013.5 2h9A1.5 1.5 0 0114 3.5v9a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 12.5v-9zM4 5h8M4 8h8M4 11h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" fill="none"/></svg></button>
         <button class="btn-zoom" id="mr-btn-zoom-out" title="Shrink UI">A−</button>
@@ -839,9 +1014,12 @@
       </div>
     `;
 
-    document.getElementById('mr-btn-focus').addEventListener('click', () => setLayout(meeting.id, 'focus'));
-    document.getElementById('mr-btn-blackboard').addEventListener('click', () => setLayout(meeting.id, 'blackboard'));
+    const focusBtn = document.getElementById('mr-btn-focus');
+    if (focusBtn) focusBtn.addEventListener('click', () => setLayout(meeting.id, 'focus'));
+    const bbBtn = document.getElementById('mr-btn-blackboard');
+    if (bbBtn) bbBtn.addEventListener('click', () => setLayout(meeting.id, 'blackboard'));
     document.getElementById('mr-btn-add-sub').addEventListener('click', () => showAddSubMenu(meeting.id));
+    _bindModeToggle(el, meeting);
     document.getElementById('mr-btn-memo').addEventListener('click', () => { if (typeof toggleMemoPanel === 'function') toggleMemoPanel(); });
     document.getElementById('mr-btn-zoom-out').addEventListener('click', () => { if (typeof applyZoom === 'function') applyZoom(currentZoom - 1); });
     document.getElementById('mr-btn-zoom-in').addEventListener('click', () => { if (typeof applyZoom === 'function') applyZoom(currentZoom + 1); });
@@ -953,6 +1131,16 @@
 
   // --- Terminal Rendering ---
 
+  function applyModeContainerVisibility(meeting, container) {
+    if (!container) return;
+    // 仅通用圆桌隐藏 3-xterm 容器；researchMode 保持原行为（C1）
+    if (meeting && meeting.roundtableMode) {
+      container.classList.add('mr-terminals-hidden');
+    } else {
+      container.classList.remove('mr-terminals-hidden');
+    }
+  }
+
   function renderTerminals(meeting) {
     const container = terminalsEl();
     if (!container) return;
@@ -962,6 +1150,13 @@
       }
     }
     container.innerHTML = '';
+    applyModeContainerVisibility(meeting, container);
+    // 通用圆桌：3-xterm 终端不渲染（圆桌专属面板由 refreshRoundtablePanel 渲染）；
+    // researchMode 保持原行为（终端继续渲染）以满足 C1
+    if (meeting && meeting.roundtableMode) {
+      subTerminals = {};
+      return;
+    }
     if (meeting.layout === 'blackboard') {
       container.className = 'mr-terminals mr-blackboard';
       subTerminals = {};
@@ -1239,6 +1434,11 @@
   function setLayout(meetingId, layout) {
     const meeting = meetingData[meetingId];
     if (!meeting) return;
+    // 仅通用圆桌阻断 layout 切换；researchMode 保持原行为（C1）
+    if (meeting.roundtableMode) {
+      console.warn('[meeting-room] setLayout called in roundtable mode — ignored');
+      return;
+    }
     meeting.layout = layout;
     if (layout === 'focus' && !meeting.focusedSub) {
       meeting.focusedSub = meeting.subSessions[0] || null;
@@ -1261,8 +1461,8 @@
       return;
     }
 
-    // researchMode 专属 toolbar：群策群力 / 总结发言（不展示主驾的"同步/自动同步/分歧检测"）
-    if (meeting.researchMode) {
+    // researchMode / roundtableMode 专属 toolbar：群策群力 / 总结发言（不展示主驾的"同步/自动同步/分歧检测"）
+    if (meeting.researchMode || meeting.roundtableMode) {
       const subs = _getRtSubInfo(meeting);
       const opts = ['claude', 'gemini', 'codex']
         .filter(k => subs[k])
@@ -1362,14 +1562,16 @@
     inputBox.textContent = '';
     inputBox.dataset.placeholder = meeting.researchMode
       ? '输入投研问题，回车发送 → 三家本色独立回答（@debate / @summary @<who> 也可继续手输）'
-      : (meeting.driverMode
-        ? '输入 @ 选副驾，可同时 @gemini @codex'
-        : '输入消息...');
+      : (meeting.roundtableMode
+        ? '圆桌讨论：发普通文本启动一轮 / @debate / @summary @<who> / @<who> 单聊'
+        : (meeting.driverMode
+          ? '输入 @ 选副驾，可同时 @gemini @codex'
+          : '输入消息...'));
 
-    // researchMode：隐藏目标选择（路由由 fanout/debate/summary 决定）
+    // researchMode / roundtableMode：隐藏目标选择（路由由 fanout/debate/summary/private 决定）
     // driverMode：禁用目标选择（路由由 @command 决定）
     if (targetSelect) {
-      if (meeting.researchMode) {
+      if (meeting.researchMode || meeting.roundtableMode) {
         targetSelect.style.display = 'none';
       } else if (meeting.driverMode) {
         targetSelect.style.display = '';
@@ -1382,7 +1584,7 @@
       }
     }
 
-    if (targetSelect && !meeting.researchMode) {
+    if (targetSelect && !meeting.researchMode && !meeting.roundtableMode) {
       targetSelect.innerHTML = '<option value="all">全部</option>';
       for (const sid of meeting.subSessions) {
         const session = sessions ? sessions.get(sid) : null;
@@ -1417,9 +1619,9 @@
       const mid = activeMeetingId;
       const m = meetingData[mid];
       if (!m) return;
-      // researchMode 下 sendTarget 由 fanout/debate/summary 路由决定，不依赖隐藏的 select
+      // researchMode / roundtableMode 下 sendTarget 由 fanout/debate/summary/private 路由决定，不依赖隐藏的 select
       // （select 隐藏后 value 是 ''，不能让它把 m.sendTarget 覆盖成空）
-      if (!m.researchMode) {
+      if (!m.researchMode && !m.roundtableMode) {
         const sel = document.getElementById('mr-input-target');
         if (sel) m.sendTarget = sel.value;
       } else {
@@ -1477,8 +1679,9 @@
     // --- Research Mode routing 优先 ---
     // 路由完全由 fanout/debate/summary 决定，不依赖 sendTarget/validTargets。
     // 必须在 validTargets 检查前判定，否则 researchMode 下 sendTarget = 'all' / subSessions 为空时会被拦掉。
-    if (current.researchMode) {
+    if (current.researchMode || current.roundtableMode) {
       const cmd = parseDriverCommand(text, current);
+      // 公共轮次：fanout / debate / summary 走 orchestrator
       if (cmd.type === 'rt-fanout' || cmd.type === 'rt-debate' || cmd.type === 'rt-summary') {
         const mode = cmd.type === 'rt-fanout' ? 'fanout' : cmd.type === 'rt-debate' ? 'debate' : 'summary';
         // 也写入 meeting timeline（黑板视图回放用）
@@ -1489,6 +1692,58 @@
           userInput: cmd.text || '',
           summarizerKind: cmd.summarizerKind || null,
         });
+        return;
+      }
+      // 私聊：单家或多家但非全员，不入轮次
+      if (cmd.type === 'rt-private') {
+        const kinds = cmd.targetKinds || [];
+        const sids = [];
+        const resolvedKinds = [];
+        const failedKinds = [];
+        for (const kind of kinds) {
+          const sid = findSessionByKind(current, kind);
+          if (sid && !sids.includes(sid)) {
+            sids.push(sid);
+            resolvedKinds.push(kind);
+          } else {
+            failedKinds.push(kind);
+          }
+        }
+        if (sids.length === 0) {
+          console.warn('[meeting-room] rt-private: no matching session for kinds', kinds);
+          return;
+        }
+        if (failedKinds.length > 0) {
+          console.warn(`[meeting-room] rt-private: partial resolution — sent to [${resolvedKinds.join(',')}], skipped [${failedKinds.join(',')}] (sessions not attached or dormant)`);
+        }
+        // ---
+        // 顺序与不变量备注：
+        // 1) terminal-input 是 fire-and-forget（IPC send），私聊 store 是 best-effort async invoke
+        // 2) 极端情况下 send 成功但 store append 失败，UI 仅 console.warn 不阻塞，依赖未来
+        //    transcript-tap 回填 response 字段做兜底
+        // 3) 我们接受这个不变量缺口换取低延迟体验，详情见 spec 私聊段落
+        // ---
+        const payload = cmd.text || '';
+        for (const sessionId of sids) {
+          ipcRenderer.send('terminal-input', { sessionId, data: payload });
+          const session = sessions ? sessions.get(sessionId) : null;
+          const baseDelay = session && session.kind === 'codex' ? 400 : 200;
+          const sizeDelay = Math.min(Math.floor(payload.length / 100) * 10, 500);
+          setTimeout(() => {
+            ipcRenderer.send('terminal-input', { sessionId, data: '\r' });
+          }, baseDelay + sizeDelay);
+        }
+        // 仅对成功送达的 kinds 写私聊 store，避免给下线 AI 留虚假记录
+        for (const kind of resolvedKinds) {
+          ipcRenderer.invoke('roundtable-private:append', {
+            meetingId: meeting.id,
+            kind,
+            userInput: payload,
+            response: '',
+          }).catch(e => console.warn('[meeting-room] private append failed:', e.message));
+        }
+        meeting.lastMessageTime = Date.now();
+        ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { lastMessageTime: meeting.lastMessageTime } });
         return;
       }
     }

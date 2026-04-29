@@ -20,6 +20,8 @@ const transcriptTap = new TranscriptTap();
 const { DeepSummaryService } = require('./core/deep-summary-service.js');
 const driverMode = require('./core/driver-mode.js');
 const researchMode = require('./core/research-mode.js');
+const generalRoundtableMode = require('./core/general-roundtable-mode.js');
+const generalRoundtablePrivateStore = require('./core/general-roundtable-private-store.js');
 const lindangBridge = require('./core/lindang-bridge.js');
 const { GeminiCliProvider } = require('./core/summary-providers/gemini-cli.js');
 const { DeepSeekProvider } = require('./core/summary-providers/deepseek-api.js');
@@ -501,6 +503,27 @@ ipcMain.handle('add-meeting-sub', async (_e, { meetingId, kind, opts }) => {
         sessionOpts.codexMcpEntries = [researchMode.buildResearchMcpEntryForCodex(meetingId, hookPort, HOOK_TOKEN)];
       }
     }
+  } else if (meeting && meeting.roundtableMode) {
+    // 通用圆桌模式：三家平等注入同一份 system prompt（rules + 用户公约合成）。
+    // 不挂 MCP（CLI 自带工具能力即可）。
+    const hubDataDir = getHubDataDir();
+    // 与 research-mode 对齐语义：meeting 字段是空字符串时尊重为"用户已清空"（不回退 snapshot），
+    // snapshot 仅在非空时持久化
+    const covenantText = (typeof meeting.generalRoundtableCovenant === 'string')
+      ? meeting.generalRoundtableCovenant
+      : generalRoundtableMode.readCovenantSnapshot(hubDataDir, meetingId);
+    if (covenantText && covenantText.trim().length > 0) {
+      generalRoundtableMode.writeCovenantSnapshot(hubDataDir, meetingId, covenantText);
+    }
+    const promptFile = generalRoundtableMode.writeGeneralRoundtablePromptFile(hubDataDir, meetingId, covenantText);
+    if (kind === 'claude') {
+      sessionOpts.appendSystemPromptFile = promptFile;
+    } else if (kind === 'gemini') {
+      sessionOpts.extraEnv = { GEMINI_SYSTEM_MD: promptFile };
+    } else if (kind === 'codex') {
+      sessionOpts.codexInstructionFile = promptFile;
+      sessionOpts.codexBypassApprovals = true;
+    }
   }
 
   const session = sessionManager.createSession(kind, sessionOpts);
@@ -587,6 +610,7 @@ ipcMain.handle('close-meeting', (_e, meetingId) => {
   }
   driverMode.cleanupPromptFiles(getHubDataDir(), meetingId);
   researchMode.cleanupResearchFiles(getHubDataDir(), meetingId);
+  generalRoundtableMode.cleanupGeneralRoundtableFiles(getHubDataDir(), meetingId);
   sendToRenderer('meeting-closed', { meetingId });
   return true;
 });
@@ -1212,6 +1236,71 @@ ipcMain.handle('update-meeting-sync', (_e, { meetingId, fields }) => {
 // Sprint 1: research-mode covenant 模板（renderer 创建会议室对话框预填用）
 ipcMain.handle('get-research-covenant-template', () => researchMode.COVENANT_TEMPLATE);
 
+// 通用圆桌：开关 + 公约写盘 + 私聊存储
+function _isValidMeetingId(id) {
+  // 仅允许 uuid 风格的字母数字+连字符；阻止任何路径分隔符或控制字符
+  return typeof id === 'string' && /^[a-zA-Z0-9_\-]+$/.test(id) && id.length > 0 && id.length < 256;
+}
+
+ipcMain.handle('toggle-roundtable-mode', (_e, { meetingId, enabled, covenant } = {}) => {
+  if (!_isValidMeetingId(meetingId)) {
+    return { ok: false, error: 'invalid meetingId' };
+  }
+  const m = meetingManager.getMeeting(meetingId);
+  if (!m) return { ok: false, error: 'meeting not found' };
+  const fields = { roundtableMode: !!enabled };
+  if (typeof covenant === 'string') fields.generalRoundtableCovenant = covenant;
+  let updated;
+  try {
+    updated = meetingManager.updateMeeting(meetingId, fields);
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+  if (!updated) return { ok: false, error: 'update failed' };
+  // Persist covenant file when enabling (consistent state for resume)
+  if (enabled) {
+    const text = typeof covenant === 'string' ? covenant : (updated.generalRoundtableCovenant || '');
+    try {
+      generalRoundtableMode.writeCovenantSnapshot(getHubDataDir(), meetingId, text);
+      generalRoundtableMode.writeGeneralRoundtablePromptFile(getHubDataDir(), meetingId, text);
+    } catch (e) {
+      console.warn(`[toggle-roundtable] write prompt files failed: ${e.message}`);
+    }
+  }
+  // 注：关闭模式不清理文件——清理在 close-meeting 时统一执行（避免用户切换模式查看其他视图后丢失私聊历史）
+  sendToRenderer('meeting-updated', { meeting: updated });
+  return { ok: true, meeting: updated };
+});
+
+ipcMain.handle('roundtable-private:append', (_e, { meetingId, kind, userInput, response } = {}) => {
+  if (!_isValidMeetingId(meetingId)) {
+    return { ok: false, error: 'invalid meetingId' };
+  }
+  try {
+    generalRoundtablePrivateStore.appendPrivateTurn(getHubDataDir(), meetingId, kind, userInput, response);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+ipcMain.handle('roundtable-private:list', (_e, { meetingId, kind } = {}) => {
+  if (!_isValidMeetingId(meetingId)) {
+    return kind ? [] : { claude: [], gemini: [], codex: [] };
+  }
+  // 校验 kind：未传/null OK（返回全量 store），传了必须在白名单内，
+  // 否则 listPrivateTurns 会 fallthrough 到全量返回，破坏白名单契约
+  if (kind !== undefined && kind !== null && !['claude', 'gemini', 'codex'].includes(kind)) {
+    return [];
+  }
+  try {
+    return generalRoundtablePrivateStore.listPrivateTurns(getHubDataDir(), meetingId, kind);
+  } catch (e) {
+    console.warn(`[roundtable-private:list] failed: ${e.message}`);
+    return kind ? [] : { claude: [], gemini: [], codex: [] };
+  }
+});
+
 ipcMain.handle('get-meetings', () => {
   return meetingManager.getAllMeetings();
 });
@@ -1405,6 +1494,12 @@ ipcMain.handle('resume-session', async (_e, meta) => {
         ? meeting.covenantText
         : researchMode.readCovenantSnapshot(hubDataDir, meta.meetingId);
       driverOpts.appendSystemPromptFile = researchMode.writeResearchPromptFile(hubDataDir, meta.meetingId, covenantText);
+    } else if (meeting && meeting.roundtableMode) {
+      const hubDataDir = getHubDataDir();
+      const covenantText = (typeof meeting.generalRoundtableCovenant === 'string')
+        ? meeting.generalRoundtableCovenant
+        : generalRoundtableMode.readCovenantSnapshot(hubDataDir, meta.meetingId);
+      driverOpts.appendSystemPromptFile = generalRoundtableMode.writeGeneralRoundtablePromptFile(hubDataDir, meta.meetingId, covenantText);
     }
   }
 

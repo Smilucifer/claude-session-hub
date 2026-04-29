@@ -28,6 +28,9 @@ class MeetingRoomManager {
       pendingReviewId: null,
       researchMode: false,
       covenantText: '',
+      // 新增：通用圆桌（默认开启，与 driverMode/researchMode 互斥）
+      roundtableMode: true,
+      generalRoundtableCovenant: '',
     };
     // Hub Timeline phase 1 (in-memory only)
     meeting._timeline = [];
@@ -89,9 +92,40 @@ class MeetingRoomManager {
   updateMeeting(meetingId, fields) {
     const m = this.meetings.get(meetingId);
     if (!m) return null;
-    const allowed = ['title', 'layout', 'focusedSub', 'syncContext', 'sendTarget', 'pinned', 'lastMessageTime', 'status', 'lastScene', 'driverMode', 'driverSessionId', 'pendingReviewId', 'researchMode', 'covenantText'];
+    // Loud-fail on ambiguous mode input: callers must set at most one mode to true at a time.
+    // Without this guard, the three sequential mutex if-blocks below would silently zero out
+    // ALL mode flags when 2+ modes are set true together, leaving the meeting in undefined state.
+    const trueCount = ['roundtableMode', 'researchMode', 'driverMode']
+      .filter(k => fields[k] === true).length;
+    if (trueCount > 1) {
+      throw new Error(`Cannot set multiple modes to true simultaneously: ${JSON.stringify({
+        roundtableMode: fields.roundtableMode,
+        researchMode: fields.researchMode,
+        driverMode: fields.driverMode,
+      })}`);
+    }
+    const allowed = [
+      'title', 'layout', 'focusedSub', 'syncContext', 'sendTarget', 'pinned',
+      'lastMessageTime', 'status', 'lastScene', 'driverMode', 'driverSessionId',
+      'pendingReviewId', 'researchMode', 'covenantText',
+      // 新增字段
+      'roundtableMode', 'generalRoundtableCovenant',
+    ];
     for (const key of allowed) {
       if (key in fields) m[key] = fields[key];
+    }
+    // 三态互斥：开启某一个时关掉其他两个
+    if (fields.roundtableMode === true) {
+      m.researchMode = false;
+      m.driverMode = false;
+    }
+    if (fields.researchMode === true) {
+      m.roundtableMode = false;
+      m.driverMode = false;
+    }
+    if (fields.driverMode === true) {
+      m.roundtableMode = false;
+      m.researchMode = false;
     }
     return { ...m, subSessions: [...m.subSessions] };
   }
@@ -119,6 +153,10 @@ class MeetingRoomManager {
       pendingReviewId: meetingData.pendingReviewId || null,
       researchMode: meetingData.researchMode || false,
       covenantText: meetingData.covenantText || '',
+      // 通用圆桌新字段：旧会议 persisted 时无此字段，显式 default false 保持原 UX
+      // （createMeeting 默认建新会议为 roundtableMode=true，但旧会议升级后不切换）
+      roundtableMode: meetingData.roundtableMode === true,
+      generalRoundtableCovenant: meetingData.generalRoundtableCovenant || '',
       _timeline: [],
       _cursors: {},
       _nextIdx: 0,
