@@ -153,6 +153,10 @@ class MeetingRoomManager {
       pendingReviewId: meetingData.pendingReviewId || null,
       researchMode: meetingData.researchMode || false,
       covenantText: meetingData.covenantText || '',
+      // 通用圆桌新字段：旧会议 persisted 时无此字段，显式 default false 保持原 UX
+      // （createMeeting 默认建新会议为 roundtableMode=true，但旧会议升级后不切换）
+      roundtableMode: meetingData.roundtableMode === true,
+      generalRoundtableCovenant: meetingData.generalRoundtableCovenant || '',
       _timeline: [],
       _cursors: {},
       _nextIdx: 0,

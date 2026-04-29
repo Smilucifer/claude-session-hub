@@ -1290,6 +1290,11 @@ ipcMain.handle('roundtable-private:list', (_e, { meetingId, kind } = {}) => {
   if (!_isValidMeetingId(meetingId)) {
     return kind ? [] : { claude: [], gemini: [], codex: [] };
   }
+  // 校验 kind：未传/null OK（返回全量 store），传了必须在白名单内，
+  // 否则 listPrivateTurns 会 fallthrough 到全量返回，破坏白名单契约
+  if (kind !== undefined && kind !== null && !['claude', 'gemini', 'codex'].includes(kind)) {
+    return [];
+  }
   try {
     return generalRoundtablePrivateStore.listPrivateTurns(getHubDataDir(), meetingId, kind);
   } catch (e) {

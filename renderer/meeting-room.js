@@ -432,12 +432,15 @@
     }).join('');
 
     // 私聊 tab：放最右，data-tab-idx = turnsWithAns.length 作为哨兵
+    // C1：仅在通用圆桌（roundtableMode）下展示。投研圆桌（researchMode）无私聊概念，
+    // roundtable-private:list 不为 research 路由记录数据，展示空 tab 会破坏现有投研 UX。
+    const showsPrivate = !!(meeting && meeting.roundtableMode);
     const privateTabIdx = turnsWithAns.length;
-    const privateTabHtml = `<button type="button" class="mr-rt-tl-tab private" data-tab-idx="${privateTabIdx}" title="${escapeHtml(headerLabel)} 的私聊历史">
+    const privateTabHtml = showsPrivate ? `<button type="button" class="mr-rt-tl-tab private" data-tab-idx="${privateTabIdx}" title="${escapeHtml(headerLabel)} 的私聊历史">
       <span class="mr-rt-tl-tab-turn">💬 私聊</span>
-    </button>`;
+    </button>` : '';
     const tabsHtmlWithPrivate = tabsHtml + privateTabHtml;
-    const hasAnyTab = turnsWithAns.length > 0 || true; // 总是显示私聊 tab
+    const hasAnyTab = turnsWithAns.length > 0 || showsPrivate;
 
     overlay.innerHTML = `
       <div class="mr-rt-tl-backdrop" data-rt-tl-close="1"></div>
@@ -456,7 +459,8 @@
     // Tab 切换：私聊 tab（idx === privateTabIdx）异步拉 list；其他 tab 走 renderTurnBody
     const contentEl = overlay.querySelector('#mr-rt-tl-content');
     const renderTurnOrPrivate = async (idx) => {
-      if (idx === privateTabIdx) {
+      // showsPrivate=false 时不应渲染私聊 tab；防御一手即使 idx 命中哨兵也走普通分支
+      if (showsPrivate && idx === privateTabIdx) {
         let list = [];
         try {
           list = await ipcRenderer.invoke('roundtable-private:list', { meetingId: meeting.id, kind });
@@ -487,7 +491,11 @@
         const idx = parseInt(btn.getAttribute('data-tab-idx') || '0', 10);
         if (contentEl) {
           contentEl.innerHTML = '<div class="mr-rt-tl-loading">加载中…</div>';
-          contentEl.innerHTML = await renderTurnOrPrivate(idx);
+          const result = await renderTurnOrPrivate(idx);
+          // 防御异步竞态：私聊 tab 走 IPC，await 期间用户若已切换到其他 tab，
+          // 此处会用过期数据覆盖新渲染，故先校验 active 标志
+          if (!btn.classList.contains('active')) return;
+          contentEl.innerHTML = result;
           contentEl.scrollTop = 0;
         }
       });
@@ -939,7 +947,15 @@
         if (term) applyModeContainerVisibility(updated, term);
         const prevSubs = prev ? prev.subSessions.join(',') : '';
         const newSubs = updated.subSessions ? updated.subSessions.join(',') : '';
-        if (prevSubs !== newSubs) {
+        // 模式切换需强制重建终端 DOM：roundtableMode 时 renderTerminals 会清空 #mr-terminals，
+        // 切回 driver/research 时 a0561e3 的可见性切换只能 un-hide 容器但内部仍是空的，
+        // 必须 force re-render 才能恢复 xterm 实例。
+        const modeChanged = prev && (
+          (prev.roundtableMode || false) !== (updated.roundtableMode || false) ||
+          (prev.researchMode || false) !== (updated.researchMode || false) ||
+          (prev.driverMode || false) !== (updated.driverMode || false)
+        );
+        if (prevSubs !== newSubs || modeChanged) {
           renderTerminals(updated);
           setupInput(updated);
         }
