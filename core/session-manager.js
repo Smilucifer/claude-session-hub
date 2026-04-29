@@ -116,7 +116,7 @@ class SessionManager extends EventEmitter {
       }
     }
 
-    // Merge extra env vars for specialized session launches.
+    // Merge extra env vars (used by TeamSessionManager for MCP config etc.)
     if (opts.extraEnv) {
       Object.assign(sessionEnv, opts.extraEnv);
     }
@@ -138,8 +138,9 @@ class SessionManager extends EventEmitter {
       env: sessionEnv,
       useConpty: true,
       // conptyInheritCursor=true kills PTY output for headless sessions (no
-      // renderer xterm attached). Normal user sessions don't set
-      // noInheritCursor, so the default stays true for backward compatibility.
+      // renderer xterm attached). TeamSessionManager sets noInheritCursor for
+      // background character sessions. Normal user sessions don't set it, so
+      // the default stays true for backward compatibility.
       conptyInheritCursor: !opts.noInheritCursor,
     });
 
@@ -209,19 +210,11 @@ class SessionManager extends EventEmitter {
         // Resume/continue inherit the transcript's model, so don't force --model there.
         cmd = ' claude --model claude-opus-4-7[1m]';
       }
-      // Append system prompt: read file content + inline via base64 (Claude CLI 2.1.x
-      // 静默废弃 --append-system-prompt-file，传该参数会让 Claude 启动后立即静默 exit 0，
-      // 终端面板看起来空白 + 待命。改成读文件内容用 base64 安全传给 --append-system-prompt。
+      // Append system prompt file if provided (TeamSessionManager injects character prompt)
       if (opts.appendSystemPromptFile) {
-        try {
-          const _content = require('fs').readFileSync(opts.appendSystemPromptFile, 'utf-8');
-          const _b64 = Buffer.from(_content, 'utf-8').toString('base64');
-          cmd = `$_apsp = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${_b64}')); ` + cmd.trimStart() + ` --append-system-prompt $_apsp`;
-        } catch (e) {
-          console.warn(`[claude-spawn] failed to read system prompt file ${opts.appendSystemPromptFile}: ${e.message}`);
-        }
+        cmd += ` --append-system-prompt-file "${opts.appendSystemPromptFile.replace(/\\/g, '\\\\')}"`;
       }
-      // Append MCP config file if provided.
+      // Append MCP config file if provided (TeamSessionManager injects MCP server config)
       if (opts.mcpConfigFile) {
         cmd += ` --mcp-config "${opts.mcpConfigFile.replace(/\\/g, '\\\\')}"`;
       }
